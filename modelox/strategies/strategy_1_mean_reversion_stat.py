@@ -120,6 +120,9 @@ class Strategy1MeanReversionStat:
     def generate_signals(self, df: pl.DataFrame, params: Dict[str, Any]) -> pl.DataFrame:
         # Para reporting/plot modular
         params["__indicators_used"] = self.get_indicators_used()
+        # Warm-up global robusto para el plot: ATR p90 usa ventana 200,
+        # zscore 50 y ATR/ADX 14; empezamos el gráfico después de 200 velas.
+        params["__warmup_bars"] = 200
 
         # 1) Calcular indicadores base
         ind_config = {

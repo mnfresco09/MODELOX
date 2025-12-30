@@ -54,7 +54,7 @@ SALDO_MINIMO_OPERATIVO = 5  # Hard stop when balance <= this value
 # the bot will never exceed this limit.
 _QTY_MAX_MAP = {
     "BTC": 0.07,       # 0.07 BTC max per trade
-    "GOLD": 2.5,       # 2.5 oz Gold max per trade
+    "GOLD": 1.5,       # 2.5 oz Gold max per trade
     "SP500": 2.5,      # 3 contracts SP500 max
     "NASDAQ": 0.2,     # 3 contracts NASDAQ max
 }
@@ -95,7 +95,7 @@ OPTUNA_STORAGE = None  # None = in-memory, or SQLite path
 # Multiple:         COMBINACION_A_EJECUTAR = [3, 4, 7, 9, 10]
 # All available:    COMBINACION_A_EJECUTAR = "all"
 #
-COMBINACION_A_EJECUTAR = [1]
+COMBINACION_A_EJECUTAR = [3]
 
 # ============================================================================
 # OUTPUT SETTINGS

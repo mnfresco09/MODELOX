@@ -579,7 +579,18 @@ def _detect_max_warmup_period(params: Optional[Dict[str, Any]], min_warmup: int 
         -> Returns 50 (ema_length is the max)
     """
     if not params:
-        return min_warmup
+      return min_warmup
+
+    # Explicit override from strategy (fully modular):
+    # if a strategy sets params["__warmup_bars"], respect it.
+    override = params.get("__warmup_bars") if isinstance(params, dict) else None
+    try:
+      if override is not None:
+        ov = int(override)
+        if ov > 0:
+          return max(min_warmup, ov)
+    except (ValueError, TypeError):
+      pass
     
     period_suffixes = ('_period', '_length', '_len', '_window')
     max_period = min_warmup
@@ -1099,7 +1110,10 @@ grid:{vertLines:{color:'rgba(148,163,184,.04)'},horzLines:{color:'rgba(148,163,1
 crosshair:{mode:LightweightCharts.CrosshairMode.Normal,vertLine:{color:'rgba(34,211,238,.7)',width:1,style:LightweightCharts.LineStyle.Dashed,labelBackgroundColor:'#1e293b',labelVisible:true},horzLine:{color:'rgba(34,211,238,.5)',width:1,style:LightweightCharts.LineStyle.Dashed,labelBackgroundColor:'#1e293b',labelVisible:true}},
 timeScale:{borderColor:'rgba(148,163,184,.1)',timeVisible:true,secondsVisible:false,rightOffset:8,barSpacing:8,minBarSpacing:2,fixLeftEdge:false,fixRightEdge:false,lockVisibleTimeRangeOnResize:true,autoScale:true,visible:false},
 rightPriceScale:{borderColor:'rgba(148,163,184,.1)',scaleMargins:{top:.1,bottom:.1},autoScale:true,alignLabels:true,borderVisible:true,entireTextOnly:false},
-handleScale:{axisPressedMouseMove:{time:true,price:true},mouseWheel:true,pinch:true},
+// Desactivamos zoom con rueda/pinch; se permite zoom sólo
+// arrastrando ejes (time/price) y con los botones + y -.
+handleScale:{axisPressedMouseMove:{time:true,price:true},mouseWheel:false,pinch:false},
+// Mantenemos el scroll horizontal/vertical para desplazarse por el gráfico.
 handleScroll:{mouseWheel:true,pressedMouseMove:true,horzTouchDrag:true,vertTouchDrag:true},
 kineticScroll:{touch:true,mouse:true},
 localization:{
@@ -1189,28 +1203,25 @@ try {
       candleTimeSet.add(t);
     }
     cs.setData(cData);
-    
-    // ASYNC MARKER INJECTION: Use setTimeout to ensure TimeScale is fully computed
-    // This prevents markers from being discarded due to timestamp aliasing
-    // DOT-STYLE MARKERS: Circles centered on candles (inBar position)
-    if(T.m&&T.m.length>0){
-      setTimeout(()=>{
-        try{
-          // Filter markers to only those with timestamps matching candle times
-          // Ensure all markers use circle shape and inBar position for consistency
-          const validMarkers=T.m.filter(m=>candleTimeSet.has(m.time)).map(m=>({
-            time:m.time,
-            position:m.position||'inBar',
-            color:m.color,
-            shape:m.shape||'circle',
-            text:m.text||'',
-            size:m.size||2
-          }));
-          if(validMarkers.length>0){
-            cs.setMarkers(validMarkers);
-          }
-        }catch(e){console.warn('Markers error:',e);}
-      },0);
+
+    // Stable trade markers on candle chart.
+    // Guardamos el array y lo re-aplicamos en cada cambio de rango visible
+    // para evitar cualquier parpadeo durante scroll/zoom.
+    if(T.m && T.m.length>0){
+      try{
+        const candleMarkers=T.m.map(m=>({
+          time:m.time,
+          position:m.position||'inBar',
+          color:m.color,
+          shape:m.shape||'circle',
+          text:m.text||'',
+          size:m.size||2
+        }));
+        cs.setMarkers(candleMarkers);
+        mc.timeScale().subscribeVisibleTimeRangeChange(()=>{
+          cs.setMarkers(candleMarkers);
+        });
+      }catch(e){console.warn('Markers error:',e);}    
     }
   }
 
@@ -1499,25 +1510,25 @@ if(I.sub_panels && Array.isArray(I.sub_panels)){
         }
       }
       
-      // === CROSS-PANEL MARKERS: Inject trade markers on indicator panel ===
-      // Use candle timestamp set for marker validation (strict alignment)
+      // Sub-panels ya muestran la información del precio/indicador;
+      // REPINTADO ROBUSTO DE MARCADORES EN LOS SUB-PANELES
+      // Dibujamos los mismos marcadores de trade también sobre el indicador
+      // principal del panel para que nunca desaparezcan al hacer scroll.
       if(mainSeries && T.m && T.m.length>0){
-        setTimeout(()=>{
-          try{
-            // Filter markers that exist in candle timestamps (aligned)
-            const candleTimeSet=new Set(D.t);
-            const panelMarkers=T.m.filter(m=>candleTimeSet.has(m.time)).map(m=>({
-              time:m.time,
-              position:'inBar',
-              color:m.color,
-              shape:'circle',
-              size:1
-            }));
-            if(panelMarkers.length>0){
-              mainSeries.setMarkers(panelMarkers);
-            }
-          }catch(e){console.warn('Sub-panel markers error:',e);}
-        },50);
+        try{
+          const panelMarkers=T.m.map(m=>({
+            time:m.time,
+            position:m.position||'inBar',
+            color:m.color,
+            shape:m.shape||'circle',
+            text:m.text||'',
+            size:m.size||2
+          }));
+          mainSeries.setMarkers(panelMarkers);
+          pc.timeScale().subscribeVisibleTimeRangeChange(()=>{
+            mainSeries.setMarkers(panelMarkers);
+          });
+        }catch(e){console.warn('Sub-panel markers error:',panel.name,e);}
       }
     }catch(e){
       console.warn('Sub-panel error:',panel.name,e);

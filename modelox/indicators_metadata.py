@@ -306,6 +306,17 @@ _OSCILLATOR_INDICATORS = [
             oversold=-2,
         ),
     ),
+    IndicatorMetadata(
+        name="ou_x",
+        display_name="OU State",
+        indicator_type="oscillator",
+        color="#22d3ee",
+        range_info=IndicatorRange(
+            min_value=-5,
+            max_value=5,
+            neutral=0,
+        ),
+    ),
 ]
 
 # =============================================================================

@@ -257,26 +257,43 @@ def _build_performance_grid(metrics: Dict[str, Any]) -> Table:
     sharpe = M.get_float(metrics, "sharpe")
     drawdown = M.get_float(metrics, "drawdown")
     total_trades = M.get_int(metrics, "total_trades")
+    expectancy = M.get_float(metrics, "expectativa")
+    trades_per_day = M.get_float(metrics, "trades_por_dia")
+    longs = M.get_int(metrics, "count_longs")
+    shorts = M.get_int(metrics, "count_shorts")
     
     grid = Table.grid(padding=(0, 2), expand=True)
     grid.add_column("label", style=THEME.TEXT_SECONDARY, width=14)
     grid.add_column("value", justify="right")
     
+    # Winrate y resto neutros (sin colores agresivos)
     grid.add_row(
         "Win Rate",
-        fmt_styled(winrate, 1, "%", get_metric_color(winrate, 55, 45))
+        fmt_number(winrate, 1, "%")
+    )
+
+    # Expectativa: única métrica de performance en rojo/verde
+    exp_color = get_pnl_color(expectancy)
+    grid.add_row(
+        "Expectativa",
+        fmt_styled(expectancy, 2, "", exp_color)
+    )
+
+    grid.add_row(
+        "Trades/Día",
+        fmt_number(trades_per_day, 2, "")
+    )
+    grid.add_row(
+        "Sharpe",
+        fmt_number(sharpe, 2, "")
     )
     grid.add_row(
         "Profit Factor",
-        fmt_styled(profit_factor, 2, "", get_metric_color(profit_factor, 1.5, 1.0))
-    )
-    grid.add_row(
-        "Sharpe Ratio",
-        fmt_styled(sharpe, 2, "", get_metric_color(sharpe, 1.5, 0.5))
+        fmt_number(profit_factor, 2, "")
     )
     grid.add_row(
         "Max Drawdown",
-        fmt_styled(drawdown, 1, "%", get_metric_color(drawdown, 15, 30, higher_is_better=False))
+        fmt_number(drawdown, 1, "%")
     )
     grid.add_row(
         f"[{THEME.TEXT_DIM}]───────────────────[/]", ""
@@ -284,6 +301,10 @@ def _build_performance_grid(metrics: Dict[str, Any]) -> Table:
     grid.add_row(
         "Total Trades",
         f"[{THEME.ACCENT}]{total_trades}[/]"
+    )
+    grid.add_row(
+        "Long / Short",
+        f"[{THEME.TEXT_PRIMARY}]{longs}[/]  /  [{THEME.TEXT_PRIMARY}]{shorts}[/]"
     )
     
     return grid
@@ -297,56 +318,59 @@ def _build_financials_grid(metrics: Dict[str, Any], saldo_inicial: float) -> Tab
     M = MetricMapper
     
     saldo_final = M.get_float(metrics, "saldo_actual", saldo_inicial)
+    saldo_min = M.get_float(metrics, "saldo_min", saldo_inicial)
+    saldo_max = M.get_float(metrics, "saldo_max", saldo_inicial)
+    saldo_mean = M.get_float(metrics, "saldo_mean", saldo_inicial)
     comisiones = M.get_float(metrics, "comisiones_total")
+    roi = M.get_float(metrics, "roi") if saldo_inicial > 0 else 0.0
     pnl_neto = saldo_final - saldo_inicial
-    roi = (pnl_neto / saldo_inicial * 100) if saldo_inicial > 0 else 0.0
     
     grid = Table.grid(padding=(0, 2), expand=True)
     grid.add_column("label", style=THEME.TEXT_SECONDARY, width=14)
     grid.add_column("value", justify="right")
     
-    # PnL Neto (main metric)
+    # PnL Neto (principal) - único campo financiero con rojo/verde fuerte
     pnl_sign = "+" if pnl_neto >= 0 else ""
     pnl_color = get_pnl_color(pnl_neto)
     grid.add_row(
         "[bold]PnL Neto[/]",
         f"[bold {pnl_color}]{pnl_sign}${pnl_neto:,.2f}[/]"
     )
-    
-    # ROI
-    roi_sign = "+" if roi >= 0 else ""
+
+    # ROI (neutro)
     grid.add_row(
         "ROI",
-        fmt_styled(roi, 1, "%", get_pnl_color(roi))
+        fmt_number(roi, 1, "%")
     )
-    
+
     grid.add_row(
         f"[{THEME.TEXT_DIM}]───────────────────[/]", ""
     )
-    
+
+    # Balances
+    grid.add_row("Saldo Inicial", f"[{THEME.TEXT_PRIMARY}]${saldo_inicial:,.2f}[/]")
+    grid.add_row("Saldo Mínimo", f"[{THEME.TEXT_PRIMARY}]${saldo_min:,.2f}[/]")
+    grid.add_row("Saldo Medio", f"[{THEME.TEXT_PRIMARY}]${saldo_mean:,.2f}[/]")
+    grid.add_row("Saldo Final", f"[{THEME.TEXT_PRIMARY}]${saldo_final:,.2f}[/]")
+
+    grid.add_row(
+        f"[{THEME.TEXT_DIM}]───────────────────[/]", ""
+    )
+
     # Comisiones
     grid.add_row(
         "Comisiones",
         f"[{THEME.WARNING}]${comisiones:,.2f}[/]"
     )
     
-    # Saldo Final
-    grid.add_row(
-        "Saldo Final",
-        f"[{THEME.TEXT_PRIMARY}]${saldo_final:,.2f}[/]"
-    )
-    
     return grid
 
 
-def _build_params_grid(params: Dict[str, Any], max_params: int = 5) -> Table:
-    """
-    Build PARAMS column grid.
-    Shows top 5 strategy parameters in compact form.
-    """
+def _build_params_grid(params: Dict[str, Any], max_params: int = 0) -> Table:
+    """Build PARAMS column grid showing all Optuna parameters for this trial."""
+
     grid = Table.grid(padding=(0, 1), expand=True)
-    grid.add_column("param", style=THEME.TEXT_MUTED, width=12)
-    grid.add_column("eq", style=THEME.TEXT_DIM, width=1)
+    grid.add_column("param", style=THEME.TEXT_MUTED, width=18)
     grid.add_column("value", style=THEME.TEXT_PRIMARY, justify="left")
     
     # Filter params (exclude internal __ prefixed)
@@ -355,8 +379,9 @@ def _build_params_grid(params: Dict[str, Any], max_params: int = 5) -> Table:
         if not str(k).startswith("__") and k not in {"NOMBRE_COMBO"}
     }
     
-    # Sort and limit
-    sorted_keys = sorted(clean_params.keys())[:max_params]
+    # Sort keys alphabetically; show all (max_params==0 => no limit)
+    sorted_keys_all = sorted(clean_params.keys())
+    sorted_keys = sorted_keys_all if max_params == 0 else sorted_keys_all[:max_params]
     
     for key in sorted_keys:
         value = clean_params[key]
@@ -379,12 +404,13 @@ def _build_params_grid(params: Dict[str, Any], max_params: int = 5) -> Table:
         else:
             val_str = str(value)[:10]
         
-        grid.add_row(pname, "=", val_str)
+        # Render as "Nombre Param = valor" en dos columnas claras
+        grid.add_row(pname, f"= {val_str}")
     
     # Show "+N more" if truncated
-    remaining = len(clean_params) - max_params
-    if remaining > 0:
-        grid.add_row(f"[{THEME.TEXT_DIM}]+{remaining} more[/]", "", "")
+    if max_params and len(clean_params) > max_params:
+        remaining = len(clean_params) - max_params
+        grid.add_row(f"[{THEME.TEXT_DIM}]+{remaining} more[/]", "")
     
     return grid
 
