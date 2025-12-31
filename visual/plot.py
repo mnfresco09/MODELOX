@@ -132,6 +132,12 @@ INDICATOR_COLORS = {
     "hma": "#ec4899",        # Pink
     "donchian_hi": "#22c55e", # Green
     "donchian_lo": "#ef4444", # Red
+
+    # ALMA family (Strategy 2000)
+    "alma": "#fbbf24",
+    "alma_5": "#22c55e",   # Green
+    "alma_25": "#fbbf24",  # Amber
+    "alma_60": "#ef4444",  # Red
     
     # Nadaraya-Watson
     "nw_baseline": "#a78bfa", # Purple
@@ -206,6 +212,7 @@ OVERLAY_INDICATORS = {
     # Moving Averages
     "ema", "ema_200", "ema200_mtf", "ema_50", "ema_20", "ema_base",
     "sma", "wma", "hma", "vwma", "vwap_session",
+    "alma", "alma_5", "alma_25", "alma_60",
     "kama", "kalman",
     
     # Trend

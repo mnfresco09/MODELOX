@@ -42,13 +42,22 @@ class OptimizationRunner:
             nonlocal best_score_so_far
             params_puros = strategy.suggest_params(trial)
 
+            # Runtime params: include config so strategies can do sizing-aware exits if needed.
+            # Kept under __ prefix so reporters can ignore them.
+            params_rt = dict(params_puros)
+            params_rt["__saldo_operativo_max"] = float(self.config.saldo_operativo_max)
+            params_rt["__apalancamiento"] = float(self.config.apalancamiento)
+            params_rt["__qty_max_activo"] = float(self.config.qty_max_activo)
+            params_rt["__comision_pct"] = float(self.config.comision_pct)
+            params_rt["__comision_sides"] = int(self.config.comision_sides)
+
             # 1. Generación de señales en Polars
-            df_signals = strategy.generate_signals(df, params_puros)
+            df_signals = strategy.generate_signals(df, params_rt)
 
             # 2. Generación y simulación de trades
             trades_base = generate_trades(
                 df_signals,
-                params_puros,
+                params_rt,
                 saldo_apertura=saldo_apertura,
                 strategy=strategy,
             )

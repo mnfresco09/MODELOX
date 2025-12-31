@@ -262,6 +262,341 @@ def hma(
 
 
 # =============================================================================
+# ### ALMA - ARNAUD LEGOUX MOVING AVERAGE ###
+# =============================================================================
+
+
+@njit(cache=True, fastmath=True)
+def _alma_numba(src: np.ndarray, length: int, offset: float, sigma: float) -> np.ndarray:
+    """ALMA smoothing.
+
+    Uses Gaussian weights centered at m = offset*(length-1) with width sigma.
+    """
+    n = len(src)
+    out = np.full(n, np.nan, dtype=np.float64)
+    if length <= 0 or n < length:
+        return out
+
+    m = offset * (length - 1)
+    s = max(1e-6, float(sigma))
+    denom = 2.0 * s * s
+
+    # Precompute weights (fixed for given length/offset/sigma)
+    w = np.empty(length, dtype=np.float64)
+    wsum = 0.0
+    for i in range(length):
+        x = float(i) - m
+        wi = np.exp(-(x * x) / denom)
+        w[i] = wi
+        wsum += wi
+
+    for t in range(length - 1, n):
+        acc = 0.0
+        ok = True
+        # align: i=0 refers to oldest in window, i=length-1 newest
+        for i in range(length):
+            v = src[t - (length - 1 - i)]
+            if np.isnan(v):
+                ok = False
+                break
+            acc += v * w[i]
+        if not ok or wsum <= 0.0:
+            continue
+        out[t] = acc / wsum
+
+    return out
+
+
+def alma(
+    df: pl.DataFrame,
+    *,
+    length: int = 20,
+    offset: float = 0.85,
+    sigma: float = 7.0,
+    col: str = "close",
+    out: str = "alma",
+) -> pl.DataFrame:
+    """ALMA (Arnaud Legoux Moving Average) - Numba optimized."""
+    if col not in df.columns:
+        return df.with_columns(pl.lit(None).cast(pl.Float64).alias(out))
+    src = np.ascontiguousarray(df[col].to_numpy().astype(np.float64))
+    vals = _alma_numba(src, int(length), float(offset), float(sigma))
+    return df.with_columns(pl.Series(out, vals))
+
+
+# =============================================================================
+# ### CHANDE MOMENTUM OSCILLATOR (CMO) ###
+# =============================================================================
+
+
+@njit(cache=True, fastmath=True)
+def _chande_mo_numba(close: np.ndarray, length: int) -> np.ndarray:
+    """Chande Momentum Oscillator-style value in [-100, 100]."""
+    n = len(close)
+    out = np.full(n, np.nan, dtype=np.float64)
+    if length <= 0 or n < length + 1:
+        return out
+
+    # diffs
+    diff = np.full(n, np.nan, dtype=np.float64)
+    for i in range(1, n):
+        a = close[i]
+        b = close[i - 1]
+        if np.isnan(a) or np.isnan(b):
+            continue
+        diff[i] = a - b
+
+    for i in range(length, n):
+        up = 0.0
+        dn = 0.0
+        ok = True
+        for j in range(i - length + 1, i + 1):
+            d = diff[j]
+            if np.isnan(d):
+                ok = False
+                break
+            if d >= 0.0:
+                up += d
+            else:
+                dn += -d
+        if not ok:
+            continue
+        denom = up + dn
+        if denom < _EPSILON:
+            out[i] = 0.0
+        else:
+            out[i] = 100.0 * (up - dn) / denom
+    return out
+
+
+def chande_mo(
+    df: pl.DataFrame,
+    *,
+    length: int = 9,
+    col: str = "close",
+    out: str = "chande_mo",
+) -> pl.DataFrame:
+    """Chande Momentum Oscillator (CMO-style) - Numba optimized."""
+    if col not in df.columns:
+        return df.with_columns(pl.lit(None).cast(pl.Float64).alias(out))
+    src = np.ascontiguousarray(df[col].to_numpy().astype(np.float64))
+    vals = _chande_mo_numba(src, int(length))
+    return df.with_columns(pl.Series(out, vals))
+
+
+# =============================================================================
+# ### ASGMA - ALMA Smoothed Gaussian Moving Average (oscillator version) ###
+# =============================================================================
+
+
+@njit(cache=True, fastmath=True)
+def _rolling_std_numba(src: np.ndarray, window: int) -> np.ndarray:
+    n = len(src)
+    out = np.full(n, np.nan, dtype=np.float64)
+    if window <= 1 or n < window:
+        return out
+    for i in range(window - 1, n):
+        s = 0.0
+        ss = 0.0
+        ok = True
+        for j in range(i - window + 1, i + 1):
+            x = src[j]
+            if np.isnan(x):
+                ok = False
+                break
+            s += x
+            ss += x * x
+        if not ok:
+            continue
+        mean = s / window
+        var = ss / window - mean * mean
+        out[i] = np.sqrt(var) if var > 0.0 else 0.0
+    return out
+
+
+@njit(cache=True)
+def _ema_nanaware_numba(src: np.ndarray, period: int) -> np.ndarray:
+    """EMA that can start after leading NaNs.
+
+    Seeds with the first window of `period` consecutive finite values.
+    If a later value is NaN, it carries forward the previous EMA.
+    """
+    n = len(src)
+    out = np.full(n, np.nan, dtype=np.float64)
+    if period <= 0 or n < period:
+        return out
+
+    alpha = 2.0 / (period + 1.0)
+
+    start = -1
+    for i in range(period - 1, n):
+        ok = True
+        total = 0.0
+        for j in range(i - period + 1, i + 1):
+            v = src[j]
+            if np.isnan(v):
+                ok = False
+                break
+            total += v
+        if ok:
+            out[i] = total / period
+            start = i
+            break
+
+    if start < 0:
+        return out
+
+    for i in range(start + 1, n):
+        v = src[i]
+        prev = out[i - 1]
+        if np.isnan(prev):
+            continue
+        if np.isnan(v):
+            out[i] = prev
+        else:
+            out[i] = alpha * v + (1.0 - alpha) * prev
+
+    return out
+
+
+@njit(cache=True)
+def _asgma_numba(
+    close: np.ndarray,
+    smooth: int,
+    alma_len: int,
+    alma_offset: float,
+    alma_sigma: float,
+    gma_len: int,
+    adaptive: int,
+    vol_period: int,
+    sigma_fixed: float,
+    gma_ema: int,
+) -> tuple[np.ndarray, np.ndarray]:
+    """Compute ASGMA core series.
+
+    avpchange:
+      pchange = change(close, smooth)/close * 100
+      avpchange = ALMA(pchange, alma_len, alma_offset, alma_sigma)
+
+    gma:
+      gaussian-weighted average of midrange(highest+lowest)/2 of avpchange over variable windows,
+      optionally with adaptive sigma=stdev(close, vol_period), then EMA(gma, gma_ema)
+    """
+
+    n = len(close)
+    pchg = np.full(n, np.nan, dtype=np.float64)
+    for i in range(smooth, n):
+        c = close[i]
+        prev = close[i - smooth]
+        if np.isnan(c) or np.isnan(prev) or abs(c) < _EPSILON:
+            continue
+        pchg[i] = (c - prev) / c * 100.0
+
+    avp = _alma_numba(pchg, alma_len, alma_offset, alma_sigma)
+
+    # sigma series
+    if adaptive != 0:
+        sig = _rolling_std_numba(close, vol_period)
+    else:
+        sig = np.full(n, float(sigma_fixed), dtype=np.float64)
+
+    gma = np.full(n, np.nan, dtype=np.float64)
+    start_t = gma_len - 1
+    if adaptive != 0 and vol_period - 1 > start_t:
+        start_t = vol_period - 1
+    if alma_len - 1 > start_t:
+        start_t = alma_len - 1
+
+    for t in range(start_t, n):
+        sigma_t = sig[t]
+        if np.isnan(sigma_t) or sigma_t < 0.1:
+            sigma_t = max(0.1, float(sigma_fixed))
+
+        denom_sigma = 2.0 * sigma_t
+        if denom_sigma < 1e-6:
+            denom_sigma = 1e-6
+
+        sum_w = 0.0
+        acc = 0.0
+
+        # weights depend on i and sigma_t
+        for i in range(gma_len):
+            # i goes 0..len-1
+            x = (float(i) - float(gma_len - 1)) / denom_sigma
+            w = np.exp(-(x * x) / 2.0)
+
+            win = i + 1
+            hi = -1e308
+            lo = 1e308
+            ok = True
+            for j in range(t - win + 1, t + 1):
+                v = avp[j]
+                if np.isnan(v):
+                    ok = False
+                    break
+                if v > hi:
+                    hi = v
+                if v < lo:
+                    lo = v
+            if not ok:
+                continue
+
+            value = (hi + lo) * 0.5
+            acc += value * w
+            sum_w += w
+
+        if sum_w > 0.0:
+            gma[t] = acc / sum_w
+
+    # smooth gma with EMA (NaN-aware)
+    gma_sm = _ema_nanaware_numba(gma, int(gma_ema))
+    return avp, gma_sm
+
+
+def asgma(
+    df: pl.DataFrame,
+    *,
+    col: str = "close",
+    smooth: int = 1,
+    alma_len: int = 25,
+    alma_offset: float = 0.85,
+    alma_sigma: float = 7.0,
+    gma_len: int = 14,
+    adaptive: bool = True,
+    volatility_period: int = 20,
+    sigma_fixed: float = 1.0,
+    gma_ema: int = 7,
+    out_avpchange: str = "asgma_avpchange",
+    out_gma: str = "asgma_gma",
+) -> pl.DataFrame:
+    """ALMA-smoothed percent change + Gaussian moving average of that signal."""
+    if col not in df.columns:
+        return df.with_columns([
+            pl.lit(None).cast(pl.Float64).alias(out_avpchange),
+            pl.lit(None).cast(pl.Float64).alias(out_gma),
+        ])
+
+    close = np.ascontiguousarray(df[col].to_numpy().astype(np.float64))
+    avp, gma_vals = _asgma_numba(
+        close,
+        int(smooth),
+        int(alma_len),
+        float(alma_offset),
+        float(alma_sigma),
+        int(gma_len),
+        1 if adaptive else 0,
+        int(volatility_period),
+        float(sigma_fixed),
+        int(gma_ema),
+    )
+
+    return df.with_columns([
+        pl.Series(out_avpchange, avp),
+        pl.Series(out_gma, gma_vals),
+    ])
+
+
+# =============================================================================
 # ### RSI - RELATIVE STRENGTH INDEX ###
 # =============================================================================
 
@@ -2484,6 +2819,129 @@ def mfi_slope(
 
 
 # =============================================================================
+# ### MFI 2ND DERIVATIVE (MFI D2) ###
+# =============================================================================
+
+
+@njit(cache=True, fastmath=False)
+def _mfi_d2_numba(mfi_arr: np.ndarray) -> np.ndarray:
+    """Second derivative (discrete) of MFI: d2[t] = mfi[t] - 2*mfi[t-1] + mfi[t-2]."""
+    n = len(mfi_arr)
+    out = np.full(n, np.nan, dtype=np.float64)
+    if n < 3:
+        return out
+    for i in range(2, n):
+        a = mfi_arr[i]
+        b = mfi_arr[i - 1]
+        c = mfi_arr[i - 2]
+        if np.isnan(a) or np.isnan(b) or np.isnan(c):
+            continue
+        out[i] = a - 2.0 * b + c
+    return out
+
+
+def mfi_d2(
+    df: pl.DataFrame,
+    *,
+    mfi_col: str = "mfi",
+    out: str = "mfi_d2",
+) -> pl.DataFrame:
+    """MFI second derivative (discrete) computed from an existing MFI column."""
+    if mfi_col not in df.columns:
+        return df.with_columns(pl.lit(None).cast(pl.Float64).alias(out))
+    mfi_arr = np.ascontiguousarray(df[mfi_col].to_numpy().astype(np.float64))
+    d2_vals = _mfi_d2_numba(mfi_arr)
+    return df.with_columns(pl.Series(out, d2_vals))
+
+
+# =============================================================================
+# ### ACCELERATION OSCILLATOR (Savitzky-Golay Simulated) ###
+# =============================================================================
+
+
+@njit(cache=True, fastmath=True)
+def _rolling_zscore_numba(src: np.ndarray, window: int) -> np.ndarray:
+    """Rolling Z-Score with strict window (NaN if any NaN in window)."""
+    n = len(src)
+    out = np.full(n, np.nan, dtype=np.float64)
+    if window <= 1 or n < window:
+        return out
+
+    for i in range(window - 1, n):
+        s = 0.0
+        ss = 0.0
+        ok = True
+        for j in range(i - window + 1, i + 1):
+            x = src[j]
+            if np.isnan(x):
+                ok = False
+                break
+            s += x
+            ss += x * x
+        if not ok:
+            continue
+        mean = s / window
+        var = ss / window - mean * mean
+        if var <= 0.0:
+            out[i] = 0.0
+        else:
+            out[i] = (src[i] - mean) / np.sqrt(var)
+    return out
+
+
+@njit(cache=True, fastmath=True)
+def _accel_sg_norm_numba(close: np.ndarray, wma_period: int, z_window: int) -> np.ndarray:
+    """Compute normalized acceleration oscillator in [-3, 3].
+
+    Steps:
+      s1 = WMA(close, p)
+      s2 = WMA(s1, p)
+      s3 = WMA(s2, p)
+      accel = s1 - 2*s2 + s3
+      z = zscore(accel, z_window)
+      out = 3 * tanh(z)
+    """
+    s1 = _wma_numba(close, int(wma_period))
+    s2 = _wma_numba(s1, int(wma_period))
+    s3 = _wma_numba(s2, int(wma_period))
+
+    n = len(close)
+    accel = np.full(n, np.nan, dtype=np.float64)
+    for i in range(n):
+        a = s1[i]
+        b = s2[i]
+        c = s3[i]
+        if np.isnan(a) or np.isnan(b) or np.isnan(c):
+            continue
+        accel[i] = a - 2.0 * b + c
+
+    z = _rolling_zscore_numba(accel, int(z_window))
+    out = np.full(n, np.nan, dtype=np.float64)
+    for i in range(n):
+        zi = z[i]
+        if np.isnan(zi):
+            continue
+        out[i] = 3.0 * np.tanh(zi)
+    return out
+
+
+def accel_sg(
+    df: pl.DataFrame,
+    *,
+    wma_period: int = 29,
+    z_window: int = 20,
+    col: str = "close",
+    out: str = "accel_sg",
+) -> pl.DataFrame:
+    """Savitzky-Golay simulated acceleration oscillator (normalized to [-3, 3])."""
+    if col not in df.columns:
+        return df.with_columns(pl.lit(None).cast(pl.Float64).alias(out))
+    src = np.ascontiguousarray(df[col].to_numpy().astype(np.float64))
+    vals = _accel_sg_norm_numba(src, int(wma_period), int(z_window))
+    return df.with_columns(pl.Series(out, vals))
+
+
+# =============================================================================
 # ### EMA200 MTF (Multi-Timeframe) ###
 # =============================================================================
 
@@ -2723,6 +3181,7 @@ class IndicadorFactory:
             "sma": _wrap(sma),
             "wma": _wrap(wma),
             "hma": _wrap(hma),
+            "alma": _wrap(alma),
             "vwma": _wrap(vwma),
             "kama": _wrap(kama),
             "ema200_mtf": _wrap(ema200_mtf),
@@ -2734,6 +3193,10 @@ class IndicadorFactory:
             "dpo": _wrap(dpo),
             "mfi": _wrap(mfi),
             "mfi_slope": _wrap(mfi_slope),
+            "mfi_d2": _wrap(mfi_d2),
+            "accel_sg": _wrap(accel_sg),
+            "chande_mo": _wrap(chande_mo),
+            "asgma": _wrap(asgma),
             "stc": _wrap(stc),
             "laguerre_rsi": _wrap(laguerre_rsi),
             "choppiness_index": _wrap(choppiness_index),

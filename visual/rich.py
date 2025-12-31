@@ -351,6 +351,7 @@ def _build_financials_grid(metrics: Dict[str, Any], saldo_inicial: float) -> Tab
     grid.add_row("Saldo Inicial", f"[{THEME.TEXT_PRIMARY}]${saldo_inicial:,.2f}[/]")
     grid.add_row("Saldo Mínimo", f"[{THEME.TEXT_PRIMARY}]${saldo_min:,.2f}[/]")
     grid.add_row("Saldo Medio", f"[{THEME.TEXT_PRIMARY}]${saldo_mean:,.2f}[/]")
+    grid.add_row("Saldo Máximo", f"[{THEME.TEXT_PRIMARY}]${saldo_max:,.2f}[/]")
     grid.add_row("Saldo Final", f"[{THEME.TEXT_PRIMARY}]${saldo_final:,.2f}[/]")
 
     grid.add_row(

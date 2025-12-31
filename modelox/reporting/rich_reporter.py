@@ -52,9 +52,20 @@ class ElegantRichReporter(Reporter):
             if isinstance(raw, (list, tuple)):
                 indicadores = [str(x) for x in raw if x]
         
+        # Enrich metrics (e.g., saldo_max) from equity curve if available.
+        metrics = dict(artifacts.metrics or {})
+        try:
+            eq = getattr(artifacts, "equity_curve", None)
+            if isinstance(eq, (list, tuple)) and len(eq) > 0:
+                if "saldo_max" not in metrics or metrics.get("saldo_max") in (None, 0, 0.0):
+                    metrics["saldo_max"] = float(max(eq))
+        except Exception:
+            # Never break reporting due to optional metrics enrichment.
+            pass
+
         # Display panel
         mostrar_panel_elegante(
-            metrics=artifacts.metrics or {},
+            metrics=metrics,
             params=artifacts.params or {},
             score=artifacts.score or 0,
             trial_num=artifacts.trial_number,

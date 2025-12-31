@@ -230,6 +230,17 @@ _OSCILLATOR_INDICATORS = [
         ),
     ),
     IndicatorMetadata(
+        name="chande_mo",
+        display_name="Chande MO",
+        indicator_type="oscillator",
+        color="#f472b6",
+        range_info=IndicatorRange(
+            min_value=-100,
+            max_value=100,
+            neutral=0,
+        ),
+    ),
+    IndicatorMetadata(
         name="dpo",
         display_name="DPO",
         indicator_type="oscillator",
@@ -251,6 +262,17 @@ _OSCILLATOR_INDICATORS = [
             neutral=50,
             overbought=80,
             oversold=20,
+        ),
+    ),
+    IndicatorMetadata(
+        name="mfi_d2",
+        display_name="MFI D2",
+        indicator_type="oscillator",
+        color="#22d3ee",
+        range_info=IndicatorRange(
+            min_value=-100,
+            max_value=100,
+            neutral=0,
         ),
     ),
     IndicatorMetadata(
@@ -307,6 +329,41 @@ _OSCILLATOR_INDICATORS = [
         ),
     ),
     IndicatorMetadata(
+        name="asgma_avpchange",
+        display_name="ASGMA AvPChange",
+        indicator_type="oscillator",
+        color="#34d399",
+        range_info=IndicatorRange(
+            min_value=-100,
+            max_value=100,
+            neutral=0,
+        ),
+    ),
+    IndicatorMetadata(
+        name="asgma_gma",
+        display_name="ASGMA GMA",
+        indicator_type="oscillator",
+        color="#ef4444",
+        range_info=IndicatorRange(
+            min_value=-100,
+            max_value=100,
+            neutral=0,
+        ),
+    ),
+    IndicatorMetadata(
+        name="accel_sg",
+        display_name="Accel (SG Sim)",
+        indicator_type="oscillator",
+        color="#22d3ee",
+        range_info=IndicatorRange(
+            min_value=-3,
+            max_value=3,
+            neutral=0,
+            overbought=2,
+            oversold=-2,
+        ),
+    ),
+    IndicatorMetadata(
         name="ou_x",
         display_name="OU State",
         indicator_type="oscillator",
@@ -343,6 +400,27 @@ _TREND_INDICATORS = [
         display_name="Donchian Low",
         indicator_type="overlay",
         color="#ef4444",
+        range_info=IndicatorRange(min_value=0, max_value=float('inf')),
+    ),
+    IndicatorMetadata(
+        name="bb_basis",
+        display_name="BB Basis",
+        indicator_type="overlay",
+        color="#94a3b8",
+        range_info=IndicatorRange(min_value=0, max_value=float('inf')),
+    ),
+    IndicatorMetadata(
+        name="bb_upper",
+        display_name="BB Upper",
+        indicator_type="overlay",
+        color="#ef4444",
+        range_info=IndicatorRange(min_value=0, max_value=float('inf')),
+    ),
+    IndicatorMetadata(
+        name="bb_lower",
+        display_name="BB Lower",
+        indicator_type="overlay",
+        color="#22c55e",
         range_info=IndicatorRange(min_value=0, max_value=float('inf')),
     ),
 ]

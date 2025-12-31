@@ -17,6 +17,32 @@ All data files are in 5-minute OHLCV format.
 # Options: 'BTC', 'GOLD', 'SP500', 'NASDAQ'
 ACTIVO = "GOLD"
 
+
+def _normalize_activos(v):
+    """Normaliza ACTIVO a una lista de strings (upper) sin vacíos.
+
+    Permite:
+    - "GOLD" (single)
+    - "GOLD,BTC" (comma-separated)
+    - ["GOLD", "BTC"] (list/tuple)
+    """
+    if isinstance(v, (list, tuple)):
+        raw = [str(x) for x in v]
+    else:
+        raw = str(v).split(",")
+    out = []
+    for a in raw:
+        a = a.strip()
+        if not a:
+            continue
+        out.append(a.upper())
+    return out or ["GOLD"]
+
+
+# Multi-asset support: ejecutar.py can iterate ACTIVOS sequentially.
+ACTIVOS = _normalize_activos(ACTIVO)
+ACTIVO_PRIMARIO = ACTIVOS[0]
+
 # ============================================================================
 # DATA PATHS (5-Minute OHLCV Parquet)
 # ============================================================================
@@ -34,7 +60,14 @@ _DATA_MAP = {
     "NASDAQ": ARCHIVO_DATA_NASDAQ,
     "NDX": ARCHIVO_DATA_NASDAQ,  # Alias
 }
-ARCHIVO_DATA = _DATA_MAP.get(ACTIVO.upper(), ARCHIVO_DATA_GOLD)
+
+
+def resolve_archivo_data(activo: str) -> str:
+    return _DATA_MAP.get(str(activo).upper(), ARCHIVO_DATA_GOLD)
+
+
+# Backward compatibility: single path points to the primary asset.
+ARCHIVO_DATA = resolve_archivo_data(ACTIVO_PRIMARIO)
 
 # ============================================================================
 # CAPITAL & EXECUTION SETTINGS
@@ -42,7 +75,7 @@ ARCHIVO_DATA = _DATA_MAP.get(ACTIVO.upper(), ARCHIVO_DATA_GOLD)
 SALDO_INICIAL = 300
 SALDO_OPERATIVO_MAX = 300
 APALANCAMIENTO = 50
-COMISION_PCT = 0.0005
+COMISION_PCT = 0.00043
 COMISION_SIDES = 1  # 1 = one-way, 2 = round-trip
 SALDO_MINIMO_OPERATIVO = 5  # Hard stop when balance <= this value
 
@@ -53,25 +86,32 @@ SALDO_MINIMO_OPERATIVO = 5  # Hard stop when balance <= this value
 # This is the MAXIMUM AUTHORITY - even if leverage allows more, 
 # the bot will never exceed this limit.
 _QTY_MAX_MAP = {
-    "BTC": 0.07,       # 0.07 BTC max per trade
-    "GOLD": 1.5,       # 2.5 oz Gold max per trade
+    "BTC": 0.065,       # 0.07 BTC max per trade
+    "GOLD": 2.25,       # 2.5 oz Gold max per trade
     "SP500": 2.5,      # 3 contracts SP500 max
     "NASDAQ": 0.2,     # 3 contracts NASDAQ max
 }
-QTY_MAX_ACTIVO = _QTY_MAX_MAP.get(ACTIVO.upper(), 3.0)
+
+
+def resolve_qty_max_activo(activo: str) -> float:
+    return float(_QTY_MAX_MAP.get(str(activo).upper(), 3.0))
+
+
+# Backward compatibility: single qty limit points to the primary asset.
+QTY_MAX_ACTIVO = resolve_qty_max_activo(ACTIVO_PRIMARIO)
 
 # ============================================================================
 # DATE RANGES (Backtest & Plot)
 # ============================================================================
-FECHA_INICIO = "2024-11-21"
-FECHA_FIN = "2025-11-15"
-FECHA_INICIO_PLOT = "2024-11-21"
-FECHA_FIN_PLOT = "2024-12-15"
+FECHA_INICIO = "2024-01-21"
+FECHA_FIN = "2024-11-15"
+FECHA_INICIO_PLOT = "2024-01-22"
+FECHA_FIN_PLOT = "2024-02-15"
 
 # ============================================================================
 # OPTUNA OPTIMIZATION
 # ============================================================================
-N_TRIALS = 15
+N_TRIALS = 300
 OPTUNA_N_JOBS = 1      # Parallel jobs (1 = sequential)
 OPTUNA_SEED = None     # None = random seed each run
 OPTUNA_STORAGE = None  # None = in-memory, or SQLite path
@@ -95,7 +135,7 @@ OPTUNA_STORAGE = None  # None = in-memory, or SQLite path
 # Multiple:         COMBINACION_A_EJECUTAR = [3, 4, 7, 9, 10]
 # All available:    COMBINACION_A_EJECUTAR = "all"
 #
-COMBINACION_A_EJECUTAR = [3]
+COMBINACION_A_EJECUTAR = [6666]
 
 # ============================================================================
 # OUTPUT SETTINGS
@@ -108,7 +148,10 @@ USAR_EXCEL = True         # Generate Excel reports
 # UNIFIED CONFIG DICT (For Backward Compatibility)
 # ============================================================================
 CONFIG = {
-    "ACTIVO": ACTIVO,
+    # Backward compatibility: expose one ACTIVO as the primary one.
+    "ACTIVO": ACTIVO_PRIMARIO,
+    # New: list of assets to run sequentially.
+    "ACTIVOS": ACTIVOS,
     "TIMEFRAME": "5m",
     "SALDO_INICIAL": SALDO_INICIAL,
     "SALDO_OPERATIVO_MAX": SALDO_OPERATIVO_MAX,

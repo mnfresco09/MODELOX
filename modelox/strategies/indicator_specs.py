@@ -55,6 +55,24 @@ def cfg_ema(*, period: int, out: str = "ema_200", col: str = "close") -> Dict[st
     return {"activo": True, "period": int(period), "col": col, "out": out}
 
 
+def cfg_alma(
+    *,
+    length: int,
+    offset: float = 0.85,
+    sigma: float = 7.0,
+    col: str = "close",
+    out: str = "alma",
+) -> Dict[str, Any]:
+    return {
+        "activo": True,
+        "length": int(length),
+        "offset": float(offset),
+        "sigma": float(sigma),
+        "col": col,
+        "out": out,
+    }
+
+
 def cfg_ema200_mtf(
     *, tf_min: int, period: int = 200, out: str = "ema200_mtf"
 ) -> Dict[str, Any]:
@@ -71,6 +89,21 @@ def cfg_zscore(*, col: str, window: int, out: str) -> Dict[str, Any]:
 
 def cfg_zscore_vwap(*, window: int, out: str = "zscore_vwap") -> Dict[str, Any]:
     return {"activo": True, "window": int(window), "out": out}
+
+
+def cfg_dpo(
+    *,
+    period: int,
+    col: str = "close",
+    out: str = "dpo",
+) -> Dict[str, Any]:
+    """Detrended Price Oscillator."""
+    return {
+        "activo": True,
+        "period": int(period),
+        "col": col,
+        "out": out,
+    }
 
 
 def cfg_supertrend(
@@ -175,6 +208,71 @@ def cfg_mfi_slope(
 ) -> Dict[str, Any]:
     """MFI Slope for momentum exhaustion detection."""
     return {"activo": True, "mfi_col": mfi_col, "lookback": int(lookback), "out": out}
+
+
+def cfg_mfi_d2(*, mfi_col: str = "mfi", out: str = "mfi_d2") -> Dict[str, Any]:
+    """MFI 2nd derivative (discrete) from an existing MFI column."""
+    return {"activo": True, "mfi_col": mfi_col, "out": out}
+
+
+def cfg_accel_sg(
+    *,
+    wma_period: int = 29,
+    z_window: int = 20,
+    col: str = "close",
+    out: str = "accel_sg",
+) -> Dict[str, Any]:
+    """Savitzky-Golay simulated acceleration oscillator (normalized to [-3, 3])."""
+    return {
+        "activo": True,
+        "wma_period": int(wma_period),
+        "z_window": int(z_window),
+        "col": col,
+        "out": out,
+    }
+
+
+def cfg_chande_mo(
+    *,
+    length: int = 9,
+    col: str = "close",
+    out: str = "chande_mo",
+) -> Dict[str, Any]:
+    """Chande Momentum Oscillator (CMO-style)."""
+    return {"activo": True, "length": int(length), "col": col, "out": out}
+
+
+def cfg_asgma(
+    *,
+    col: str = "close",
+    smooth: int = 1,
+    alma_len: int = 25,
+    alma_offset: float = 0.85,
+    alma_sigma: float = 7.0,
+    gma_len: int = 14,
+    adaptive: bool = True,
+    volatility_period: int = 20,
+    sigma_fixed: float = 1.0,
+    gma_ema: int = 7,
+    out_avpchange: str = "asgma_avpchange",
+    out_gma: str = "asgma_gma",
+) -> Dict[str, Any]:
+    """ALMA-smoothed percent change and its Gaussian moving average."""
+    return {
+        "activo": True,
+        "col": col,
+        "smooth": int(smooth),
+        "alma_len": int(alma_len),
+        "alma_offset": float(alma_offset),
+        "alma_sigma": float(alma_sigma),
+        "gma_len": int(gma_len),
+        "adaptive": bool(adaptive),
+        "volatility_period": int(volatility_period),
+        "sigma_fixed": float(sigma_fixed),
+        "gma_ema": int(gma_ema),
+        "out_avpchange": out_avpchange,
+        "out_gma": out_gma,
+    }
 
 
 def cfg_kalman(
@@ -460,6 +558,27 @@ def cfg_roc(
         "period": int(period),
         "col": col,
         "out": out,
+    }
+
+
+def cfg_bollinger(
+    *,
+    period: int = 20,
+    mult: float = 2.0,
+    col: str = "close",
+    out_basis: str = "bb_basis",
+    out_upper: str = "bb_upper",
+    out_lower: str = "bb_lower",
+) -> Dict[str, Any]:
+    """Bollinger Bands."""
+    return {
+        "activo": True,
+        "period": int(period),
+        "mult": float(mult),
+        "col": col,
+        "out_basis": out_basis,
+        "out_upper": out_upper,
+        "out_lower": out_lower,
     }
 
 

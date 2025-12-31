@@ -1,5 +1,6 @@
 import os
 import re
+import time
 from typing import Optional
 
 import numpy as np
@@ -163,7 +164,16 @@ def exportar_trades_excel(
     resumen_actual = resumen_base
 
     if os.path.exists(resumen_actual):
-        df_old = pd.read_excel(resumen_actual)
+        try:
+            df_old = pd.read_excel(resumen_actual)
+        except Exception:
+            # If the existing resumen file is corrupted (e.g., EOFError), back it up and rebuild.
+            try:
+                corrupt_path = f"{resumen_actual}.corrupt_{int(time.time())}"
+                os.replace(resumen_actual, corrupt_path)
+            except Exception:
+                pass
+            df_old = pd.DataFrame()
     else:
         df_old = pd.DataFrame()
 
