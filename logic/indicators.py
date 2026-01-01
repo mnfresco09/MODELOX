@@ -26,6 +26,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Any, Callable, Dict, Tuple
 
+import math
 import numpy as np
 import polars as pl
 from numba import njit
@@ -51,16 +52,51 @@ def _has_cols(df: pl.DataFrame, cols: Tuple[str, ...]) -> bool:
 def _ensure_timestamp(df: pl.DataFrame, ts_col: str = "timestamp") -> pl.DataFrame:
     """Ensure timestamp column exists and is proper Datetime type."""
     if ts_col not in df.columns:
-        raise ValueError(f"Missing temporal column '{ts_col}'.")
+        # Common alias support: many datasets use 'datetime'
+        if "datetime" in df.columns:
+            df = df.with_columns(pl.col("datetime").alias(ts_col))
+        else:
+            raise ValueError(f"Missing temporal column '{ts_col}'.")
     
     schema_type = df.schema.get(ts_col)
-    if schema_type not in (
-        pl.Datetime, pl.Datetime("ns"), pl.Datetime("us"), pl.Datetime("ms"),
-    ):
+    dtype_str = str(schema_type) if schema_type is not None else ""
+
+    # Accept any Datetime variant, including timezone-aware (e.g., Datetime('us', 'UTC')).
+    if dtype_str.startswith("Datetime"):
+        return df
+
+    # If integer epoch timestamps, convert to UTC Datetime.
+    if dtype_str in {"Int64", "Int32", "UInt64", "UInt32"}:
+        # Infer epoch unit by magnitude (seconds/ms/us/ns).
+        max_abs = df.select(pl.col(ts_col).abs().max()).item()
+        if max_abs is None:
+            return df.with_columns(pl.lit(None).cast(pl.Datetime("us", "UTC")).alias(ts_col))
+
+        x = float(max_abs)
+        # ~2026 epoch magnitudes:
+        # s  ~ 1e9,  ms ~ 1e12, us ~ 1e15, ns ~ 1e18
+        if x >= 1e17:
+            unit = "ns"
+        elif x >= 1e14:
+            unit = "us"
+        elif x >= 1e11:
+            unit = "ms"
+        else:
+            unit = "s"
+
         return df.with_columns(
-            pl.col(ts_col).str.to_datetime(strict=False).alias(ts_col)
+            pl.from_epoch(pl.col(ts_col).cast(pl.Int64), time_unit=unit)
+            .dt.replace_time_zone("UTC")
+            .alias(ts_col)
         )
-    return df
+
+    # Parse strings to UTC-aware Datetime. Newer Polars requires explicit tz if present in data.
+    return df.with_columns(
+        pl.col(ts_col)
+        .cast(pl.Utf8)
+        .str.to_datetime(strict=False, time_zone="UTC")
+        .alias(ts_col)
+    )
 
 
 def _alpha_from_period(period: int) -> float:
@@ -412,6 +448,21 @@ def _rolling_std_numba(src: np.ndarray, window: int) -> np.ndarray:
         var = ss / window - mean * mean
         out[i] = np.sqrt(var) if var > 0.0 else 0.0
     return out
+
+
+def stdev(
+    df: pl.DataFrame,
+    *,
+    window: int = 20,
+    col: str = "close",
+    out: str = "stdev",
+) -> pl.DataFrame:
+    """Rolling standard deviation (Numba)."""
+    if col not in df.columns:
+        return df.with_columns(pl.lit(None).cast(pl.Float64).alias(out))
+    src = np.ascontiguousarray(df[col].to_numpy().astype(np.float64))
+    vals = _rolling_std_numba(src, int(window))
+    return df.with_columns(pl.Series(out, vals))
 
 
 @njit(cache=True)
@@ -2498,6 +2549,64 @@ def _rolling_linreg_slope_numba(y: np.ndarray, window: int) -> np.ndarray:
     return out
 
 
+@njit(cache=True, fastmath=False)
+def _rolling_linreg_value_numba(y: np.ndarray, window: int) -> np.ndarray:
+    """Rolling Linear Regression end-point value (yhat at x=window-1)."""
+    n = len(y)
+    out = np.full(n, np.nan, dtype=np.float64)
+
+    if window <= 1 or n < window:
+        return out
+
+    sum_x = (window - 1) * window / 2.0
+    sum_x2 = (window - 1) * window * (2 * window - 1) / 6.0
+    denom = window * sum_x2 - sum_x * sum_x
+
+    if abs(denom) < _EPSILON:
+        return out
+
+    x_end = window - 1.0
+
+    for i in range(window - 1, n):
+        sum_y = 0.0
+        sum_xy = 0.0
+        valid = True
+        base = i - window + 1
+
+        for j in range(window):
+            val = y[base + j]
+            if np.isnan(val):
+                valid = False
+                break
+            sum_y += val
+            sum_xy += j * val
+
+        if not valid:
+            continue
+
+        slope = (window * sum_xy - sum_x * sum_y) / denom
+        intercept = (sum_y - slope * sum_x) / window
+        out[i] = intercept + slope * x_end
+
+    return out
+
+
+def linreg_value(
+    df: pl.DataFrame,
+    *,
+    window: int = 20,
+    col: str = "close",
+    out: str = "linreg_value",
+) -> pl.DataFrame:
+    """Rolling Linear Regression value (end-point) - Numba optimized."""
+    if col not in df.columns:
+        return df.with_columns(pl.lit(None).cast(pl.Float64).alias(out))
+
+    y = np.ascontiguousarray(df[col].to_numpy().astype(np.float64))
+    vals = _rolling_linreg_value_numba(y, int(window))
+    return df.with_columns(pl.Series(out, vals))
+
+
 def linreg_slope(
     df: pl.DataFrame,
     *,
@@ -2942,6 +3051,257 @@ def accel_sg(
 
 
 # =============================================================================
+# ### QUANT 4444 - Derivative/Integral/LinReg Oscillator (Normalized [-3,3]) ###
+# =============================================================================
+
+
+@njit(cache=True, fastmath=True)
+def _rolling_sum_nanaware(src: np.ndarray, window: int) -> np.ndarray:
+    n = len(src)
+    out = np.full(n, np.nan, dtype=np.float64)
+    if window <= 0 or n < window:
+        return out
+    for i in range(window - 1, n):
+        s = 0.0
+        ok = True
+        for j in range(i - window + 1, i + 1):
+            v = src[j]
+            if np.isnan(v):
+                ok = False
+                break
+            s += v
+        if ok:
+            out[i] = s
+    return out
+
+
+@njit(cache=True, fastmath=True)
+def _rolling_mean_nanaware(src: np.ndarray, window: int) -> np.ndarray:
+    n = len(src)
+    out = np.full(n, np.nan, dtype=np.float64)
+    if window <= 0 or n < window:
+        return out
+    for i in range(window - 1, n):
+        s = 0.0
+        ok = True
+        for j in range(i - window + 1, i + 1):
+            v = src[j]
+            if np.isnan(v):
+                ok = False
+                break
+            s += v
+        if ok:
+            out[i] = s / window
+    return out
+
+
+@njit(cache=True, fastmath=True)
+def _quant_4444_norm_numba(
+    src: np.ndarray,
+    len_reg: int,
+    len_int: int,
+    len_norm: int,
+) -> np.ndarray:
+    """Oscilador Quant 4444.
+
+    Replica la idea Pine:
+    - lin_reg = linreg(src)
+    - derivative = lin_reg - lin_reg[1]
+    - integral = sum(src - lin_reg, len_int)
+    - raw = derivative + integral/len_int
+    - zscore(raw, len_norm)
+    - clamp(z, -3, 3)
+    """
+    n = len(src)
+    out = np.full(n, np.nan, dtype=np.float64)
+    if n == 0:
+        return out
+
+    lr = _rolling_linreg_value_numba(src, int(len_reg))
+
+    # derivative
+    der = np.full(n, np.nan, dtype=np.float64)
+    for i in range(1, n):
+        a = lr[i]
+        b = lr[i - 1]
+        if np.isnan(a) or np.isnan(b):
+            continue
+        der[i] = a - b
+
+    # integral over error
+    err = np.full(n, np.nan, dtype=np.float64)
+    for i in range(n):
+        p = src[i]
+        a = lr[i]
+        if np.isnan(p) or np.isnan(a):
+            continue
+        err[i] = p - a
+    integ = _rolling_sum_nanaware(err, int(len_int))
+
+    raw = np.full(n, np.nan, dtype=np.float64)
+    inv_len_int = 1.0 / float(len_int) if len_int > 0 else 0.0
+    for i in range(n):
+        d = der[i]
+        it = integ[i]
+        if np.isnan(d) or np.isnan(it):
+            continue
+        raw[i] = d + it * inv_len_int
+
+    mean = _rolling_mean_nanaware(raw, int(len_norm))
+    dev = _rolling_std_numba(raw, int(len_norm))
+
+    for i in range(n):
+        r = raw[i]
+        m = mean[i]
+        s = dev[i]
+        if np.isnan(r) or np.isnan(m) or np.isnan(s):
+            continue
+        safe = 1.0 if s == 0.0 else s
+        z = (r - m) / safe
+        if z > 3.0:
+            z = 3.0
+        elif z < -3.0:
+            z = -3.0
+        out[i] = z
+
+    return out
+
+
+def quant_4444(
+    df: pl.DataFrame,
+    *,
+    len_reg: int = 20,
+    len_int: int = 14,
+    len_norm: int = 100,
+    col: str = "close",
+    out: str = "quant_4444",
+) -> pl.DataFrame:
+    """Quant 4444 Oscillator - Normalized to [-3, 3]."""
+    if col not in df.columns:
+        return df.with_columns(pl.lit(None).cast(pl.Float64).alias(out))
+    src = np.ascontiguousarray(df[col].to_numpy().astype(np.float64))
+    vals = _quant_4444_norm_numba(src, int(len_reg), int(len_int), int(len_norm))
+    return df.with_columns(pl.Series(out, vals))
+
+
+# =============================================================================
+# ### SUPERINDICADOR 9955 - RSI + STOCH + MOM (Z) Oscillator (Clamped) ###
+# =============================================================================
+
+
+@njit(cache=True, fastmath=True)
+def _superindicador_9955_numba(
+    high: np.ndarray,
+    low: np.ndarray,
+    close: np.ndarray,
+    len_rsi: int,
+    len_stoch: int,
+    len_mom: int,
+    mom_norm: int,
+    amplification: float,
+    cap: float,
+) -> np.ndarray:
+    """SuperIndicador 9955.
+
+    Inspirado en Pine:
+    - z_rsi   = (rsi(close, len_rsi) - 50) / 10
+    - stoch_d = sma(stoch(close, high, low, len_stoch), 3)
+    - z_stoch = (stoch_d - 50) / 15
+    - mom_raw = close - close[len_mom]
+    - z_mom   = (mom_raw - sma(mom_raw, mom_norm)) / stdev(mom_raw, mom_norm)
+    - combined = (z_rsi + z_stoch + z_mom) / 3
+    - final = clamp(combined * amplification, -cap, cap)
+    """
+    n = len(close)
+    out = np.full(n, np.nan, dtype=np.float64)
+    if n == 0:
+        return out
+
+    rsi_vals = _rsi_numba(close, int(len_rsi))
+    _, stoch_d = _stochastic_numba(high, low, close, int(len_stoch), 3)
+
+    mom_raw = np.full(n, np.nan, dtype=np.float64)
+    if len_mom > 0:
+        for i in range(len_mom, n):
+            a = close[i]
+            b = close[i - len_mom]
+            if np.isnan(a) or np.isnan(b):
+                continue
+            mom_raw[i] = a - b
+
+    mom_mean = _rolling_mean_nanaware(mom_raw, int(mom_norm))
+    mom_dev = _rolling_std_numba(mom_raw, int(mom_norm))
+
+    cap_f = float(cap)
+    if cap_f <= 0.0:
+        cap_f = 2.0
+
+    for i in range(n):
+        r = rsi_vals[i]
+        sd = stoch_d[i]
+        mr = mom_raw[i]
+        mm = mom_mean[i]
+        ms = mom_dev[i]
+
+        if np.isnan(r) or np.isnan(sd) or np.isnan(mr) or np.isnan(mm) or np.isnan(ms):
+            continue
+
+        z_rsi = (r - 50.0) / 10.0
+        z_stoch = (sd - 50.0) / 15.0
+        safe = 1.0 if ms == 0.0 else ms
+        z_mom = (mr - mm) / safe
+
+        combined = (z_rsi + z_stoch + z_mom) / 3.0
+        v = combined * float(amplification)
+
+        if v > cap_f:
+            v = cap_f
+        elif v < -cap_f:
+            v = -cap_f
+
+        out[i] = v
+
+    return out
+
+
+def superindicador_9955(
+    df: pl.DataFrame,
+    *,
+    len_rsi: int = 14,
+    len_stoch: int = 14,
+    len_mom: int = 10,
+    mom_norm: int = 100,
+    amplification: float = 1.6,
+    cap: float = 3.0,
+    out: str = "super_9955",
+) -> pl.DataFrame:
+    """SuperIndicador 9955 oscillator.
+
+    Requiere columnas: high/low/close.
+    """
+    if not _has_cols(df, ("high", "low", "close")):
+        return df.with_columns(pl.lit(None).cast(pl.Float64).alias(out))
+
+    h = np.ascontiguousarray(df["high"].to_numpy().astype(np.float64))
+    l = np.ascontiguousarray(df["low"].to_numpy().astype(np.float64))
+    c = np.ascontiguousarray(df["close"].to_numpy().astype(np.float64))
+
+    vals = _superindicador_9955_numba(
+        h,
+        l,
+        c,
+        int(len_rsi),
+        int(len_stoch),
+        int(len_mom),
+        int(mom_norm),
+        float(amplification),
+        float(cap),
+    )
+
+    return df.with_columns(pl.Series(out, vals))
+
+
+# =============================================================================
 # ### EMA200 MTF (Multi-Timeframe) ###
 # =============================================================================
 
@@ -3143,6 +3503,282 @@ def hma_acceleration(
 
 
 # =============================================================================
+# ### SUPERGOLAY (Causal Savitzky–Golay Kinematics + Score) ###
+# =============================================================================
+
+
+def _supergolay_causal_coeffs(*, window: int, polyorder: int, deriv: int) -> np.ndarray:
+    """Compute one-sided (causal) Savitzky–Golay FIR coefficients.
+
+    The window uses only past data: y[t-window+1 .. t].
+    We fit a polynomial of degree `polyorder` over x = [-(window-1), ..., 0]
+    and evaluate the `deriv`-th derivative at x=0.
+    """
+    w = int(window)
+    p = int(polyorder)
+    d = int(deriv)
+
+    if w < 2:
+        raise ValueError("window must be >= 2")
+    if p < 1:
+        raise ValueError("polyorder must be >= 1")
+    if p >= w:
+        raise ValueError("polyorder must be < window")
+    if d < 0 or d > p:
+        raise ValueError("deriv must satisfy 0 <= deriv <= polyorder")
+
+    x = np.arange(-(w - 1), 1, dtype=np.float64)  # [-w+1, ..., 0]
+    # Design matrix: [1, x, x^2, ..., x^p]
+    A = np.vander(x, N=p + 1, increasing=True)  # (w, p+1)
+    pinv = np.linalg.pinv(A)  # (p+1, w)
+
+    coeff = pinv[d].astype(np.float64, copy=False)
+    if d > 0:
+        coeff = coeff * float(math.factorial(d))
+    return np.ascontiguousarray(coeff)
+
+
+@njit(cache=True, fastmath=True)
+def _apply_fir_causal_numba(src: np.ndarray, coeff: np.ndarray) -> np.ndarray:
+    """Apply a causal FIR defined on the last `window` samples."""
+    n = len(src)
+    w = len(coeff)
+    out = np.full(n, np.nan, dtype=np.float64)
+    if n < w:
+        return out
+
+    for i in range(w - 1, n):
+        s = 0.0
+        ok = True
+        base = i - (w - 1)
+        for j in range(w):
+            v = src[base + j]
+            if np.isnan(v) or np.isinf(v):
+                ok = False
+                break
+            s += v * coeff[j]
+        if ok:
+            out[i] = s
+    return out
+
+
+@njit(cache=True, fastmath=True)
+def _rolling_zscore_numba(src: np.ndarray, window: int) -> np.ndarray:
+    n = len(src)
+    w = int(window)
+    out = np.full(n, np.nan, dtype=np.float64)
+    if w <= 1 or n < w:
+        return out
+
+    buf = np.empty(w, dtype=np.float64)
+    nan_count = 0
+    s = 0.0
+    s2 = 0.0
+
+    for i in range(n):
+        x = src[i]
+        idx = i % w
+
+        if i >= w:
+            old = buf[idx]
+            if np.isnan(old) or np.isinf(old):
+                nan_count -= 1
+            else:
+                s -= old
+                s2 -= old * old
+
+        buf[idx] = x
+        if np.isnan(x) or np.isinf(x):
+            nan_count += 1
+        else:
+            s += x
+            s2 += x * x
+
+        if i >= w - 1 and nan_count == 0:
+            mean = s / w
+            var = (s2 / w) - mean * mean
+            if var < 0.0:
+                var = 0.0
+            std = np.sqrt(var)
+            if std > 1e-12:
+                out[i] = (x - mean) / std
+            else:
+                out[i] = 0.0
+
+    return out
+
+
+@njit(cache=True, fastmath=True)
+def _rolling_linreg_resid_std_numba(src: np.ndarray, window: int) -> np.ndarray:
+    """Rolling residual std of y ~ a + b*x over x=0..window-1."""
+    n = len(src)
+    w = int(window)
+    out = np.full(n, np.nan, dtype=np.float64)
+    if w <= 2 or n < w:
+        return out
+
+    sumx = (w - 1) * w / 2.0
+    sumxx = (w - 1) * w * (2.0 * w - 1.0) / 6.0
+    denom = w * sumxx - sumx * sumx
+    if abs(denom) < 1e-12:
+        return out
+
+    buf = np.empty(w, dtype=np.float64)
+    nan_count = 0
+
+    s0 = 0.0   # sum(y)
+    s1 = 0.0   # sum(x*y)
+    s2 = 0.0   # sum(y^2)
+
+    # Warm-up fill
+    for i in range(w):
+        y = src[i]
+        buf[i] = y
+        if np.isnan(y) or np.isinf(y):
+            nan_count += 1
+            continue
+        s0 += y
+        s1 += i * y
+        s2 += y * y
+
+    if nan_count == 0:
+        b = (w * s1 - sumx * s0) / denom
+        a = (s0 - b * sumx) / w
+        sse = s2 + w * a * a + b * b * sumxx + 2.0 * a * b * sumx - 2.0 * a * s0 - 2.0 * b * s1
+        if sse < 0.0:
+            sse = 0.0
+        out[w - 1] = np.sqrt(sse / w)
+
+    for i in range(w, n):
+        idx = i % w
+        old = buf[idx]
+        new = src[i]
+
+        old_is_bad = np.isnan(old) or np.isinf(old)
+        new_is_bad = np.isnan(new) or np.isinf(new)
+
+        old_val = 0.0 if old_is_bad else old
+        new_val = 0.0 if new_is_bad else new
+
+        # Update nan_count
+        if old_is_bad:
+            nan_count -= 1
+        if new_is_bad:
+            nan_count += 1
+
+        # O(1) rolling updates for sums
+        s0_old = s0
+        s1_old = s1
+        s2_old = s2
+
+        s1 = s1_old - s0_old + old_val + (w - 1) * new_val
+        s0 = s0_old - old_val + new_val
+        s2 = s2_old - old_val * old_val + new_val * new_val
+
+        buf[idx] = new
+
+        if nan_count == 0:
+            b = (w * s1 - sumx * s0) / denom
+            a = (s0 - b * sumx) / w
+            sse = s2 + w * a * a + b * b * sumxx + 2.0 * a * b * sumx - 2.0 * a * s0 - 2.0 * b * s1
+            if sse < 0.0:
+                sse = 0.0
+            out[i] = np.sqrt(sse / w)
+
+    return out
+
+
+def supergolay(
+    df: pl.DataFrame,
+    *,
+    col: str = "close",
+    window: int = 21,
+    polyorder: int = 3,
+    zscore_window: int = 100,
+    noise_window: int = 50,
+    w_v: float = 0.5,
+    w_a: float = 0.4,
+    w_noise: float = 0.3,
+    out_smooth: str = "supergolay",
+    out_score: str = "supergolay_score",
+    out_zv: str = "supergolay_zv",
+    out_za: str = "supergolay_za",
+    out_noise: str = "supergolay_noise",
+) -> pl.DataFrame:
+    """Causal Savitzky–Golay smoothing on log(close) + derivatives + master score.
+
+    Outputs:
+    - out_smooth: exp(smoothed_log_price)
+    - out_zv/out_za: rolling z-scores of velocity/acceleration (window=zscore_window)
+    - out_noise: rolling residual std of local linear regression on log(close) (window=noise_window)
+    - out_score: w_v*Z_v + w_a*Z_a - w_noise*sigma_eps
+    """
+    if col not in df.columns:
+        return df.with_columns(
+            [
+                pl.lit(None).cast(pl.Float64).alias(out_smooth),
+                pl.lit(None).cast(pl.Float64).alias(out_score),
+                pl.lit(None).cast(pl.Float64).alias(out_zv),
+                pl.lit(None).cast(pl.Float64).alias(out_za),
+                pl.lit(None).cast(pl.Float64).alias(out_noise),
+            ]
+        )
+
+    w = int(window)
+    p = int(polyorder)
+    zw = int(zscore_window)
+    nw = int(noise_window)
+
+    # Prefer odd windows for SG; enforce basic validity.
+    if w < 5:
+        w = 5
+    if w % 2 == 0:
+        w += 1
+    if p < 2:
+        p = 2
+    if p > 4:
+        p = 4
+    if p >= w:
+        p = max(2, min(4, w - 1))
+    if zw < 20:
+        zw = 20
+    if nw < 10:
+        nw = 10
+
+    close = np.ascontiguousarray(df[col].to_numpy().astype(np.float64))
+    logp = np.full(len(close), np.nan, dtype=np.float64)
+    for i in range(len(close)):
+        c = close[i]
+        if np.isfinite(c) and c > 0.0:
+            logp[i] = np.log(c)
+
+    c0 = _supergolay_causal_coeffs(window=w, polyorder=p, deriv=0)
+    c1 = _supergolay_causal_coeffs(window=w, polyorder=p, deriv=1)
+    c2 = _supergolay_causal_coeffs(window=w, polyorder=p, deriv=2)
+
+    log_smooth = _apply_fir_causal_numba(logp, c0)
+    v = _apply_fir_causal_numba(logp, c1)
+    a = _apply_fir_causal_numba(logp, c2)
+
+    zv = _rolling_zscore_numba(v, zw)
+    za = _rolling_zscore_numba(a, zw)
+    noise = _rolling_linreg_resid_std_numba(logp, nw)
+
+    score = (float(w_v) * zv) + (float(w_a) * za) - (float(w_noise) * noise)
+    smooth_close = np.exp(log_smooth)
+
+    return df.with_columns(
+        [
+            pl.Series(out_smooth, smooth_close),
+            pl.Series(out_zv, zv),
+            pl.Series(out_za, za),
+            pl.Series(out_noise, noise),
+            pl.Series(out_score, score),
+        ]
+    )
+
+
+# =============================================================================
 # ### INDICATOR FACTORY (CLEAN REGISTRY) ###
 # =============================================================================
 
@@ -3182,6 +3818,7 @@ class IndicadorFactory:
             "wma": _wrap(wma),
             "hma": _wrap(hma),
             "alma": _wrap(alma),
+            "stdev": _wrap(stdev),
             "vwma": _wrap(vwma),
             "kama": _wrap(kama),
             "ema200_mtf": _wrap(ema200_mtf),
@@ -3207,6 +3844,7 @@ class IndicadorFactory:
             "macd": _wrap(macd),
             "supertrend": _wrap(supertrend),
             "linreg_slope": _wrap(linreg_slope),
+            "linreg_value": _wrap(linreg_value),
             "lrs_advanced": _wrap(lrs_advanced),
             
             # Volatility / Bands
@@ -3233,6 +3871,13 @@ class IndicadorFactory:
             "acceleration": _wrap(acceleration),
             "hma_velocity": _wrap(hma_velocity),
             "hma_acceleration": _wrap(hma_acceleration),
+
+            # Signal Processing / Kinematics (Causal SG)
+            "supergolay": _wrap(supergolay),
+
+            # Quant / Custom
+            "quant_4444": _wrap(quant_4444),
+            "superindicador_9955": _wrap(superindicador_9955),
         }
 
         # Handle zscore_vwap alias

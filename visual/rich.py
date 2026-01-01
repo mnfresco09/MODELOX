@@ -255,6 +255,7 @@ def _build_performance_grid(metrics: Dict[str, Any]) -> Table:
     winrate = M.get_float(metrics, "winrate")
     profit_factor = M.get_float(metrics, "profit_factor")
     sharpe = M.get_float(metrics, "sharpe")
+    sqn = M.get_float(metrics, "sqn")
     drawdown = M.get_float(metrics, "drawdown")
     total_trades = M.get_int(metrics, "total_trades")
     expectancy = M.get_float(metrics, "expectativa")
@@ -286,6 +287,13 @@ def _build_performance_grid(metrics: Dict[str, Any]) -> Table:
     grid.add_row(
         "Sharpe",
         fmt_number(sharpe, 2, "")
+    )
+
+    # SQN: < 1.5 rojo, 1.5 a 2 naranja, > 2 verde
+    sqn_color = get_metric_color(sqn, 2.0, 1.5, higher_is_better=True)
+    grid.add_row(
+        "SQN",
+        fmt_styled(sqn, 2, "", sqn_color)
     )
     grid.add_row(
         "Profit Factor",

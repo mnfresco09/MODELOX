@@ -42,7 +42,7 @@ logging.basicConfig(level=logging.WARNING)
 # IMPORTS
 # ============================================================================
 from general.configuracion import (
-    ACTIVOS, ACTIVO_PRIMARIO, resolve_archivo_data, resolve_qty_max_activo,
+    ACTIVOS, ACTIVO_PRIMARIO, resolve_archivo_data, resolve_qty_max_activo, resolve_qty_max_activo_range,
     COMBINACION_A_EJECUTAR, CONFIG,
     FECHA_FIN, FECHA_INICIO, N_TRIALS, FECHA_FIN_PLOT, FECHA_INICIO_PLOT,
     GENERAR_PLOTS, MAX_ARCHIVOS_GUARDAR, USAR_EXCEL,
@@ -120,6 +120,7 @@ def main() -> None:
 
         archivo_data = resolve_archivo_data(activo)
         qty_max_activo = resolve_qty_max_activo(activo)
+        qty_max_range = resolve_qty_max_activo_range(activo)
 
         # 1. DATA PIPELINE (por activo)
         df = load_data(archivo_data)
@@ -137,6 +138,23 @@ def main() -> None:
             comision_sides=int(CONFIG.get("COMISION_SIDES", 2)),
             saldo_minimo_operativo=float(CONFIG.get("SALDO_MINIMO_OPERATIVO", 5.0)),
             qty_max_activo=float(qty_max_activo),
+
+            # Optuna qty cap (per asset)
+            optimize_qty_max_activo=bool(CONFIG.get("OPTIMIZAR_QTY_ACTIVO", False)),
+            qty_max_activo_range=tuple(qty_max_range),
+
+            # Global exits (engine-owned)
+            exit_atr_period=int(CONFIG.get("EXIT_ATR_PERIOD", 14)),
+            exit_sl_atr=float(CONFIG.get("EXIT_SL_ATR", 1.0)),
+            exit_tp_atr=float(CONFIG.get("EXIT_TP_ATR", 1.0)),
+            exit_time_stop_bars=int(CONFIG.get("EXIT_TIME_STOP_BARS", 260)),
+
+            # Optuna exits
+            optimize_exits=bool(CONFIG.get("OPTIMIZAR_SALIDAS", False)),
+            exit_atr_period_range=tuple(CONFIG.get("EXIT_ATR_PERIOD_RANGE", (7, 30, 1))),
+            exit_sl_atr_range=tuple(CONFIG.get("EXIT_SL_ATR_RANGE", (0.5, 5.0, 0.1))),
+            exit_tp_atr_range=tuple(CONFIG.get("EXIT_TP_ATR_RANGE", (0.5, 8.0, 0.1))),
+            exit_time_stop_bars_range=tuple(CONFIG.get("EXIT_TIME_STOP_BARS_RANGE", (50, 800, 10))),
         )
         print(f"[CONFIG] ACTIVO={activo} QTY_MAX_ACTIVO={cfg.qty_max_activo} DATA={archivo_data}")
 

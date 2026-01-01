@@ -20,6 +20,9 @@ rich>=14.0
 openpyxl>=3.1
 plotly>=6.0
 
+# Fast JSON (optional but used when available)
+orjson>=3.10
+
 # Machine Learning (for ML strategies)
 lightgbm>=4.0
 scikit-learn>=1.0

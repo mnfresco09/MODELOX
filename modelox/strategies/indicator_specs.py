@@ -91,6 +91,48 @@ def cfg_zscore_vwap(*, window: int, out: str = "zscore_vwap") -> Dict[str, Any]:
     return {"activo": True, "window": int(window), "out": out}
 
 
+def cfg_quant_4444(
+    *,
+    len_reg: int = 20,
+    len_int: int = 14,
+    len_norm: int = 100,
+    col: str = "close",
+    out: str = "quant_4444",
+) -> Dict[str, Any]:
+    """Quant 4444 oscillator (normalized to [-3,3])."""
+    return {
+        "activo": True,
+        "len_reg": int(len_reg),
+        "len_int": int(len_int),
+        "len_norm": int(len_norm),
+        "col": col,
+        "out": out,
+    }
+
+
+def cfg_superindicador_9955(
+    *,
+    len_rsi: int = 14,
+    len_stoch: int = 14,
+    len_mom: int = 10,
+    mom_norm: int = 100,
+    amplification: float = 1.6,
+    cap: float = 3.0,
+    out: str = "super_9955",
+) -> Dict[str, Any]:
+    """SuperIndicador 9955 oscillator (RSI + Stoch + Mom Z, clamped)."""
+    return {
+        "activo": True,
+        "len_rsi": int(len_rsi),
+        "len_stoch": int(len_stoch),
+        "len_mom": int(len_mom),
+        "mom_norm": int(mom_norm),
+        "amplification": float(amplification),
+        "cap": float(cap),
+        "out": out,
+    }
+
+
 def cfg_dpo(
     *,
     period: int,
@@ -135,6 +177,53 @@ def cfg_donchian(
 def cfg_linreg_slope(
     *, window: int, col: str = "close", out: str = "linreg_slope"
 ) -> Dict[str, Any]:
+    return {"activo": True, "window": int(window), "col": col, "out": out}
+
+
+def cfg_supergolay(
+    *,
+    col: str = "close",
+    window: int = 21,
+    polyorder: int = 3,
+    zscore_window: int = 100,
+    noise_window: int = 50,
+    w_v: float = 0.5,
+    w_a: float = 0.4,
+    w_noise: float = 0.3,
+    out_smooth: str = "supergolay",
+    out_score: str = "supergolay_score",
+    out_zv: str = "supergolay_zv",
+    out_za: str = "supergolay_za",
+    out_noise: str = "supergolay_noise",
+) -> Dict[str, Any]:
+    """Causal Savitzky–Golay kinematics + score (log-close based)."""
+    return {
+        "activo": True,
+        "col": col,
+        "window": int(window),
+        "polyorder": int(polyorder),
+        "zscore_window": int(zscore_window),
+        "noise_window": int(noise_window),
+        "w_v": float(w_v),
+        "w_a": float(w_a),
+        "w_noise": float(w_noise),
+        "out_smooth": out_smooth,
+        "out_score": out_score,
+        "out_zv": out_zv,
+        "out_za": out_za,
+        "out_noise": out_noise,
+    }
+
+
+def cfg_stdev(*, window: int, col: str = "close", out: str = "stdev") -> Dict[str, Any]:
+    """Rolling standard deviation."""
+    return {"activo": True, "window": int(window), "col": col, "out": out}
+
+
+def cfg_linreg_value(
+    *, window: int, col: str = "close", out: str = "linreg_value"
+) -> Dict[str, Any]:
+    """Rolling linear regression value at the end of the window."""
     return {"activo": True, "window": int(window), "col": col, "out": out}
 
 

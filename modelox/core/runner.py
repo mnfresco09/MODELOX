@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from typing import Any, Dict, Optional, Sequence
 
 import optuna
@@ -51,6 +51,68 @@ class OptimizationRunner:
             params_rt["__comision_pct"] = float(self.config.comision_pct)
             params_rt["__comision_sides"] = int(self.config.comision_sides)
 
+            # Qty cap (per asset): optionally optimized by Optuna
+            optimize_qty = bool(getattr(self.config, "optimize_qty_max_activo", False))
+            qty_max_activo = float(getattr(self.config, "qty_max_activo", float("inf")))
+            if optimize_qty:
+                q_rng = tuple(getattr(self.config, "qty_max_activo_range", (0.01, 5.0, 0.01)))
+                q_min = float(q_rng[0])
+                q_max = float(q_rng[1])
+                q_step = float(q_rng[2]) if len(q_rng) >= 3 else None
+                if q_step is None or q_step <= 0:
+                    qty_max_activo = float(trial.suggest_float("qty_max_activo", q_min, q_max))
+                else:
+                    qty_max_activo = float(trial.suggest_float("qty_max_activo", q_min, q_max, step=q_step))
+
+            # Ensure engine sees the chosen qty cap
+            params_rt["__qty_max_activo"] = float(qty_max_activo)
+
+            # simulate_trades reads qty cap from config, so create a per-trial config
+            config_trial = self.config if not optimize_qty else replace(self.config, qty_max_activo=float(qty_max_activo))
+
+            # Global exits (engine-owned)
+            optimize_exits = bool(getattr(self.config, "optimize_exits", False))
+
+            exit_atr_period = int(getattr(self.config, "exit_atr_period", 14))
+            exit_sl_atr = float(getattr(self.config, "exit_sl_atr", 1.0))
+            exit_tp_atr = float(getattr(self.config, "exit_tp_atr", 1.0))
+            exit_time_stop_bars = int(getattr(self.config, "exit_time_stop_bars", 260))
+
+            if optimize_exits:
+                p_rng = tuple(getattr(self.config, "exit_atr_period_range", (7, 30, 1)))
+                sl_rng = tuple(getattr(self.config, "exit_sl_atr_range", (0.5, 5.0, 0.1)))
+                tp_rng = tuple(getattr(self.config, "exit_tp_atr_range", (0.5, 8.0, 0.1)))
+                ts_rng = tuple(getattr(self.config, "exit_time_stop_bars_range", (50, 800, 10)))
+
+                p_min, p_max, p_step = (int(p_rng[0]), int(p_rng[1]), int(p_rng[2]) if len(p_rng) >= 3 else 1)
+                ts_min, ts_max, ts_step = (
+                    int(ts_rng[0]),
+                    int(ts_rng[1]),
+                    int(ts_rng[2]) if len(ts_rng) >= 3 else 1,
+                )
+                sl_min, sl_max, sl_step = (
+                    float(sl_rng[0]),
+                    float(sl_rng[1]),
+                    float(sl_rng[2]) if len(sl_rng) >= 3 else 0.1,
+                )
+                tp_min, tp_max, tp_step = (
+                    float(tp_rng[0]),
+                    float(tp_rng[1]),
+                    float(tp_rng[2]) if len(tp_rng) >= 3 else 0.1,
+                )
+
+                exit_atr_period = int(trial.suggest_int("exit_atr_period", p_min, p_max, step=max(1, p_step)))
+                exit_sl_atr = float(trial.suggest_float("exit_sl_atr", sl_min, sl_max, step=sl_step))
+                exit_tp_atr = float(trial.suggest_float("exit_tp_atr", tp_min, tp_max, step=tp_step))
+                exit_time_stop_bars = int(
+                    trial.suggest_int("exit_time_stop_bars", ts_min, ts_max, step=max(1, ts_step))
+                )
+
+            params_rt["__exit_atr_period"] = int(exit_atr_period)
+            params_rt["__exit_sl_atr"] = float(exit_sl_atr)
+            params_rt["__exit_tp_atr"] = float(exit_tp_atr)
+            params_rt["__exit_time_stop_bars"] = int(exit_time_stop_bars)
+
             # 1. Generación de señales en Polars
             df_signals = strategy.generate_signals(df, params_rt)
 
@@ -62,7 +124,7 @@ class OptimizationRunner:
                 strategy=strategy,
             )
             trades_exec, equity_curve = simulate_trades(
-                trades_base=trades_base, config=self.config
+                trades_base=trades_base, config=config_trial
             )
 
             if trades_exec is None or trades_exec.empty:
@@ -115,6 +177,12 @@ class OptimizationRunner:
 
             # Modular: always set params_reporting and ensure indicator list is from strategy class
             params_reporting = dict(params_puros)
+            # Expose global exits in reports (so you can see what Optuna picked)
+            params_reporting["exit_atr_period"] = int(exit_atr_period)
+            params_reporting["exit_sl_atr"] = float(exit_sl_atr)
+            params_reporting["exit_tp_atr"] = float(exit_tp_atr)
+            params_reporting["exit_time_stop_bars"] = int(exit_time_stop_bars)
+            params_reporting["qty_max_activo"] = float(qty_max_activo)
             # Use the class property if available, fallback to detected columns
             if hasattr(strategy, 'get_indicators_used'):
                 params_reporting["__indicators_used"] = strategy.get_indicators_used()

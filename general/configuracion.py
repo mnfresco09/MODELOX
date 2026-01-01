@@ -1,6 +1,6 @@
 # general/configuracion.py
 """
-MODELOX Configuration - Multi-Asset 5-Minute Timeframe System
+MODELOX Configuration - Multi-Asset Timeframe System
 
 Supported Assets:
   - BTC: Bitcoin (crypto)
@@ -8,14 +8,15 @@ Supported Assets:
   - SP500: S&P 500 Index (equities)
   - NASDAQ: NASDAQ 100 Index (equities)
 
-All data files are in 5-minute OHLCV format.
+Nota:
+    - Los archivos de datos OHLCV usan el sufijo "_1h".
 """
 
 # ============================================================================
 # ASSET SELECTION
 # ============================================================================
 # Options: 'BTC', 'GOLD', 'SP500', 'NASDAQ'
-ACTIVO = "GOLD"
+ACTIVO = "GOLD, BTC, SP500"
 
 
 def _normalize_activos(v):
@@ -44,12 +45,12 @@ ACTIVOS = _normalize_activos(ACTIVO)
 ACTIVO_PRIMARIO = ACTIVOS[0]
 
 # ============================================================================
-# DATA PATHS (5-Minute OHLCV Parquet)
+# DATA PATHS (1-Hour OHLCV Parquet)
 # ============================================================================
-ARCHIVO_DATA_BTC = "data/ohlcv/BTC_ohlcv_5m.parquet"
-ARCHIVO_DATA_GOLD = "data/ohlcv/GOLD_ohlcv_5m.parquet"
-ARCHIVO_DATA_SP500 = "data/ohlcv/SP500_ohlcv_5m.parquet"
-ARCHIVO_DATA_NASDAQ = "data/ohlcv/NASDAQ_ohlcv_5m.parquet"
+ARCHIVO_DATA_BTC = "data/ohlcv/BTC_ohlcv_1h.parquet"
+ARCHIVO_DATA_GOLD = "data/ohlcv/GOLD_ohlcv_1h.parquet"
+ARCHIVO_DATA_SP500 = "data/ohlcv/SP500_ohlcv_1h.parquet"
+ARCHIVO_DATA_NASDAQ = "data/ohlcv/NASDAQ_ohlcv_1h.parquet"
 
 # Auto-select data file based on ACTIVO
 _DATA_MAP = {
@@ -86,15 +87,30 @@ SALDO_MINIMO_OPERATIVO = 5  # Hard stop when balance <= this value
 # This is the MAXIMUM AUTHORITY - even if leverage allows more, 
 # the bot will never exceed this limit.
 _QTY_MAX_MAP = {
-    "BTC": 0.065,       # 0.07 BTC max per trade
-    "GOLD": 2.25,       # 2.5 oz Gold max per trade
-    "SP500": 2.5,      # 3 contracts SP500 max
-    "NASDAQ": 0.2,     # 3 contracts NASDAQ max
+    "BTC": 0.025,       # BTC max per trade
+    "GOLD": 0.5,       # oz Gold max per trade
+    "SP500": 0.5,      # contracts SP500 max
+    "NASDAQ": 0.15,     # contracts NASDAQ max
 }
 
 
 def resolve_qty_max_activo(activo: str) -> float:
     return float(_QTY_MAX_MAP.get(str(activo).upper(), 3.0))
+
+
+# Optuna ranges for qty_max_activo per asset (min, max, step)
+OPTIMIZAR_QTY_ACTIVO = True
+_QTY_MAX_RANGE_MAP = {
+    # Ajusta a tu mercado/broker
+    "BTC": (0.01, 0.1, 0.01),
+    "GOLD": (0.75, 3.5, 0.25),
+    "SP500": (0.5, 4.0, 0.25),
+    "NASDAQ": (0.025, 0.75, 0.01),
+}
+
+
+def resolve_qty_max_activo_range(activo: str) -> tuple[float, float, float]:
+    return tuple(_QTY_MAX_RANGE_MAP.get(str(activo).upper(), (0.01, 5.0, 0.01)))
 
 
 # Backward compatibility: single qty limit points to the primary asset.
@@ -106,12 +122,31 @@ QTY_MAX_ACTIVO = resolve_qty_max_activo(ACTIVO_PRIMARIO)
 FECHA_INICIO = "2024-01-21"
 FECHA_FIN = "2024-11-15"
 FECHA_INICIO_PLOT = "2024-01-22"
-FECHA_FIN_PLOT = "2024-02-15"
+FECHA_FIN_PLOT = "2024-10-15"
 
 # ============================================================================
 # OPTUNA OPTIMIZATION
 # ============================================================================
 N_TRIALS = 300
+    
+# ==========================================================================
+# EXIT SETTINGS (GLOBAL, ENGINE-OWNED)
+# ==========================================================================
+# Salidas fijas (no móviles) por ATR calculado en el momento de entrada.
+# Se ejecutan intra-vela al nivel exacto si el precio lo toca.
+EXIT_ATR_PERIOD = 14
+EXIT_SL_ATR = 1.0
+EXIT_TP_ATR = 1.0
+EXIT_TIME_STOP_BARS = 260
+
+# Optuna: permitir optimizar también la salida global desde configuración
+OPTIMIZAR_SALIDAS = True
+
+# Rangos para Optuna (min, max, step)
+EXIT_ATR_PERIOD_RANGE = (7, 30, 1)
+EXIT_SL_ATR_RANGE = (0.5, 3.0, 0.1)
+EXIT_TP_ATR_RANGE = (1.0, 8.0, 0.1)
+EXIT_TIME_STOP_BARS_RANGE = (250, 800, 10)
 OPTUNA_N_JOBS = 1      # Parallel jobs (1 = sequential)
 OPTUNA_SEED = None     # None = random seed each run
 OPTUNA_STORAGE = None  # None = in-memory, or SQLite path
@@ -135,7 +170,7 @@ OPTUNA_STORAGE = None  # None = in-memory, or SQLite path
 # Multiple:         COMBINACION_A_EJECUTAR = [3, 4, 7, 9, 10]
 # All available:    COMBINACION_A_EJECUTAR = "all"
 #
-COMBINACION_A_EJECUTAR = [6666]
+COMBINACION_A_EJECUTAR = [6]
 
 # ============================================================================
 # OUTPUT SETTINGS
@@ -152,7 +187,7 @@ CONFIG = {
     "ACTIVO": ACTIVO_PRIMARIO,
     # New: list of assets to run sequentially.
     "ACTIVOS": ACTIVOS,
-    "TIMEFRAME": "5m",
+    "TIMEFRAME": "1h",
     "SALDO_INICIAL": SALDO_INICIAL,
     "SALDO_OPERATIVO_MAX": SALDO_OPERATIVO_MAX,
     "APALANCAMIENTO": APALANCAMIENTO,
@@ -160,10 +195,27 @@ CONFIG = {
     "COMISION_SIDES": COMISION_SIDES,
     "SALDO_MINIMO_OPERATIVO": SALDO_MINIMO_OPERATIVO,
     "QTY_MAX_ACTIVO": QTY_MAX_ACTIVO,
+    "OPTIMIZAR_QTY_ACTIVO": OPTIMIZAR_QTY_ACTIVO,
+    # Per-asset caps and Optuna ranges for qty_max_activo
+    "QTY_MAX_MAP": _QTY_MAX_MAP,
+    "QTY_MAX_RANGE_MAP": _QTY_MAX_RANGE_MAP,
     "GENERAR_PLOTS": GENERAR_PLOTS,
     "USAR_EXCEL": USAR_EXCEL,
     "USAR_DATA_LIMPIA": False,
     "OPTUNA_N_JOBS": OPTUNA_N_JOBS,
     "OPTUNA_SEED": OPTUNA_SEED,
     "OPTUNA_STORAGE": OPTUNA_STORAGE,
+
+    # Global exits (engine)
+    "EXIT_ATR_PERIOD": EXIT_ATR_PERIOD,
+    "EXIT_SL_ATR": EXIT_SL_ATR,
+    "EXIT_TP_ATR": EXIT_TP_ATR,
+    "EXIT_TIME_STOP_BARS": EXIT_TIME_STOP_BARS,
+
+    # Optuna exits
+    "OPTIMIZAR_SALIDAS": OPTIMIZAR_SALIDAS,
+    "EXIT_ATR_PERIOD_RANGE": EXIT_ATR_PERIOD_RANGE,
+    "EXIT_SL_ATR_RANGE": EXIT_SL_ATR_RANGE,
+    "EXIT_TP_ATR_RANGE": EXIT_TP_ATR_RANGE,
+    "EXIT_TIME_STOP_BARS_RANGE": EXIT_TIME_STOP_BARS_RANGE,
 }

@@ -230,6 +230,19 @@ _OSCILLATOR_INDICATORS = [
         ),
     ),
     IndicatorMetadata(
+        name="super_9955",
+        display_name="SuperIndicador 9955",
+        indicator_type="oscillator",
+        color="#f97316",
+        range_info=IndicatorRange(
+            min_value=-3,
+            max_value=3,
+            neutral=0,
+            overbought=2,
+            oversold=-2,
+        ),
+    ),
+    IndicatorMetadata(
         name="chande_mo",
         display_name="Chande MO",
         indicator_type="oscillator",
@@ -355,6 +368,19 @@ _OSCILLATOR_INDICATORS = [
         display_name="Accel (SG Sim)",
         indicator_type="oscillator",
         color="#22d3ee",
+        range_info=IndicatorRange(
+            min_value=-3,
+            max_value=3,
+            neutral=0,
+            overbought=2,
+            oversold=-2,
+        ),
+    ),
+    IndicatorMetadata(
+        name="quant_4444",
+        display_name="Quant 4444",
+        indicator_type="oscillator",
+        color="#fbbf24",
         range_info=IndicatorRange(
             min_value=-3,
             max_value=3,

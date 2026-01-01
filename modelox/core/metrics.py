@@ -58,6 +58,34 @@ def retorno_promedio(trades: pd.DataFrame) -> float:
     return float(trades["pnl_neto"].mean())
 
 
+def sqn(trades: pd.DataFrame) -> float:
+    """System Quality Number (SQN).
+
+    Fórmula:
+        $SQN = \sqrt{N} \times (\bar{R} / \sigma_R)$
+
+    Donde R es el resultado por trade. Aquí usamos `pnl_neto` (PnL neto por trade)
+    porque ya incluye comisiones y es consistente con el resto de métricas.
+    """
+
+    if _empty(trades):
+        return 0.0
+
+    r = trades["pnl_neto"].to_numpy(dtype=np.float64, copy=False)
+    r = r[np.isfinite(r)]
+    n = int(r.size)
+    if n < 2:
+        return 0.0
+
+    mean = float(np.mean(r))
+    std = float(np.std(r, ddof=1))
+    if std == 0.0 or not np.isfinite(std):
+        return 0.0
+
+    val = float(np.sqrt(float(n)) * (mean / std))
+    return val if np.isfinite(val) else 0.0
+
+
 def estabilidad_equity(equity_curve: List[float]) -> float:
     """
     Simple smoothness measure (1 - std(delta)/mean(equity)).
@@ -283,6 +311,7 @@ def resumen_metricas(
             "drawdown": 0.0,
             "expectativa": 0.0,
             "retorno_promedio": 0.0,
+            "sqn": 0.0,
             "estabilidad": 0.0,
             "racha_ganadora": 0,
             "racha_perdedora": 0,
@@ -333,6 +362,7 @@ def resumen_metricas(
         "drawdown": max_dd_pct,
         "expectativa": expectativa(trades),
         "retorno_promedio": retorno_promedio(trades),
+        "sqn": sqn(trades),
         "estabilidad": estabilidad_equity(equity_curve),
         "racha_ganadora": racha_g,
         "racha_perdedora": racha_p,

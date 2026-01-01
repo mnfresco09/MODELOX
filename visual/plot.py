@@ -58,15 +58,17 @@ import numpy as np
 
 # Ultra-fast JSON serialization
 try:
-    import orjson
+    import orjson  # type: ignore[reportMissingImports]
     HAS_ORJSON = True
+
     def _dumps(obj: dict) -> str:
-        return orjson.dumps(obj, option=orjson.OPT_SERIALIZE_NUMPY).decode('utf-8')
+        return orjson.dumps(obj, option=orjson.OPT_SERIALIZE_NUMPY).decode("utf-8")
 except ImportError:
     import json
     HAS_ORJSON = False
+
     def _dumps(obj: dict) -> str:
-        return json.dumps(obj, separators=(',', ':'), default=str)
+        return json.dumps(obj, separators=(",", ":"), default=str)
 
 # Polars support
 try:
@@ -109,6 +111,9 @@ INDICATOR_COLORS = {
     "stoch_k": "#f472b6",    # Pink
     "stoch_d": "#a78bfa",    # Purple
     "roc": "#fb923c",        # Orange
+
+    # NEW: SuperIndicador 9955
+    "super_9955": "#f97316",  # Orange
     
     # NEW: ML Learning / Lorentzian
     "ml_vote": "#22d3ee",    # Cyan
@@ -192,6 +197,11 @@ INDICATOR_COLORS = {
     "lrs": "#fb923c",          # Orange (raw slope)
     "lrs_smooth": "#22d3ee",    # Cyan (smoothed slope)
     "lrs_signal": "#94a3b8",    # Gray (signal line)
+
+    # ALMA Z-Score Slope (Strategy 3001)
+    "alma_base": "#fbbf24",     # Amber
+    "zscore_alma": "#fbbf24",   # Amber
+    "slope_s": "#22d3ee",       # Cyan
     
     # ADX components
     "plus_di": "#22c55e",    # Green
@@ -205,6 +215,10 @@ INDICATOR_COLORS = {
     "hma_fast_velocity": "#06b6d4",  # Cyan
     "hma_slow_velocity": "#0ea5e9",  # Sky
     "hma_fast_acceleration": "#f43f5e", # Rose
+
+    # SuperGolay (causal SG smoothing + score)
+    "supergolay": "#a855f7",        # Violet (reuse existing palette)
+    "supergolay_score": "#fbbf24",  # Amber
 }
 
 # Overlay indicators (values in price range, drawn on main chart)
@@ -213,6 +227,7 @@ OVERLAY_INDICATORS = {
     "ema", "ema_200", "ema200_mtf", "ema_50", "ema_20", "ema_base",
     "sma", "wma", "hma", "vwma", "vwap_session",
     "alma", "alma_5", "alma_25", "alma_60",
+    "alma_base",
     "kama", "kalman",
     
     # Trend
@@ -229,6 +244,9 @@ OVERLAY_INDICATORS = {
     
     # Elder Ray
     "elder_ema",
+
+    # SuperGolay
+    "supergolay",
 }
 
 # Sub-panel oscillators (bounded 0-100 or unbounded, separate panel)
@@ -251,6 +269,8 @@ OSCILLATOR_INDICATORS = {
     # Efficiency/Trend
     "er", "er_kaufman", "efficiency_ratio",
     "linreg_slope",
+    "zscore_alma",
+    "slope_s",
     "lrs", "lrs_smooth", "lrs_signal",  # LRS Advanced
     
     # Advanced Oscillators
@@ -276,6 +296,12 @@ OSCILLATOR_INDICATORS = {
     "velocity", "acceleration",
     "hma_velocity", "hma_acceleration",
     "hma_fast_velocity", "hma_slow_velocity", "hma_fast_acceleration",
+
+    # SuperGolay score
+    "supergolay_score",
+
+    # SuperIndicador 9955
+    "super_9955",
 }
 
 # Reference lines for bounded oscillators
@@ -303,6 +329,7 @@ OSCILLATOR_BOUNDS = {
     "ml_vote": {"hi": 0.5, "lo": -0.5, "mid": 0},
     "zscore_kalman": {"hi": 2.0, "lo": -2.0, "mid": 0},
     "zscore": {"hi": 3.0, "lo": -3.0, "mid": 0},  # Z-Score bounds
+    "zscore_alma": {"hi": 3.0, "lo": -3.0, "mid": 0},
     "atr_p90": {},  # ATR Percentile 90 - no bounds (same panel as ATR)
     
     # Kinematics - no bounds (unbounded oscillators)
@@ -313,6 +340,12 @@ OSCILLATOR_BOUNDS = {
     "hma_fast_velocity": {"mid": 0},
     "hma_slow_velocity": {"mid": 0},
     "hma_fast_acceleration": {"mid": 0},
+
+    # SuperIndicador 9955
+    "super_9955": {"hi": 2.0, "lo": -2.0, "mid": 0.0},
+
+    # SuperGolay score zones
+    "supergolay_score": {"hi": 1.0, "lo": -1.0, "mid": 0.0},
 }
 
 # MACD-style indicators (need special rendering with histogram)
@@ -662,6 +695,19 @@ def _extract_indicator_params_from_optuna(params: Optional[Dict[str, Any]], indi
     
     result = {}
     ind_lower = indicator_name.lower()
+
+    # Strategy 3001 (ALMA z-score) uses asymmetric param names.
+    # Map them to bounds so the plot can draw reference lines.
+    if ind_lower == "zscore_alma":
+      try:
+        if "z_threshold_upper" in params and params["z_threshold_upper"] is not None:
+          result["hi"] = float(params["z_threshold_upper"])
+        if "z_threshold_lower" in params and params["z_threshold_lower"] is not None:
+          result["lo"] = float(params["z_threshold_lower"])
+        if result:
+          result.setdefault("mid", 0.0)
+      except (ValueError, TypeError):
+        pass
     
     # === PERIOD DETECTION ===
     period_patterns = [
@@ -757,8 +803,11 @@ def _extract_indicator_params_from_optuna(params: Optional[Dict[str, Any]], indi
                 pass
     
     # Calculate mid if we have hi and lo
-    if 'hi' in result and 'lo' in result:
-        result['mid'] = (result['hi'] + result['lo']) / 2
+    # For z-score style oscillators, mid should be 0 (even if hi/lo are asymmetric).
+    if ind_lower in {"zscore", "zscore_alma", "zscore_kalman"}:
+      result['mid'] = 0.0
+    elif 'hi' in result and 'lo' in result:
+      result['mid'] = (result['hi'] + result['lo']) / 2
     
     return result
 
@@ -1230,6 +1279,37 @@ try {
         });
       }catch(e){console.warn('Markers error:',e);}    
     }
+
+    // Exit points at real price: white dots only (NO connecting lines)
+    try{
+      if(T.xe && T.xe.length>0){
+        // Use an invisible line series to anchor markers at the exact exit price.
+        // The series line is fully transparent so no diagonals can appear.
+        const es=mc.addLineSeries({
+          color:'rgba(0,0,0,0)',
+          lineWidth:1,
+          priceLineVisible:false,
+          lastValueVisible:false,
+          crosshairMarkerVisible:false
+        });
+        es.setData(T.xe);
+
+        if(T.xm && T.xm.length>0){
+          const exitMarkers=T.xm.map(m=>({
+            time:m.time,
+            position:m.position||'inBar',
+            color:m.color||'#ffffff',
+            shape:m.shape||'circle',
+            text:m.text||'',
+            size:m.size||2
+          }));
+          es.setMarkers(exitMarkers);
+          mc.timeScale().subscribeVisibleTimeRangeChange(()=>{
+            es.setMarkers(exitMarkers);
+          });
+        }
+      }
+    }catch(e){console.warn('Exit points error:',e);}
   }
 
   // === OVERLAY INDICATORS (on main chart) - NULL-AWARE ===
@@ -1928,7 +2008,7 @@ def plot_trades(
     max_warmup = min(max_warmup, len(ts_q_full) - 10)
     max_warmup = max(0, max_warmup)  # Ensure non-negative
     
-    print(f"[PLOT v6.1] Global Warm-up: {max_warmup} bars (chart starts at candle {max_warmup})")
+    # (debug print removed)
     
     # SLICE ALL DATA FROM WARMUP POINT - Everything synchronized
     ts_q = ts_q_full[max_warmup:]
@@ -2051,7 +2131,7 @@ def plot_trades(
             panel_name = panel_cfg.get("name", col.upper())
             
             # Quantize (higher precision for MACD/zscore, standard for others)
-            precision = 4 if col in {"macd", "macd_hist", "macd_signal", "zscore", "zscore_kalman"} else 2
+            precision = 4 if col in {"macd", "macd_hist", "macd_signal", "zscore", "zscore_kalman", "zscore_alma"} else 2
             quantized, factor = aligner.quantize(aligned_vals, precision=precision)
             
             indicators["sub_panels"].append({
@@ -2059,7 +2139,7 @@ def plot_trades(
                 "type": panel_cfg["type"],
                 "color": panel_cfg["color"],
                 "bounds": panel_cfg.get("bounds"),  # Already merged with Optuna params
-                "zero_line": col in {"macd", "macd_hist", "zscore", "zscore_kalman"},
+                "zero_line": col in {"macd", "macd_hist", "zscore", "zscore_kalman", "zscore_alma"},
                 "data": {
                     "t": ts_q.tolist(),  # AUTHORITATIVE timestamps - ZERO-LAG GUARANTEED
                     "v": quantized,
@@ -2071,7 +2151,11 @@ def plot_trades(
     # Use np.searchsorted to snap trade timestamps to exact candle timestamps
     # This prevents marker disappearance during scroll/zoom
     # WARMUP FILTER: Trades within the warmup period are not displayed
-    trades = {"m": [], "i": []}
+    # m: candle markers (entries; time-only)
+    # i: trade info for tooltips
+    # xe: exit points at exact exit_price (time+value)
+    # xm: exit markers for the exit series (white dots)
+    trades = {"m": [], "i": [], "xe": [], "xm": []}
     max_valid_ts = int(ts_q[-1]) if len(ts_q) > 0 else None
     
     # Build efficient lookup structure for candle timestamps
@@ -2178,20 +2262,23 @@ def plot_trades(
                         })
                         trades["i"].append({"time": et, **trade_info})
                         
-                        if xt is not None and xp and xt in candle_ts_set:
-                            # Exit marker: white circle
-                            trades["m"].append({
-                                "time": xt,
-                                "position": "inBar",  # Centered on candle body
-                                "color": "#ffffff",
-                                "shape": "circle",    # Clean dot style
-                                "text": "",
-                                "size": 1             # Smaller for exits
-                            })
-                            trades["i"].append({"time": xt, **trade_info})
+                        # Exit points at real price (NOT candle close) - render as white dots only
+                        if xt is not None and xp is not None and xt in candle_ts_set:
+                          trades["xe"].append({"time": xt, "value": float(xp)})
+                          trades["xm"].append({
+                            "time": xt,
+                            "position": "inBar",
+                            "color": "#ffffff",
+                            "shape": "circle",
+                            "text": "",
+                            "size": 2,
+                          })
+                          trades["i"].append({"time": xt, **trade_info})
                 
                 trades["m"].sort(key=lambda x: x["time"])
                 trades["i"].sort(key=lambda x: x["time"])
+                trades["xe"].sort(key=lambda x: x["time"])
+                trades["xm"].sort(key=lambda x: x["time"])
     
     # ================== CONFIG ==================
     total_trades = 0
@@ -2251,68 +2338,29 @@ def plot_trades(
 def _cleanup_old_plots(plot_base: str, max_archivos: int):
     """Remove old plot files, keeping only the best scores."""
     try:
-        all_files = [f for f in os.listdir(plot_base) if f.endswith(".html") and f.startswith("TRIAL-")]
+        all_files = [
+            f
+            for f in os.listdir(plot_base)
+            if f.endswith(".html") and f.startswith("TRIAL-")
+        ]
         files_with_scores = []
-        for f in all_files:
+        for fname in all_files:
             # Match new format: TRIAL-{n}_SC-{score}_{combo}.html
-            match = re.search(r"TRIAL-\d+_SC-([\d.]+)_.*\.html", f)
-            if match:
-                try:
-                    files_with_scores.append((f, float(match.group(1))))
-                except ValueError:
-                    continue
-        
-        files_with_scores.sort(key=lambda x: x[1], reverse=True)
-        
-        if len(files_with_scores) > max_archivos:
-            for f, _ in files_with_scores[max_archivos:]:
-                old_path = os.path.join(plot_base, f)
-                if os.path.exists(old_path):
-                    os.remove(old_path)
-    except Exception:
-        pass
-    # Sanitize combo name for filename (remove special chars, limit length)
-    combo_safe = re.sub(r"[^a-zA-Z0-9_-]", "_", combo or "STRATEGY")[:30]
-    filename = f"TRIAL-{trial_number}_SC-{score:.2f}_{combo_safe}.html"
-    filepath = os.path.join(plot_base, filename)
-    
-    with open(filepath, "w", encoding="utf-8") as f:
-        f.write(html)
-    
-    # ================== CLEANUP ==================
-    if max_archivos > 0:
-        _cleanup_old_plots(plot_base, max_archivos)
+            match = re.search(r"TRIAL-\d+_SC-([\d.]+)_.*\.html", fname)
+            if not match:
+                continue
+            try:
+                files_with_scores.append((fname, float(match.group(1))))
+            except ValueError:
+                continue
 
+        files_with_scores.sort(key=lambda x: x[1], reverse=True)
 
-def _cleanup_old_plots(plot_base: str, max_archivos: int):
-    """Remove old plot files, keeping only the best scores."""
-    try:
-        all_files = [f for f in os.listdir(plot_base) if f.endswith(".html") and f.startswith("TRIAL-")]
-        files_with_scores = []
-        for f in all_files:
-            # Match new format: TRIAL-{n}_SC-{score}_{combo}.html
-            match = re.search(r"TRIAL-\d+_SC-([\d.]+)_.*\.html", f)
-            if match:
-                try:
-                    files_with_scores.append((f, float(match.group(1))))
-                except ValueError:
-                    continue
-        
-        files_with_scores.sort(key=lambda x: x[1], reverse=True)
-        
         if len(files_with_scores) > max_archivos:
-            for f, _ in files_with_scores[max_archivos:]:
-                old_path = os.path.join(plot_base, f)
+            for fname, _ in files_with_scores[max_archivos:]:
+                old_path = os.path.join(plot_base, fname)
                 if os.path.exists(old_path):
                     os.remove(old_path)
     except Exception:
-        pass
-        files_with_scores.sort(key=lambda x: x[1], reverse=True)
-        
-        if len(files_with_scores) > max_archivos:
-            for f, _ in files_with_scores[max_archivos:]:
-                old_path = os.path.join(plot_base, f)
-                if os.path.exists(old_path):
-                    os.remove(old_path)
-    except Exception:
+        # Best-effort cleanup only
         pass

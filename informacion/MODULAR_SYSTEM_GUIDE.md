@@ -294,7 +294,7 @@ from modelox.strategies.indicator_specs import cfg_rsi
 import polars as pl
 
 # Cargar datos
-df = pl.read_csv("data/ohlcv/BTC_ohlcv_5m.csv")
+df = pl.read_csv("data/ohlcv/BTC_ohlcv_1h.csv")
 
 # Calcular indicador
 cfg = {"rsi": cfg_rsi(period=14)}

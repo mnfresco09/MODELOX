@@ -1,285 +1,298 @@
-from __future__ import annotations
-
-"""Strategy 6666 — DPO_ROC_Momentum_Breakout
-
-Estrategia Momentum / Ruptura de Volatilidad.
-
-Indicadores
-- DPO: desviación de tendencia (en unidades de precio)
-- ROC: velocidad del cambio del precio (%)
-- ATR: para normalizar DPO y para trailing
-
-Nota importante sobre escalas (adaptación de DPO):
-- Nuestro DPO es un diferencial en unidades de precio: DPO = close - SMA_shifted.
-- Para que los umbrales sean robustos entre activos (BTC vs GOLD vs SPX),
-  usamos DPO normalizado por ATR: dpo_n = dpo / atr.
-  Así, umbrales como 0.8–3.0 significan “desviación de 0.8–3.0 ATR”.
-
-Entradas
-LONG:
-- dpo_n > umbral_dpo
-- roc > umbral_roc
-
-SHORT:
-- dpo_n < -umbral_dpo
-- roc < -umbral_roc
-
-Salidas
-A) Take Profit por PnL: salir si PnL neto >= tp_pnl
-B) Stop Loss por PnL: salir si PnL neto <= -sl_pnl
-C) Protección: si en algún momento PnL neto >= lock_trigger_pnl, mover el stop a PnL neto = lock_stop_pnl
-
-"""
-
 from typing import Any, Dict, Optional
-
 import numpy as np
 import polars as pl
 from numba import njit
-
 from logic.indicators import IndicadorFactory
 from modelox.core.types import ExitDecision
-from modelox.strategies.indicator_specs import cfg_atr, cfg_dpo, cfg_roc
+from modelox.strategies.indicator_specs import cfg_atr
 
-
+# ==============================================================================
+# 1. SALIDA ESTRICTA (SL REAL) - MANTENIDA
+# ==============================================================================
 @njit(cache=True, fastmath=True)
-def _exit_logic_numba(
+def _decide_exit_strict(
     entry_idx: int,
-    entry_price: float,
+    entry_atr: float,
+    sl_mult: float,
+    trail_mult: float,
+    open_: np.ndarray,
+    high: np.ndarray,
+    low: np.ndarray,
     close: np.ndarray,
-    qty: float,
-    comision_pct: float,
-    comision_sides: int,
-    tp_pnl: float,
-    sl_pnl: float,
-    lock_trigger_pnl: float,
-    lock_stop_pnl: float,
+    atr: np.ndarray,
     side_flag: int,
     max_bars: int,
-) -> tuple[int, int]:
-    """Exit logic PnL-based.
-
-    Net PnL is estimated as if exiting at close[i], including commissions.
-
-    code: 1=TP_PNL, 2=SL_PNL, 3=LOCK_SL_PNL, 4=TIME_EXIT
-    """
-
+) -> tuple:
     n = len(close)
     last_allowed = min(n - 1, entry_idx + max_bars)
+    lb = 5
+    start = entry_idx - (lb - 1)
+    if start < 0: start = 0
 
-    lock_active = False
+    hard_sl = np.nan
+    if not np.isnan(entry_atr):
+        if side_flag == 1: # LONG
+            mn = low[start]
+            for j in range(start + 1, entry_idx + 1):
+                if low[j] < mn: mn = low[j]
+            hard_sl = mn - entry_atr * sl_mult
+        else: # SHORT
+            mx = high[start]
+            for j in range(start + 1, entry_idx + 1):
+                if high[j] > mx: mx = high[j]
+            hard_sl = mx + entry_atr * sl_mult
 
-    # Entry commission follows simulate_trades() convention:
-    # - If comision_sides >= 2: charge entry commission
-    # - Exit commission is always charged
-    c_ent = (qty * entry_price * comision_pct) if comision_sides >= 2 else 0.0
+    trailing = np.nan
+    if not np.isnan(entry_atr):
+        if side_flag == 1:
+            trailing = close[entry_idx] - entry_atr * trail_mult
+        else:
+            trailing = close[entry_idx] + entry_atr * trail_mult
 
     for i in range(entry_idx + 1, last_allowed + 1):
-        c = close[i]
-        if np.isnan(c):
-            continue
+        o, h, l, c, a = open_[i], high[i], low[i], close[i], atr[i]
+        if np.isnan(o): continue
 
-        # Gross PnL in quote currency
-        bruto = (c - entry_price) * qty if side_flag == 1 else (entry_price - c) * qty
+        if not np.isnan(a):
+            if side_flag == 1:
+                dyn = c - a * trail_mult
+                if np.isnan(trailing) or dyn > trailing: trailing = dyn
+            else:
+                dyn = c + a * trail_mult
+                if np.isnan(trailing) or dyn < trailing: trailing = dyn
 
-        # Exit commission at current price
-        c_ext = qty * c * comision_pct
-        neto = bruto - c_ent - c_ext
+        active_stop = np.nan
+        reason_code = 0 
 
-        # Take Profit
-        if neto >= tp_pnl:
-            return i, 1
+        if side_flag == 1: # LONG
+            current_stop = -np.inf
+            if not np.isnan(hard_sl):
+                current_stop = hard_sl
+                reason_code = 1
+            if not np.isnan(trailing):
+                if trailing > current_stop:
+                    current_stop = trailing
+                    reason_code = 2
+            
+            if reason_code > 0:
+                if o <= current_stop: return i, o, reason_code # Gap Exit
+                if l <= current_stop: return i, current_stop, reason_code # Touch Exit
 
-        # Activate lock once profit threshold touched
-        if (not lock_active) and neto >= lock_trigger_pnl:
-            lock_active = True
+        else: # SHORT
+            current_stop = np.inf
+            if not np.isnan(hard_sl):
+                current_stop = hard_sl
+                reason_code = 1
+            if not np.isnan(trailing):
+                if trailing < current_stop:
+                    current_stop = trailing
+                    reason_code = 2
+            
+            if reason_code > 0:
+                if o >= current_stop: return i, o, reason_code
+                if h >= current_stop: return i, current_stop, reason_code
 
-        # Locked stop (after trigger)
-        if lock_active and neto <= lock_stop_pnl:
-            return i, 3
-
-        # Hard stop loss
-        if neto <= -sl_pnl:
-            return i, 2
-
-    return last_allowed, 4
+    if last_allowed > entry_idx:
+        return last_allowed, close[last_allowed], 3
+    return -1, np.nan, 0
 
 
-class Strategy6666DPOROCMomentumBreakout:
-    combinacion_id = 6666
-    name = "DPO_ROC_Momentum_Breakout"
+# ==============================================================================
+# 2. ESTRATEGIA: TEMA KINETIC IMPULSE
+# ==============================================================================
 
-    __indicators_used = ["dpo", "roc", "atr"]
+class Strategy3003TEMAKineticImpulse:
+    combinacion_id = 3005
+    name = "TEMA_Kinetic_Z_V1"
+
+    __indicators_used = ["tema", "z_velocity", "adx", "atr"]
 
     @classmethod
     def get_indicators_used(cls):
         return cls.__indicators_used
 
     parametros_optuna = {
-        "dpo_period": (10, 30, 1),
-        "roc_period": (5, 21, 1),
-        # Entry intensity thresholds
-        # NOTE: symmetric thresholds for long/short entries.
-        "umbral_dpo": (0.5, 3.0, 0.1),  # en ATRs
-        "umbral_roc": (0.1, 2.5, 0.1),  # %
-        # Exits (PnL neto, en moneda de la cuenta)
-        "tp_pnl": (10.0, 60.0, 1.0),
-        "sl_pnl": (5.0, 40.0, 1.0),
-        "lock_trigger_pnl": (1.0, 30.0, 0.5),
-        "lock_stop_pnl": (0.0, 20.0, 0.5),
-        # ATR is still used for DPO normalization in entries.
-        "atr_period": (14, 14, 1),
+        # --- Configuración TEMA (Base) ---
+        "tema_period": (10, 50, 2), # Ventana del TEMA
+        
+        # --- Configuración Kinetic Z (Normalización) ---
+        "z_window": (20, 100, 5),   # Ventana histórica para calcular el Z-Score
+        "z_trigger": (1.0, 3.0, 0.1), # Umbral de disparo (Sigmas)
+        
+        # --- Filtro ADX (Fuerza) ---
+        "adx_period": (10, 20, 1),
+        "adx_min": (15, 30, 1),     # Solo operar si hay tendencia mínima
+        
+        # --- Gestión de Salida ---
+        "sl_multiplier": (1.0, 4.0, 0.1),
+        "trail_multiplier": (1.5, 6.0, 0.1),
+        "atr_period": (10, 24, 1),
     }
 
-    TIMEOUT_BARS = 320
+    TIMEOUT_BARS = 260
 
     def suggest_params(self, trial: Any) -> Dict[str, Any]:
-        # Exit params with ordering constraints:
-        # - tp_pnl must be > lock_trigger_pnl
-        # - lock_trigger_pnl must be > lock_stop_pnl
-        # - sl_pnl is a positive loss magnitude
-        tp_pnl = float(trial.suggest_float("tp_pnl", 10.0, 60.0, step=1.0))
-        sl_pnl = float(trial.suggest_float("sl_pnl", 5.0, 40.0, step=1.0))
-
-        lock_trigger_hi = min(30.0, tp_pnl - 1.0)
-        if lock_trigger_hi < 1.0:
-            lock_trigger_hi = 1.0
-        lock_trigger_pnl = float(
-            trial.suggest_float("lock_trigger_pnl", 1.0, lock_trigger_hi, step=0.5)
-        )
-
-        lock_stop_hi = min(20.0, lock_trigger_pnl - 0.5)
-        if lock_stop_hi < 0.0:
-            lock_stop_hi = 0.0
-        lock_stop_pnl = float(
-            trial.suggest_float("lock_stop_pnl", 0.0, lock_stop_hi, step=0.5)
-        )
-
+        if trial is None:
+            return {
+                "tema_period": 20,
+                "z_window": 50,
+                "z_trigger": 1.8,
+                "adx_period": 14,
+                "adx_min": 20,
+                "sl_multiplier": 2.0,
+                "trail_multiplier": 3.5,
+                "atr_period": 14,
+            }
         return {
-            "dpo_period": int(trial.suggest_int("dpo_period", 10, 30, step=1)),
-            "roc_period": int(trial.suggest_int("roc_period", 5, 21, step=1)),
-            # Symmetric entries: one threshold used for both sides (sign-flipped).
-            "umbral_dpo": float(trial.suggest_float("umbral_dpo", 0.5, 3.0, step=0.1)),
-            "umbral_roc": float(trial.suggest_float("umbral_roc", 0.1, 2.5, step=0.1)),
-            # Exits
-            "tp_pnl": tp_pnl,
-            "sl_pnl": sl_pnl,
-            "lock_trigger_pnl": lock_trigger_pnl,
-            "lock_stop_pnl": lock_stop_pnl,
-            "atr_period": 14,
+            "tema_period": trial.suggest_int("tema_period", 10, 50, step=2),
+            "z_window": trial.suggest_int("z_window", 20, 100, step=5),
+            "z_trigger": trial.suggest_float("z_trigger", 1.0, 3.0, step=0.1),
+            "adx_period": trial.suggest_int("adx_period", 10, 20, step=1),
+            "adx_min": trial.suggest_int("adx_min", 15, 30, step=1),
+            "sl_multiplier": trial.suggest_float("sl_multiplier", 1.0, 4.0, step=0.1),
+            "trail_multiplier": trial.suggest_float("trail_multiplier", 1.5, 6.0, step=0.1),
+            "atr_period": trial.suggest_int("atr_period", 10, 24, step=1),
         }
 
     def generate_signals(self, df: pl.DataFrame, params: Dict[str, Any]) -> pl.DataFrame:
         params["__indicators_used"] = self.get_indicators_used()
 
-        dpo_period = int(params.get("dpo_period", 20))
-        roc_period = int(params.get("roc_period", 12))
-        atr_period = int(params.get("atr_period", 14))
+        if "timestamp" not in df.columns and "datetime" in df.columns:
+            df = df.with_columns(pl.col("datetime").alias("timestamp"))
 
-        # Entry thresholds are symmetric by requirement.
-        # Backwards-compatible: if older param names exist, we still accept them.
-        umbral_dpo = float(
-            params.get(
-                "umbral_dpo",
-                params.get("umbral_long_dpo", params.get("umbral_short_dpo", 1.2)),
-            )
-        )
-        umbral_roc = float(
-            params.get(
-                "umbral_roc",
-                params.get("umbral_long_roc", params.get("umbral_short_roc", 0.6)),
-            )
-        )
+        # Params
+        tema_len = params.get("tema_period", 20)
+        z_win = params.get("z_window", 50)
+        z_trig = params.get("z_trigger", 1.8)
+        
+        adx_len = params.get("adx_period", 14)
+        adx_threshold = params.get("adx_min", 20)
+        
+        params["__warmup_bars"] = max(tema_len*3, z_win, adx_len) + 20
 
-        # Warmup: DPO uses SMA(period) + shift, plus ATR/ROC
-        params["__warmup_bars"] = max(dpo_period + (dpo_period // 2 + 1), atr_period, roc_period) + 10
-
-        ind_config = {
-            "dpo": cfg_dpo(period=dpo_period, col="close", out="dpo"),
-            "roc": cfg_roc(period=roc_period, col="close", out="roc"),
-            "atr": cfg_atr(period=atr_period, out="atr"),
-        }
-        df = IndicadorFactory.procesar(df, ind_config)
-
-        dpo = pl.col("dpo")
-        roc = pl.col("roc")
-        atr = pl.col("atr")
-
-        dpo_n = dpo / (atr + 1e-12)
-
-        signal_long = (dpo_n > umbral_dpo) & (roc > umbral_roc)
-        signal_short = (dpo_n < (-umbral_dpo)) & (roc < (-umbral_roc))
-
-        return df.with_columns(
-            [
-                signal_long.fill_null(False).alias("signal_long"),
-                signal_short.fill_null(False).alias("signal_short"),
-            ]
+        # 1. Base Indicators: ATR & ADX
+        # Usamos IndicadorFactory para ADX y ATR que son estándar
+        # Asumimos que tienes cfg_adx disponible, si no, lo calculamos manual abajo por seguridad
+        df = IndicadorFactory.procesar(
+            df,
+            {
+                "atr": cfg_atr(period=params.get("atr_period", 14), out="atr"),
+            },
         )
 
-    def decide_exit(
-        self,
-        df: pl.DataFrame,
-        params: Dict[str, Any],
-        entry_idx: int,
-        entry_price: float,
-        side: str,
-        *,
-        saldo_apertura: float,
-    ) -> Optional[ExitDecision]:
+        # ----------------------------------------------------------------------
+        # 2. CÁLCULO MANUAL: TEMA (Triple Exponential Moving Average)
+        # ----------------------------------------------------------------------
+        # TEMA = 3*EMA1 - 3*EMA2 + EMA3
+        # Polars ewm_mean es rápido
+        
+        ema1 = pl.col("close").ewm_mean(span=tema_len, adjust=False)
+        # Para ema2 y ema3 necesitamos aplicar ewm sobre la expresión anterior.
+        # En Polars lazy, a veces es mejor instanciar columnas intermedias.
+        
+        df = df.with_columns(ema1.alias("ema1"))
+        df = df.with_columns(pl.col("ema1").ewm_mean(span=tema_len, adjust=False).alias("ema2"))
+        df = df.with_columns(pl.col("ema2").ewm_mean(span=tema_len, adjust=False).alias("ema3"))
+        
+        tema_expr = (3 * pl.col("ema1")) - (3 * pl.col("ema2")) + pl.col("ema3")
+        df = df.with_columns(tema_expr.alias("tema"))
+
+        # ----------------------------------------------------------------------
+        # 3. CÁLCULO KINETIC: Velocity & Z-Score
+        # ----------------------------------------------------------------------
+        # Velocidad = TEMA actual - TEMA previo
+        df = df.with_columns((pl.col("tema") - pl.col("tema").shift(1)).alias("velocity"))
+        
+        # Z-Score de la Velocidad
+        # Z = (Val - Mean) / Std
+        v = pl.col("velocity")
+        v_mean = v.rolling_mean(z_win)
+        v_std = v.rolling_std(z_win)
+        
+        # Evitar div por cero
+        z_score_expr = (v - v_mean) / pl.when(v_std == 0).then(0.00001).otherwise(v_std)
+        df = df.with_columns(z_score_expr.fill_null(0).alias("z_velocity"))
+
+        # ----------------------------------------------------------------------
+        # 4. CÁLCULO ADX (Manual Rápido si no está en Factory)
+        # ----------------------------------------------------------------------
+        # True Range ya calculado internamente por ATR normalmente, pero lo rehacemos rápido
+        h, l, c_prev = pl.col("high"), pl.col("low"), pl.col("close").shift(1)
+        tr = pl.max_horizontal([h-l, (h-c_prev).abs(), (l-c_prev).abs()])
+        
+        # Directional Movement
+        up = h - h.shift(1)
+        down = l.shift(1) - l
+        pos_dm = pl.when((up > down) & (up > 0)).then(up).otherwise(0.0)
+        neg_dm = pl.when((down > up) & (down > 0)).then(down).otherwise(0.0)
+        
+        # Smooth (Wilder's Smoothing is roughly EMA with span = 2*n - 1)
+        wilder_span = (adx_len * 2) - 1
+        tr_s = tr.ewm_mean(span=wilder_span, adjust=False)
+        pos_dm_s = pos_dm.ewm_mean(span=wilder_span, adjust=False)
+        neg_dm_s = neg_dm.ewm_mean(span=wilder_span, adjust=False)
+        
+        pos_di = 100 * pos_dm_s / pl.when(tr_s==0).then(0.001).otherwise(tr_s)
+        neg_di = 100 * neg_dm_s / pl.when(tr_s==0).then(0.001).otherwise(tr_s)
+        
+        dx = 100 * (pos_di - neg_di).abs() / (pos_di + neg_di + 0.001)
+        adx_expr = dx.ewm_mean(span=wilder_span, adjust=False)
+        
+        df = df.with_columns(adx_expr.fill_null(0).alias("adx"))
+
+        # ----------------------------------------------------------------------
+        # 5. GENERACIÓN DE SEÑALES
+        # ----------------------------------------------------------------------
+        z = pl.col("z_velocity")
+        adx = pl.col("adx")
+        
+        # Condiciones
+        # 1. Impulso fuerte: Z-Score de velocidad rompe el umbral
+        impulse_up = z > z_trig
+        impulse_down = z < -z_trig
+        
+        # 2. Fuerza de tendencia: ADX > min
+        trend_ok = adx > adx_threshold
+
+        # Señales de Entrada
+        # Long: Impulso alcista fuerte + Tendencia activa
+        signal_long = (impulse_up & trend_ok).fill_null(False)
+        
+        # Short: Impulso bajista fuerte + Tendencia activa
+        signal_short = (impulse_down & trend_ok).fill_null(False)
+
+        return df.with_columns([
+            signal_long.alias("signal_long"),
+            signal_short.alias("signal_short"),
+        ])
+
+    def decide_exit(self, df: pl.DataFrame, params: Dict[str, Any], entry_idx: int, entry_price: float, side: str, *, saldo_apertura: float) -> Optional[ExitDecision]:
         n = len(df)
-        if entry_idx >= n - 1:
-            return None
+        if entry_idx >= n - 1: return None
+        
+        sl_mult = float(params.get("sl_multiplier", 2.0))
+        trail_mult = float(params.get("trail_multiplier", 3.0))
+        if trail_mult <= sl_mult: trail_mult = sl_mult + 0.1 
+
+        if "atr" not in df.columns: return ExitDecision(exit_idx=min(entry_idx + 1, n - 1), reason="NO_ATR")
+
+        open_arr = df["open"].to_numpy().astype(np.float64)
+        high_arr = df["high"].to_numpy().astype(np.float64)
+        low_arr = df["low"].to_numpy().astype(np.float64)
+        close_arr = df["close"].to_numpy().astype(np.float64)
+        atr_arr = df["atr"].to_numpy().astype(np.float64)
 
         is_long = side.upper() == "LONG"
-        is_short = side.upper() == "SHORT"
-        if not (is_long or is_short):
-            return ExitDecision(exit_idx=min(entry_idx + 1, n - 1), reason="UNKNOWN_SIDE")
-
-        # PnL-based exits (net of commissions; sizing aligned with engine).
-        tp_pnl = float(params.get("tp_pnl", 20.0))
-        sl_pnl = float(params.get("sl_pnl", 10.0))
-        lock_trigger_pnl = float(params.get("lock_trigger_pnl", 5.0))
-        lock_stop_pnl = float(params.get("lock_stop_pnl", 2.0))
-
-        # Sizing inputs injected by runner (see modelox/core/runner.py)
-        saldo_operativo_max = float(params.get("__saldo_operativo_max", saldo_apertura))
-        apalancamiento = float(params.get("__apalancamiento", 1.0))
-        qty_max_activo = float(params.get("__qty_max_activo", 1e308))
-        comision_pct = float(params.get("__comision_pct", 0.0))
-        comision_sides = int(params.get("__comision_sides", 2))
-
-        stake = float(saldo_apertura)
-        if saldo_operativo_max > 0:
-            stake = min(stake, saldo_operativo_max)
-
-        # qty per simulate_trades() convention
-        qty = (stake * apalancamiento) / float(entry_price) if entry_price > 0 else 0.0
-        if qty > qty_max_activo:
-            qty = float(qty_max_activo)
-
-        close_arr = df["close"].to_numpy().astype(np.float64)
-
-        max_bars = min(self.TIMEOUT_BARS, n - entry_idx - 1)
-        exit_idx, code = _exit_logic_numba(
-            int(entry_idx),
-            float(entry_price),
-            close_arr,
-            float(qty),
-            float(comision_pct),
-            int(comision_sides),
-            float(tp_pnl),
-            float(sl_pnl),
-            float(lock_trigger_pnl),
-            float(lock_stop_pnl),
-            1 if is_long else -1,
-            int(max_bars),
+        
+        exit_idx, exit_price, reason_code = _decide_exit_strict(
+            int(entry_idx), float(atr_arr[entry_idx]), sl_mult, trail_mult,
+            open_arr, high_arr, low_arr, close_arr, atr_arr,
+            1 if is_long else -1, min(self.TIMEOUT_BARS, n - entry_idx - 1)
         )
 
-        if code == 1:
-            return ExitDecision(exit_idx=int(exit_idx), reason="TP_PNL")
-        if code == 2:
-            return ExitDecision(exit_idx=int(exit_idx), reason="SL_PNL")
-        if code == 3:
-            return ExitDecision(exit_idx=int(exit_idx), reason="LOCK_SL_PNL")
-        return ExitDecision(exit_idx=int(exit_idx), reason="TIME_EXIT")
+        reason_map = {0: None, 1: "HARD_SL", 2: "TRAIL_STOP", 3: "TIME_EXIT"}
+        
+        if exit_idx >= 0 and reason_map.get(reason_code) is not None:
+            return ExitDecision(exit_idx=int(exit_idx), reason=reason_map[int(reason_code)], exit_price=float(exit_price))
+
+        return ExitDecision(exit_idx=int(min(entry_idx + self.TIMEOUT_BARS, n - 1)), reason="TIME_EXIT")

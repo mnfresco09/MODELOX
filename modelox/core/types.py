@@ -17,11 +17,30 @@ class BacktestConfig:
     saldo_minimo_operativo: float = 1.0
     qty_max_activo: float = float("inf")
 
+    # Global exit settings (engine-owned)
+    exit_atr_period: int = 14
+    exit_sl_atr: float = 1.0
+    exit_tp_atr: float = 1.0
+    exit_time_stop_bars: int = 260
+
+    # Optuna: allow optimizing global exits from configuration
+    optimize_exits: bool = False
+    # Ranges are inclusive; tuples support optional step: (min, max) or (min, max, step)
+    exit_atr_period_range: tuple[int, int, int] = (7, 30, 1)
+    exit_sl_atr_range: tuple[float, float, float] = (0.5, 5.0, 0.1)
+    exit_tp_atr_range: tuple[float, float, float] = (0.5, 8.0, 0.1)
+    exit_time_stop_bars_range: tuple[int, int, int] = (50, 800, 10)
+
+    # Optuna: allow optimizing qty cap per asset
+    optimize_qty_max_activo: bool = False
+    qty_max_activo_range: tuple[float, float, float] = (0.01, 5.0, 0.01)
+
 
 @dataclass(frozen=True)
 class ExitDecision:
     exit_idx: int
     reason: str = ""
+    exit_price: float | None = None
 
 
 @dataclass(frozen=True)
@@ -51,16 +70,10 @@ class Strategy(Protocol):
     def generate_signals(
         self, df: pl.DataFrame, params: Dict[str, Any]
     ) -> pl.DataFrame: ...
-    def decide_exit(
-        self,
-        df: pl.DataFrame,
-        params: Dict[str, Any],
-        entry_idx: int,
-        entry_price: float,
-        side: str,
-        *,
-        saldo_apertura: float,
-    ) -> Optional[ExitDecision]: ...
+
+
+# NOTE:
+# La lógica de salida vive en el engine; las estrategias sólo generan entradas.
 
 
 def filter_by_date(df: pl.DataFrame, start: str, end: str) -> pl.DataFrame:

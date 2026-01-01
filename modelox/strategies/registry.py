@@ -21,7 +21,7 @@ def discover_strategies(*, package: str = "modelox.strategies") -> Dict[str, Typ
 
     Convention:
     - A strategy is a class with a `name: str` attribute and required methods
-      (suggest_params, generate_signals, decide_exit).
+            (suggest_params, generate_signals).
     """
 
     strategies: Dict[str, Type[Strategy]] = {}
@@ -42,7 +42,7 @@ def discover_strategies(*, package: str = "modelox.strategies") -> Dict[str, Typ
                 # IDs start at 1; config uses 0 to mean "all".
                 continue
             # Heuristic: class must have the expected methods.
-            if not all(hasattr(obj, m) for m in ("suggest_params", "generate_signals", "decide_exit")):
+            if not all(hasattr(obj, m) for m in ("suggest_params", "generate_signals")):
                 continue
             if combinacion_id in ids_seen and ids_seen[combinacion_id] != name:
                 raise ValueError(

@@ -6,7 +6,8 @@ import numpy as np
 import pandas as pd
 import polars as pl
 
-from modelox.core.types import BacktestConfig, ExitDecision, Strategy
+from modelox.core.types import BacktestConfig, Strategy
+from modelox.core.exits import check_exit_sl_tp_intrabar, compute_atr_wilder
 
 
 def generate_trades(
@@ -20,6 +21,9 @@ def generate_trades(
     Genera un DataFrame base de trades usando arrays de Polars/Numpy.
     """
     close = df["close"].to_numpy()
+    open_ = df["open"].to_numpy() if "open" in df.columns else None
+    high = df["high"].to_numpy() if "high" in df.columns else None
+    low = df["low"].to_numpy() if "low" in df.columns else None
     signal_long = (
         df["signal_long"].to_numpy()
         if "signal_long" in df.columns
@@ -39,6 +43,18 @@ def generate_trades(
         raise ValueError("DataFrame must have 'timestamp' or 'datetime' column")
 
     block_velas_after_exit = int(params.get("block_velas_after_exit", 0))
+
+    # Exit settings: fixed SL/TP by ATR at entry (global, engine-owned).
+    # Use runtime-injected (__exit_*) first, fallback to non-__ names for compatibility.
+    exit_atr_period = int(params.get("__exit_atr_period", params.get("exit_atr_period", 14)))
+    exit_sl_atr = float(params.get("__exit_sl_atr", params.get("exit_sl_atr", 1.0)))
+    exit_tp_atr = float(params.get("__exit_tp_atr", params.get("exit_tp_atr", 1.0)))
+    exit_time_stop_bars = int(params.get("__exit_time_stop_bars", params.get("exit_time_stop_bars", 260)))
+
+    if open_ is None or high is None or low is None:
+        raise ValueError("Para SL/TP intra-vela por ATR se requieren columnas open/high/low")
+
+    atr = compute_atr_wilder(high, low, close, exit_atr_period)
     operaciones: List[Dict[str, Any]] = []
     last_exit_idx = -1
 
@@ -59,58 +75,100 @@ def generate_trades(
         if signal_long[i]:
             entry_idx = i
             entry_price = float(close[entry_idx])
-            decision = strategy.decide_exit(
-                df,
-                params,
-                entry_idx,
-                entry_price,
-                "long",
-                saldo_apertura=saldo_apertura,
-            )
-            if decision is not None:
-                exit_idx = int(decision.exit_idx)
-                operaciones.append(
-                    {
-                        "type": "long",
-                        "entry_time": timestamps[entry_idx],
-                        "exit_time": timestamps[exit_idx],
-                        "entry_price": entry_price,
-                        "exit_price": float(close[exit_idx]),
-                        "tipo_salida": decision.reason or "",
-                    }
+
+            atr_entry = float(atr[entry_idx])
+            if not np.isfinite(atr_entry) or atr_entry <= 0:
+                atr_entry = max(float(high[entry_idx]) - float(low[entry_idx]), entry_price * 0.001)
+
+            sl_dist = atr_entry * max(exit_sl_atr, 0.0)
+            tp_dist = atr_entry * max(exit_tp_atr, 0.0)
+            stop_loss = entry_price - sl_dist if sl_dist > 0 else None
+            take_profit = entry_price + tp_dist if tp_dist > 0 else None
+
+            start = entry_idx + 1
+            end_idx = min(len(close) - 1, entry_idx + max(int(exit_time_stop_bars), 1))
+            exit_idx = end_idx
+            exit_price = float(close[end_idx])
+            tipo_salida = "TIME_EXIT"
+
+            for j in range(start, end_idx + 1):
+                hit = check_exit_sl_tp_intrabar(
+                    side="LONG",
+                    o=float(open_[j]),
+                    h=float(high[j]),
+                    l=float(low[j]),
+                    stop_loss=stop_loss,
+                    take_profit=take_profit,
                 )
-                last_exit_idx = exit_idx
-                while idx_pos < len(all_indices) and all_indices[idx_pos] <= exit_idx:
-                    idx_pos += 1
-                continue
+                if hit.triggered:
+                    exit_idx = j
+                    exit_price = float(hit.exit_price) if hit.exit_price is not None else float(close[j])
+                    tipo_salida = "SL_ATR" if hit.reason == "SL" else "TP_ATR"
+                    break
+
+            operaciones.append(
+                {
+                    "type": "long",
+                    "entry_time": timestamps[entry_idx],
+                    "exit_time": timestamps[exit_idx],
+                    "entry_price": entry_price,
+                    "exit_price": float(exit_price),
+                    "tipo_salida": tipo_salida,
+                }
+            )
+            last_exit_idx = int(exit_idx)
+            while idx_pos < len(all_indices) and all_indices[idx_pos] <= exit_idx:
+                idx_pos += 1
+            continue
 
         elif signal_short[i]:
             entry_idx = i
             entry_price = float(close[entry_idx])
-            decision = strategy.decide_exit(
-                df,
-                params,
-                entry_idx,
-                entry_price,
-                "short",
-                saldo_apertura=saldo_apertura,
-            )
-            if decision is not None:
-                exit_idx = int(decision.exit_idx)
-                operaciones.append(
-                    {
-                        "type": "short",
-                        "entry_time": timestamps[entry_idx],
-                        "exit_time": timestamps[exit_idx],
-                        "entry_price": entry_price,
-                        "exit_price": float(close[exit_idx]),
-                        "tipo_salida": decision.reason or "",
-                    }
+
+            atr_entry = float(atr[entry_idx])
+            if not np.isfinite(atr_entry) or atr_entry <= 0:
+                atr_entry = max(float(high[entry_idx]) - float(low[entry_idx]), entry_price * 0.001)
+
+            sl_dist = atr_entry * max(exit_sl_atr, 0.0)
+            tp_dist = atr_entry * max(exit_tp_atr, 0.0)
+            stop_loss = entry_price + sl_dist if sl_dist > 0 else None
+            take_profit = entry_price - tp_dist if tp_dist > 0 else None
+
+            start = entry_idx + 1
+            end_idx = min(len(close) - 1, entry_idx + max(int(exit_time_stop_bars), 1))
+            exit_idx = end_idx
+            exit_price = float(close[end_idx])
+            tipo_salida = "TIME_EXIT"
+
+            for j in range(start, end_idx + 1):
+                hit = check_exit_sl_tp_intrabar(
+                    side="SHORT",
+                    o=float(open_[j]),
+                    h=float(high[j]),
+                    l=float(low[j]),
+                    stop_loss=stop_loss,
+                    take_profit=take_profit,
                 )
-                last_exit_idx = exit_idx
-                while idx_pos < len(all_indices) and all_indices[idx_pos] <= exit_idx:
-                    idx_pos += 1
-                continue
+                if hit.triggered:
+                    exit_idx = j
+                    exit_price = float(hit.exit_price) if hit.exit_price is not None else float(close[j])
+                    tipo_salida = "SL_ATR" if hit.reason == "SL" else "TP_ATR"
+                    break
+
+            operaciones.append(
+                {
+                    "type": "short",
+                    "entry_time": timestamps[entry_idx],
+                    "exit_time": timestamps[exit_idx],
+                    "entry_price": entry_price,
+                    "exit_price": float(exit_price),
+                    "tipo_salida": tipo_salida,
+                }
+            )
+            last_exit_idx = int(exit_idx)
+            while idx_pos < len(all_indices) and all_indices[idx_pos] <= exit_idx:
+                idx_pos += 1
+            continue
         idx_pos += 1
 
     trades = pd.DataFrame(operaciones)
@@ -167,8 +225,7 @@ def simulate_trades(
     equity_curve = [saldo]
     last_idx = 0
 
-    # Diagnostic: limit number of diagnostic prints
-    DIAG_PRINT_LIMIT = 10
+    # (diagnostic prints disabled)
 
     for i in range(n):
         # === EARLY EXIT: Cuenta quebrada - stop inmediato ===
@@ -181,6 +238,7 @@ def simulate_trades(
         stake_max_posible = min(saldo, stake_max)
         # 2. ¿Cuánta cantidad se podría abrir con ese stake?
         qty_con_stake_max = (stake_max_posible * apalancamiento) / entry_p[i]
+        initial_q = float(qty_con_stake_max)
         # 3. Si el stake máximo permite abrir más que qty_max_activo, ajusta el stake justo al necesario para abrir qty_max_activo
         if qty_con_stake_max > qty_max_limit:
             q = float(qty_max_limit)
@@ -204,14 +262,7 @@ def simulate_trades(
         neto = bruto - c_tot
         nuevo_saldo = saldo + neto
 
-        # Diagnostic print for first trades to inspect sizing and clamps
-        if i < DIAG_PRINT_LIMIT:
-            try:
-                print(
-                    f"[DIAG] trade={i} type={sides[i]} entry_p={entry_p[i]:.6f} initial_q={initial_q:.6f} q_final={q:.6f} clamped_qty={q_clamped_by_qty} stk={stk:.6f} qty_max_limit={qty_max_limit} saldo_antes={saldo_antes[i]:.2f} saldo_now={saldo:.2f}"
-                )
-            except Exception:
-                pass
+        # (diagnostic print removed)
 
         # === EARLY EXIT: Si el nuevo saldo cae por debajo o igual al mínimo ===
         if nuevo_saldo <= saldo_min:
@@ -219,12 +270,7 @@ def simulate_trades(
             pnl_bruto[i] = bruto
             pnl_neto[i] = neto
             pnl_pct[i] = (neto / stk) * 100 if stk > 0 else 0
-            comisiones[i] = c_tot
-            stake_aplicado[i] = stk
-            qty_aplicada[i] = q
-            saldo = nuevo_saldo
-            saldo_despues[i] = saldo
-            equity_curve.append(saldo)
+                        # (debug print removed)
             last_idx = i + 1
             break  # STOP INMEDIATO - Cuenta quebrada
 
@@ -247,12 +293,6 @@ def simulate_trades(
     df_exec["pnl_neto"] = pnl_neto[:last_idx]  # Requerido para winrate/expectativa
     df_exec["pnl_pct"] = pnl_pct[:last_idx]  # Requerido para Sharpe/Sortino
     df_exec["saldo_despues"] = saldo_despues[:last_idx]
-    df_exec["saldo_antes"] = saldo_antes[:last_idx]
-    df_exec["stake"] = stake_aplicado[:last_idx]
-    df_exec["qty"] = qty_aplicada[:last_idx]
-    df_exec["comision"] = comisiones[:last_idx]
-
-    return df_exec, equity_curve
     df_exec["saldo_antes"] = saldo_antes[:last_idx]
     df_exec["stake"] = stake_aplicado[:last_idx]
     df_exec["qty"] = qty_aplicada[:last_idx]

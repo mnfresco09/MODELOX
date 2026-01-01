@@ -1,96 +1,76 @@
-from __future__ import annotations
-from typing import Any, Dict
 import math
+import numpy as np
+from scipy.stats import norm, skew, kurtosis
+from typing import Any, Dict
 
-"""
-MODELOX - Progressive Scoring Engine (v2.5)
-------------------------------------------
-Arquitectura de puntuación institucional que equilibra:
-1. Calidad (Sortino)
-2. Potencia (Expectativa)
-3. Consistencia (Estabilidad)
-4. Seguridad (Drawdown)
-5. Frecuencia (Trades/Día)
-6. Confianza (Volumen Total)
-"""
+def estimate_moments(winrate: float, payoff: float, loss: float) -> tuple[float, float]:
+    n_sim = 1000
+    w = max(0.0, min(100.0, winrate))
+    n_wins = int(n_sim * (w / 100.0))
+    n_losses = max(0, n_sim - n_wins)
+    if n_wins + n_losses == 0: return 0.0, 3.0
+    returns = np.array([payoff] * n_wins + [-abs(loss)] * n_losses)
+    if len(returns) < 2 or np.std(returns) == 0: return 0.0, 3.0
+    return skew(returns), kurtosis(returns)
 
-def _score_progresivo(valor: float, v_min: float, v_max: float, exponente: float = 1.0) -> float:
-    """
-    Normalización con curva de potencia. 
-    Si exponente > 1, castiga más los valores mediocres y premia la excelencia.
-    """
-    if valor <= v_min:
-        return 0.0
-    if valor >= v_max:
-        return 1.0
-    
-    # Normalización base 0-1
-    base = (valor - v_min) / (v_max - v_min)
-    
-    # Aplicar curva de potencia para progresividad
-    return math.pow(base, exponente)
-
-def score_maestro_modelox(metricas: Dict[str, Any]) -> float:
-    """
-    Cálculo del Score Maestro con penalización por baja frecuencia y volumen.
-    """
-    
-    # --- 1. EXTRACCIÓN Y LIMPIEZA DE DATOS ---
-    n_trades = float(metricas.get("total_trades", 0))
-    tpd = float(metricas.get("trades_por_dia", 0.0))
-    
-    # Filtro de seguridad absoluta (Menos de 10 trades en total es ruido)
-    if n_trades < 10:
-        return 0.0
-
-    # --- 2. FACTOR DE FRECUENCIA (TRADES POR DÍA) ---
-    # Buscamos el "Sweet Spot" para 5 minutos: entre 0.5 y 3.0 trades/día
-    if tpd < 0.2:
-        s_frecuencia = 0.4  # Muy lenta: penalización fuerte
-    elif 0.2 <= tpd < 0.5:
-        s_frecuencia = 0.7  # Aceptable pero lenta
-    elif 0.5 <= tpd <= 3.5:
-        s_frecuencia = 1.0  # Frecuencia óptima para Scalping/Intradía
-    elif 3.5 < tpd <= 6.0:
-        s_frecuencia = 0.8  # Empieza a ser Overtrading (comisiones)
-    else:
-        s_frecuencia = 0.5  # Demasiados trades, probable ruido/errores
-
-    # --- 3. CÁLCULO DE COMPONENTES (PROGRESIVOS) ---
-    
-    # Sortino: Calidad del retorno. Ideal > 1.2. Exponente 1.5 para premiar lo mejor.
-    s_sortino = _score_progresivo(float(metricas.get("sortino", 0.0)), 0.0, 1.5, exponente=1.5)
-    
-    # Expectativa: Valor esperado en $ por trade. 
-    s_expectativa = _score_progresivo(float(metricas.get("expectativa", 0.0)), 0.0, 50.0)
-    
-    # Estabilidad: Suavidad de la equity (0.0 a 1.0).
-    s_estabilidad = float(metricas.get("estabilidad", 0.0))
-    
-    # Drawdown: Seguridad. 5% es perfecto, 20% es el límite aceptable.
-    s_dd = 1.0 - _score_progresivo(float(metricas.get("drawdown", 100.0)), 5.0, 20.0, exponente=1.3)
-    s_dd = max(0.0, s_dd)
-
-    # --- 4. DISTRIBUCIÓN DE PESOS (TOTAL 100) ---
-    # 30% Calidad, 25% Potencia, 25% Curva, 20% Riesgo
-    total_ponderado = (
-        30.0 * s_sortino +
-        25.0 * s_expectativa +
-        25.0 * s_estabilidad +
-        20.0 * s_dd
-    )
-
-    # --- 5. MULTIPLICADORES FINALES (EL FILTRO DE VERDAD) ---
-    
-    # Confianza Estadística: Crece con el número de trades (Raíz cuadrada)
-    # 50 trades o más = 1.0. 25 trades = 0.7. 10 trades = 0.44.
-    confianza = min(1.0, math.sqrt(n_trades / 50.0))
-    
-    # Score Final: Puntos * Volumen * Frecuencia
-    score_final = total_ponderado * confianza * s_frecuencia
-
-    return float(round(score_final, 2))
-
-# Alias para compatibilidad con el resto del sistema
 def score_optuna(metricas: Dict[str, Any]) -> float:
-    return score_maestro_modelox(metricas)
+    """
+    MODELOX v14 - Penatización Ultra-Fuerte de Frecuencia.
+    Optimizado para filtrar 'Lucky Trials' con pocos trades.
+    """
+    def get_val(key: str, default: float = 0.0) -> float:
+        val = metricas.get(key, default)
+        if val is None or not math.isfinite(float(val)): return default
+        return float(val)
+
+    # --- 1. DATOS DE FRECUENCIA ---
+    n_trades = get_val("n_trades", 0)
+    n_days = max(0.001, get_val("days_total", 1))
+    trades_per_day = n_trades / n_days
+
+    # --- 2. PENALIZACIÓN SIGMOIDAL AGRESIVA (La 'Barrera 0.4') ---
+    # Centramos la caída en 0.4. 
+    # Usamos una pendiente (k) de 15.0 para que sea un 'acantilado'.
+    target_freq = 0.4 
+    k_steepness = 15.0
+    # Esta función devuelve 0.5 en 0.4 trades/día, y colapsa hacia 0.0001 por debajo.
+    frequency_gate = 1 / (1 + math.exp(-k_steepness * (trades_per_day - target_freq)))
+
+    # --- 3. RENDIMIENTO SEGURO (Capped Sharpe) ---
+    sharpe = get_val("sharpe", -1.0)
+    winrate = get_val("winrate", 0.0)
+    profit_factor = get_val("profit_factor", 1.0)
+    max_dd_pct = abs(get_val("drawdown", 100.0))
+    estabilidad = max(0.01, get_val("estabilidad", 0.1))
+    payoff = abs(get_val("riesgo_beneficio", 1.0))
+
+    # --- 4. PROBABILIDAD ESTADÍSTICA (PSR) ---
+    # Castiga fuertemente el bajo número de trades en la desviación estándar del Sharpe
+    est_skew, est_kurt = estimate_moments(winrate, payoff, 1.0)
+    # Si n_trades es 6, el divisor es muy pequeño, sr_std será gigante, prob_skill será baja.
+    divisor_std = max(2.0, n_trades - 1)
+    sr_std = np.sqrt(abs(1 - est_skew * sharpe + ((est_kurt - 1) / 4) * sharpe**2) / divisor_std)
+    sr_std = max(0.001, sr_std)
+    prob_skill = max(1e-9, norm.cdf(sharpe / sr_std))
+
+    # --- 5. COMPOSICIÓN DEL SCORE ---
+    # Performance core con e^Sharpe pero limitado para no distorsionar
+    performance_core = math.exp(max(-3.0, min(sharpe, 5.0)))
+    
+    # Factor de cantidad de trades (logarítmico para premiar volumen de datos)
+    # 6 trades = 1.94 | 50 trades = 3.93
+    count_factor = math.log1p(n_trades)
+    
+    # Penalización por dolor (Drawdown)
+    dd_pain = (1 + (max_dd_pct / 100.0)) ** 4 # Exponente 4 para mayor castigo al DD
+
+    # FÓRMULA MAESTRA MODELOX V14
+    # Multiplicamos por frequency_gate para que si freq < 0.4, todo el score tienda a 0.
+    raw_score = (performance_core * prob_skill * count_factor * estabilidad * frequency_gate) / dd_pain
+
+    # Booster para estrategias consistentes (solo si superan el umbral de frecuencia)
+    if profit_factor > 1.1 and trades_per_day >= target_freq:
+        raw_score *= math.log1p(profit_factor) * 2
+
+    # Aseguramos que nunca sea 0 absoluto para que Optuna tenga gradiente
+    return float(max(1e-6, raw_score))
