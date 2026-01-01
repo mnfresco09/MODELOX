@@ -1,5 +1,6 @@
 # Ignora entornos, cachés, datos y resultados
 .venv/
+.venv*/
 __pycache__/
 .DS_Store
 *.pyc
