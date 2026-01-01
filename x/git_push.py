@@ -1,14 +1,19 @@
 #!/usr/bin/env python3
 """
 Script para actualizar cambios en GitHub automáticamente.
-Uso: python x/git_push.py [mensaje_opcional]
+Uso:
+    python x/git_push.py                 # auto-commit con timestamp + pull --rebase + push
+    python x/git_push.py "mi mensaje"     # mensaje personalizado
+    python x/git_push.py --amend          # enmienda el último commit (sin crear uno nuevo)
+    python x/git_push.py --force          # force push
 """
 
 
 import subprocess
-import sys
 from datetime import datetime
 from pathlib import Path
+import sys
+import argparse
 
 
 def run_command(cmd: list[str], check: bool = True) -> tuple[bool, str]:
@@ -28,8 +33,52 @@ def run_command(cmd: list[str], check: bool = True) -> tuple[bool, str]:
         return False, e.stdout + e.stderr
 
 
-def main():
+def _repo_root() -> Path:
+    return Path(__file__).resolve().parent.parent
+
+
+def _default_commit_message() -> str:
+    timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+    return f"Auto-update: {timestamp}"
+
+
+def _parse_args(argv: list[str]) -> argparse.Namespace:
+    parser = argparse.ArgumentParser(add_help=True)
+    parser.add_argument("message", nargs="*", help="Mensaje de commit (opcional)")
+    parser.add_argument("--force", action="store_true", help="Force push a origin/main")
+    parser.add_argument(
+        "--no-pull",
+        action="store_true",
+        help="No hacer git pull --rebase antes de push",
+    )
+    parser.add_argument(
+        "--amend",
+        action="store_true",
+        help="Enmienda el último commit en vez de crear uno nuevo",
+    )
+    return parser.parse_args(argv)
+
+
+def main(argv: list[str] | None = None) -> int:
+    args = _parse_args(sys.argv[1:] if argv is None else argv)
+
     print("🚀 Actualizando repositorio en GitHub...\n")
+
+    # 0) Pull --rebase (opción A) para evitar non-fast-forward
+    if not args.no_pull:
+        print("🔄 Sincronizando con GitHub (git pull --rebase --autostash)...")
+        success, output = run_command(["git", "pull", "--rebase", "--autostash", "origin", "main"], check=False)
+        # git pull puede devolver salida en stderr aunque sea OK, por eso check=False.
+        if "CONFLICT" in output or "Resolve all conflicts" in output:
+            print("❌ Conflictos durante rebase. Resuélvelos y ejecuta de nuevo.")
+            print(output)
+            return 1
+        # si falla por otro motivo, lo reportamos
+        if not success:
+            print("❌ Error al hacer pull --rebase.")
+            print(output)
+            return 1
+        print("✅ Pull/rebase completado")
 
     # 1. Verificar estado
     print("📊 Verificando cambios...")
@@ -46,32 +95,24 @@ def main():
 
     # 2. Agregar todos los cambios (Git respeta .gitignore, data/ no se añadirá)
     print("\n➕ Agregando cambios (data/ excluida por .gitignore)...")
-
-    # Limpia staging previo (por si acaso)
-    run_command(["git", "reset"])
-
-    # Stage all: incluye nuevos/modificados/eliminados, pero NO añade ignorados.
-    success, output = run_command(["git", "add", "-A"])
+    run_command(["git", "reset"], check=False)
+    success, output = run_command(["git", "add", "-A"], check=False)
     if not success:
         print(f"❌ Error al agregar cambios:\n{output}")
         return 1
-
-    # Si por alguna razón data/ estuviera trackeada, intenta des-stagearla.
-    # (no hacemos fallar el script si no existe o no hay nada staged)
+    # Si por alguna razón data/ estuviera trackeada, intenta des-stagearla (no fatal)
     run_command(["git", "restore", "--staged", "--", "data"], check=False)
-    run_command(["git", "reset", "--", "data"], check=False)
-
     print("✅ Cambios agregados")
 
     # 3. Commit con mensaje personalizado o automático
-    if len(sys.argv) > 1:
-        commit_msg = " ".join(sys.argv[1:])
-    else:
-        timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-        commit_msg = f"Auto-update: {timestamp}"
+    commit_msg = " ".join(args.message).strip() if args.message else _default_commit_message()
 
-    print(f"\n💬 Commit: '{commit_msg}'")
-    success, output = run_command(["git", "commit", "-m", commit_msg])
+    if args.amend:
+        print(f"\n💬 Amend commit: '{commit_msg}'")
+        success, output = run_command(["git", "commit", "--amend", "-m", commit_msg], check=False)
+    else:
+        print(f"\n💬 Commit: '{commit_msg}'")
+        success, output = run_command(["git", "commit", "-m", commit_msg], check=False)
     if not success:
         if "nothing to commit" in output.lower():
             print("✅ No hay cambios nuevos para commitear")
@@ -83,10 +124,16 @@ def main():
 
     # 4. Push a origin main
     print("\n⬆️  Subiendo a GitHub (origin main)...")
-    success, output = run_command(["git", "push", "origin", "main"])
+    push_cmd = ["git", "push", "origin", "main"]
+    if args.force:
+        push_cmd = ["git", "push", "-f", "origin", "main"]
+
+    success, output = run_command(push_cmd, check=False)
     if not success:
         print(f"❌ Error al hacer push:\n{output}")
-        print("\n💡 Intenta con force push: python x/git_push.py --force")
+        print("\n💡 Sugerencias:")
+        print("- Ejecuta de nuevo (usa pull --rebase por defecto)")
+        print("- O fuerza: python git_push.py --force")
         return 1
 
     print("✅ Push completado exitosamente!")
@@ -96,12 +143,4 @@ def main():
 
 
 if __name__ == "__main__":
-    # Manejo de force push si se solicita
-    if "--force" in sys.argv:
-        print("⚠️  FORCE PUSH activado")
-        sys.argv.remove("--force")
-        run_command(["git", "push", "-f", "origin", "main"])
-        print("✅ Force push completado")
-        sys.exit(0)
-
-    sys.exit(main())
+    raise SystemExit(main())
