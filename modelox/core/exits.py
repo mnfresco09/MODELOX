@@ -1,8 +1,108 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+from typing import Any, Dict, Optional
 
 import numpy as np
+
+from modelox.core.types import ExitDecision
+
+
+# =============================================================================
+# PARÁMETROS GLOBALES DE SALIDA (ÚNICO LUGAR)
+# =============================================================================
+#
+# Modelo global actual (confirmado en engine previo):
+# - SL/TP calculados por ATR de Wilder en el momento de entrada (fijo al inicio)
+# - Se ejecuta intra-vela usando open/high/low (conservador: SL antes que TP)
+# - TIME EXIT por número máximo de velas
+#
+# Los valores pueden ser:
+# - fijos por configuración
+# - optimizados por Optuna (si optimize_exits/OPTIMIZAR_SALIDAS=True)
+#
+# En runtime, el runner inyecta las claves con prefijo `__exit_*` en `params`.
+# =============================================================================
+
+DEFAULT_EXIT_ATR_PERIOD = 14
+DEFAULT_EXIT_SL_ATR = 1.0
+DEFAULT_EXIT_TP_ATR = 1.0
+DEFAULT_EXIT_TIME_STOP_BARS = 260
+
+DEFAULT_OPTIMIZE_EXITS = True
+
+DEFAULT_EXIT_ATR_PERIOD_RANGE = (7, 30, 1)
+DEFAULT_EXIT_SL_ATR_RANGE = (0.5, 3.0, 0.1)
+DEFAULT_EXIT_TP_ATR_RANGE = (1.0, 8.0, 0.1)
+DEFAULT_EXIT_TIME_STOP_BARS_RANGE = (250, 800, 10)
+
+
+def resolve_exit_settings_for_trial(*, trial: Any, config: Any) -> ExitSettings:
+    """Resuelve los parámetros de salida para un trial.
+
+    Fuente de verdad:
+      - defaults/rangos definidos en este archivo
+      - la configuración (BacktestConfig) puede sobreescribirlos
+      - si `optimize_exits` está activo, Optuna sugiere dentro de los rangos
+    """
+
+    optimize_exits = bool(getattr(config, "optimize_exits", DEFAULT_OPTIMIZE_EXITS))
+
+    exit_atr_period = int(getattr(config, "exit_atr_period", DEFAULT_EXIT_ATR_PERIOD))
+    exit_sl_atr = float(getattr(config, "exit_sl_atr", DEFAULT_EXIT_SL_ATR))
+    exit_tp_atr = float(getattr(config, "exit_tp_atr", DEFAULT_EXIT_TP_ATR))
+    exit_time_stop_bars = int(getattr(config, "exit_time_stop_bars", DEFAULT_EXIT_TIME_STOP_BARS))
+
+    if optimize_exits:
+        p_rng = tuple(getattr(config, "exit_atr_period_range", DEFAULT_EXIT_ATR_PERIOD_RANGE))
+        sl_rng = tuple(getattr(config, "exit_sl_atr_range", DEFAULT_EXIT_SL_ATR_RANGE))
+        tp_rng = tuple(getattr(config, "exit_tp_atr_range", DEFAULT_EXIT_TP_ATR_RANGE))
+        ts_rng = tuple(getattr(config, "exit_time_stop_bars_range", DEFAULT_EXIT_TIME_STOP_BARS_RANGE))
+
+        p_min, p_max, p_step = (
+            int(p_rng[0]),
+            int(p_rng[1]),
+            int(p_rng[2]) if len(p_rng) >= 3 else 1,
+        )
+        sl_min, sl_max, sl_step = (
+            float(sl_rng[0]),
+            float(sl_rng[1]),
+            float(sl_rng[2]) if len(sl_rng) >= 3 else 0.1,
+        )
+        tp_min, tp_max, tp_step = (
+            float(tp_rng[0]),
+            float(tp_rng[1]),
+            float(tp_rng[2]) if len(tp_rng) >= 3 else 0.1,
+        )
+        ts_min, ts_max, ts_step = (
+            int(ts_rng[0]),
+            int(ts_rng[1]),
+            int(ts_rng[2]) if len(ts_rng) >= 3 else 1,
+        )
+
+        exit_atr_period = int(trial.suggest_int("exit_atr_period", p_min, p_max, step=max(1, p_step)))
+        exit_sl_atr = float(trial.suggest_float("exit_sl_atr", sl_min, sl_max, step=sl_step))
+        exit_tp_atr = float(trial.suggest_float("exit_tp_atr", tp_min, tp_max, step=tp_step))
+        exit_time_stop_bars = int(
+            trial.suggest_int("exit_time_stop_bars", ts_min, ts_max, step=max(1, ts_step))
+        )
+
+    # Normalización defensiva
+    if exit_atr_period < 1:
+        exit_atr_period = 1
+    if exit_time_stop_bars < 1:
+        exit_time_stop_bars = 1
+    if exit_sl_atr < 0:
+        exit_sl_atr = -exit_sl_atr
+    if exit_tp_atr < 0:
+        exit_tp_atr = -exit_tp_atr
+
+    return ExitSettings(
+        atr_period=int(exit_atr_period),
+        sl_atr=float(exit_sl_atr),
+        tp_atr=float(exit_tp_atr),
+        time_stop_bars=int(exit_time_stop_bars),
+    )
 
 
 def compute_atr_wilder(
@@ -53,15 +153,6 @@ def compute_atr_wilder(
 class IntrabarExit:
     triggered: bool
     reason: str = ""
-    exit_price: float | None = None
-
-
-@dataclass(frozen=True)
-class StopTrailExit:
-    triggered: bool
-    exit_idx: int = -1
-    reason: str = ""  # "STOP_LOSS_EMERGENCY" | "TRAILING_STOP"
-    stop_level: float | None = None
     exit_price: float | None = None
 
 
@@ -117,117 +208,171 @@ def check_exit_sl_tp_intrabar(
     return IntrabarExit(False)
 
 
-def scan_emergency_sl_and_trailing_intrabar(
+@dataclass(frozen=True)
+class ExitSettings:
+    atr_period: int = DEFAULT_EXIT_ATR_PERIOD
+    sl_atr: float = DEFAULT_EXIT_SL_ATR
+    tp_atr: float = DEFAULT_EXIT_TP_ATR
+    time_stop_bars: int = DEFAULT_EXIT_TIME_STOP_BARS
+
+
+@dataclass(frozen=True)
+class ExitResult:
+    exit_idx: int
+    exit_price: float
+    tipo_salida: str
+
+
+def exit_settings_from_params(params: Dict[str, Any]) -> ExitSettings:
+    """Lee settings de salida desde `params`.
+
+    Prioridad:
+      1) `__exit_*` (inyectado por runner por trial)
+      2) `exit_*` (compat)
+      3) defaults definidos en este archivo
+    """
+    atr_period = int(
+        params.get("__exit_atr_period", params.get("exit_atr_period", DEFAULT_EXIT_ATR_PERIOD))
+    )
+    sl_atr = float(params.get("__exit_sl_atr", params.get("exit_sl_atr", DEFAULT_EXIT_SL_ATR)))
+    tp_atr = float(params.get("__exit_tp_atr", params.get("exit_tp_atr", DEFAULT_EXIT_TP_ATR)))
+    time_stop_bars = int(
+        params.get(
+            "__exit_time_stop_bars",
+            params.get("exit_time_stop_bars", DEFAULT_EXIT_TIME_STOP_BARS),
+        )
+    )
+
+    if atr_period < 1:
+        atr_period = 1
+    if time_stop_bars < 1:
+        time_stop_bars = 1
+    # negatives don't make sense; treat as 0
+    if sl_atr < 0:
+        sl_atr = -sl_atr
+    if tp_atr < 0:
+        tp_atr = -tp_atr
+
+    return ExitSettings(
+        atr_period=int(atr_period),
+        sl_atr=float(sl_atr),
+        tp_atr=float(tp_atr),
+        time_stop_bars=int(time_stop_bars),
+    )
+
+
+def decide_exit_atr_fixed_intrabar(
     *,
+    side: str,
     entry_idx: int,
     entry_price: float,
-    side: str,
-    o: list[float] | tuple[float, ...] | "object",
-    h: list[float] | tuple[float, ...] | "object",
-    l: list[float] | tuple[float, ...] | "object",
-    sl_pct: float | None,
-    trailing_pct: float | None,
-    end_idx: int,
-) -> StopTrailExit:
-    """Escanea desde entry_idx+1 hasta end_idx buscando SL emergencia (y opcionalmente trailing).
+    close: "object",
+    open_: "object",
+    high: "object",
+    low: "object",
+    atr: np.ndarray,
+    settings: ExitSettings,
+) -> ExitResult:
+    """Salida global: SL/TP por ATR fijo al inicio + TIME EXIT.
 
-    - Usa High/Low para detectar toque intra-vela (sin Close).
-    - Precio de ejecución: stop_level o Open si hay gap atravesándolo.
-    - Conservador: aplica un único "effective_stop" (el más cercano al precio).
+    - stop_loss y take_profit se fijan con ATR de la vela de entrada.
+    - se escanea desde entry_idx+1 hasta entry_idx+time_stop_bars
+    - SL tiene prioridad sobre TP en la misma vela (conservador).
     """
+
     s = (side or "").upper()
     if s not in {"LONG", "SHORT"}:
         raise ValueError(f"side inválido: {side!r}")
 
-    if sl_pct is None and trailing_pct is None:
-        return StopTrailExit(False)
+    n = len(close)
+    e = int(entry_idx)
+    end_idx = min(n - 1, e + int(settings.time_stop_bars))
 
-    sl_pct_v = float(sl_pct) if sl_pct is not None else 0.0
-    tr_pct_v = float(trailing_pct) if trailing_pct is not None else 0.0
+    atr_entry = float(atr[e])
+    if not np.isfinite(atr_entry) or atr_entry <= 0:
+        atr_entry = max(float(high[e]) - float(low[e]), float(entry_price) * 0.001)
 
-    if sl_pct_v <= 0 and tr_pct_v <= 0:
-        return StopTrailExit(False)
+    sl_dist = atr_entry * max(float(settings.sl_atr), 0.0)
+    tp_dist = atr_entry * max(float(settings.tp_atr), 0.0)
 
-    # extreme_price: máximo favorable (LONG) / mínimo favorable (SHORT)
-    extreme = float(entry_price)
-    sl_level = None
-    if sl_pct_v > 0:
-        sl_level = (
-            float(entry_price) * (1.0 - sl_pct_v)
-            if s == "LONG"
-            else float(entry_price) * (1.0 + sl_pct_v)
+    if s == "LONG":
+        stop_loss = float(entry_price) - sl_dist if sl_dist > 0 else None
+        take_profit = float(entry_price) + tp_dist if tp_dist > 0 else None
+    else:
+        stop_loss = float(entry_price) + sl_dist if sl_dist > 0 else None
+        take_profit = float(entry_price) - tp_dist if tp_dist > 0 else None
+
+    # default: time exit at end_idx
+    exit_idx = int(end_idx)
+    exit_price = float(close[end_idx])
+    tipo_salida = "TIME_EXIT"
+
+    for j in range(e + 1, end_idx + 1):
+        hit = check_exit_sl_tp_intrabar(
+            side=s,
+            o=float(open_[j]),
+            h=float(high[j]),
+            l=float(low[j]),
+            stop_loss=stop_loss,
+            take_profit=take_profit,
         )
+        if hit.triggered:
+            exit_idx = int(j)
+            exit_price = float(hit.exit_price) if hit.exit_price is not None else float(close[j])
+            tipo_salida = "SL_ATR" if hit.reason == "SL" else "TP_ATR"
+            break
 
-    start = int(entry_idx) + 1
-    end = int(end_idx)
-    if end < start:
-        return StopTrailExit(False)
+    return ExitResult(exit_idx=int(exit_idx), exit_price=float(exit_price), tipo_salida=str(tipo_salida))
 
-    for i in range(start, end + 1):
-        oi = float(o[i])
-        hi = float(h[i])
-        li = float(l[i])
 
-        if s == "LONG":
-            if hi > extreme:
-                extreme = hi
+def decide_exit_for_trade(
+    *,
+    strategy: Any,
+    df: Any,
+    params: Dict[str, Any],
+    saldo_apertura: float,
+    side: str,
+    entry_idx: int,
+    entry_price: float,
+    close: "object",
+    open_: "object",
+    high: "object",
+    low: "object",
+    atr: np.ndarray,
+    settings: ExitSettings,
+) -> ExitResult:
+    """Selecciona la lógica de salida:
 
-            trailing_level = extreme * (1.0 - tr_pct_v) if tr_pct_v > 0 else None
+    - Si la estrategia define `decide_exit(...)` y devuelve `ExitDecision`, se usa eso.
+    - Si no, se usa la salida global (ATR fijo al inicio + SL/TP intra-vela + TIME EXIT).
+    """
 
-            if sl_level is None:
-                effective = trailing_level
-                reason = "TRAILING_STOP"
-            elif trailing_level is None:
-                effective = sl_level
-                reason = "STOP_LOSS_EMERGENCY"
-            else:
-                # el más cercano al precio (mayor stop)
-                if trailing_level > sl_level:
-                    effective = trailing_level
-                    reason = "TRAILING_STOP"
-                else:
-                    effective = sl_level
-                    reason = "STOP_LOSS_EMERGENCY"
+    decide_exit = getattr(strategy, "decide_exit", None)
+    if callable(decide_exit):
+        out: Optional[ExitDecision] = decide_exit(
+            df,
+            params,
+            int(entry_idx),
+            float(entry_price),
+            str(side),
+            saldo_apertura=float(saldo_apertura),
+        )
+        if isinstance(out, ExitDecision):
+            idx = int(out.exit_idx)
+            idx = max(0, min(idx, len(close) - 1))
+            px = float(out.exit_price) if out.exit_price is not None else float(close[idx])
+            tipo = str(out.reason or "STRATEGY_EXIT")
+            return ExitResult(exit_idx=idx, exit_price=px, tipo_salida=tipo)
 
-            if effective is not None and li <= effective:
-                exit_price = oi if oi <= effective else float(effective)
-                return StopTrailExit(
-                    True,
-                    exit_idx=i,
-                    reason=reason,
-                    stop_level=float(effective),
-                    exit_price=float(exit_price),
-                )
+    return decide_exit_atr_fixed_intrabar(
+        side=str(side),
+        entry_idx=int(entry_idx),
+        entry_price=float(entry_price),
+        close=close,
+        open_=open_,
+        high=high,
+        low=low,
+        atr=atr,
+        settings=settings,
+    )
 
-        else:  # SHORT
-            if li < extreme:
-                extreme = li
-
-            trailing_level = extreme * (1.0 + tr_pct_v) if tr_pct_v > 0 else None
-
-            if sl_level is None:
-                effective = trailing_level
-                reason = "TRAILING_STOP"
-            elif trailing_level is None:
-                effective = sl_level
-                reason = "STOP_LOSS_EMERGENCY"
-            else:
-                # el más cercano al precio (menor stop)
-                if trailing_level < sl_level:
-                    effective = trailing_level
-                    reason = "TRAILING_STOP"
-                else:
-                    effective = sl_level
-                    reason = "STOP_LOSS_EMERGENCY"
-
-            if effective is not None and hi >= effective:
-                exit_price = oi if oi >= effective else float(effective)
-                return StopTrailExit(
-                    True,
-                    exit_idx=i,
-                    reason=reason,
-                    stop_level=float(effective),
-                    exit_price=float(exit_price),
-                )
-
-    return StopTrailExit(False)

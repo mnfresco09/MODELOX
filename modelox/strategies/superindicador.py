@@ -18,8 +18,50 @@ from typing import Any, Dict
 
 import polars as pl
 
-from logic.indicators import IndicadorFactory
-from modelox.strategies.indicator_specs import cfg_superindicador_9955
+
+def _add_rsi(df: pl.DataFrame, *, period: int, out: str = "rsi") -> pl.DataFrame:
+    period = max(2, int(period))
+    if "close" not in df.columns:
+        return df.with_columns(pl.lit(None).cast(pl.Float64).alias(out))
+
+    delta = pl.col("close").diff()
+    gain = pl.when(delta > 0).then(delta).otherwise(0.0)
+    loss = pl.when(delta < 0).then(-delta).otherwise(0.0)
+
+    avg_gain = gain.rolling_mean(window_size=period, min_periods=period)
+    avg_loss = loss.rolling_mean(window_size=period, min_periods=period)
+    rs = avg_gain / avg_loss
+    rsi = pl.when(avg_loss == 0).then(100.0).otherwise(100.0 - (100.0 / (1.0 + rs)))
+    return df.with_columns(rsi.cast(pl.Float64).alias(out))
+
+
+def _add_stoch_d(df: pl.DataFrame, *, period: int, d_period: int = 3, out: str = "stoch_d") -> pl.DataFrame:
+    period = max(2, int(period))
+    d_period = max(1, int(d_period))
+    required = {"high", "low", "close"}
+    if not required.issubset(set(df.columns)):
+        return df.with_columns(pl.lit(None).cast(pl.Float64).alias(out))
+
+    lowest_low = pl.col("low").rolling_min(window_size=period, min_periods=period)
+    highest_high = pl.col("high").rolling_max(window_size=period, min_periods=period)
+    denom = highest_high - lowest_low
+    k = pl.when(denom == 0).then(0.0).otherwise((pl.col("close") - lowest_low) / denom * 100.0)
+    d = k.rolling_mean(window_size=d_period, min_periods=d_period)
+    return df.with_columns(d.cast(pl.Float64).alias(out))
+
+
+def _add_momentum_z(df: pl.DataFrame, *, len_mom: int, mom_norm: int, out: str = "mom_z") -> pl.DataFrame:
+    len_mom = max(1, int(len_mom))
+    mom_norm = max(2, int(mom_norm))
+    if "close" not in df.columns:
+        return df.with_columns(pl.lit(None).cast(pl.Float64).alias(out))
+
+    mom = pl.col("close") - pl.col("close").shift(len_mom)
+    mean = mom.rolling_mean(window_size=mom_norm, min_periods=mom_norm)
+    std = mom.rolling_std(window_size=mom_norm, min_periods=mom_norm)
+    z = (mom - mean) / std
+    z = pl.when(std == 0).then(0.0).otherwise(z)
+    return df.with_columns(z.cast(pl.Float64).alias(out))
 
 
 class Strategy9955SuperIndicador:
@@ -65,7 +107,9 @@ class Strategy9955SuperIndicador:
         }
 
     def generate_signals(self, df: pl.DataFrame, params: Dict[str, Any]) -> pl.DataFrame:
-        params["__indicators_used"] = self.get_indicators_used()
+        # ==============================================================
+        # INDICADORES (inline, dentro de la estrategia)
+        # ==============================================================
 
         len_rsi = int(params.get("len_rsi", self.LEN_RSI))
         len_stoch = int(params.get("len_stoch", self.LEN_STOCH))
@@ -85,20 +129,26 @@ class Strategy9955SuperIndicador:
         # Warmup: RSI/Stoch + Momentum normalization
         params["__warmup_bars"] = max(len_rsi + 1, len_stoch + 3, len_mom + mom_norm) + 5
 
-        df = IndicadorFactory.procesar(
-            df,
-            {
-                "superindicador_9955": cfg_superindicador_9955(
-                    len_rsi=len_rsi,
-                    len_stoch=len_stoch,
-                    len_mom=len_mom,
-                    mom_norm=mom_norm,
-                    amplification=amplification,
-                    cap=cap,
-                    out="super_9955",
-                )
-            },
-        )
+        # Plot reference lines inside the oscillator panel
+        params["__indicator_bounds"] = {
+            "super_9955": {"hi": float(level), "lo": float(-level), "mid": 0.0}
+        }
+
+        params["__indicators_used"] = ["super_9955"]
+
+        df = _add_rsi(df, period=len_rsi, out="rsi_9955")
+        df = _add_stoch_d(df, period=len_stoch, d_period=3, out="stoch_d_9955")
+        df = _add_momentum_z(df, len_mom=len_mom, mom_norm=mom_norm, out="mom_z_9955")
+
+        # Normalizaciones a escala similar
+        rsi_scaled = (pl.col("rsi_9955") - 50.0) / 50.0
+        stoch_scaled = (pl.col("stoch_d_9955") - 50.0) / 50.0
+        mom_z = pl.col("mom_z_9955")
+
+        super_raw = (rsi_scaled + stoch_scaled + mom_z) / 3.0
+        super_amp = super_raw * float(amplification)
+        super_clamped = pl.when(super_amp > cap).then(cap).when(super_amp < -cap).then(-cap).otherwise(super_amp)
+        df = df.with_columns(super_clamped.cast(pl.Float64).alias("super_9955"))
 
         s = pl.col("super_9955")
 

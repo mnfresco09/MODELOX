@@ -24,12 +24,12 @@ class BacktestConfig:
     exit_time_stop_bars: int = 260
 
     # Optuna: allow optimizing global exits from configuration
-    optimize_exits: bool = False
+    optimize_exits: bool = True
     # Ranges are inclusive; tuples support optional step: (min, max) or (min, max, step)
     exit_atr_period_range: tuple[int, int, int] = (7, 30, 1)
-    exit_sl_atr_range: tuple[float, float, float] = (0.5, 5.0, 0.1)
-    exit_tp_atr_range: tuple[float, float, float] = (0.5, 8.0, 0.1)
-    exit_time_stop_bars_range: tuple[int, int, int] = (50, 800, 10)
+    exit_sl_atr_range: tuple[float, float, float] = (0.5, 3.0, 0.1)
+    exit_tp_atr_range: tuple[float, float, float] = (1.0, 8.0, 0.1)
+    exit_time_stop_bars_range: tuple[int, int, int] = (250, 800, 10)
 
     # Optuna: allow optimizing qty cap per asset
     optimize_qty_max_activo: bool = False
@@ -51,7 +51,9 @@ class TrialArtifacts:
     params_reporting: Dict[str, Any]
     score: float
     metrics: Dict[str, Any]
-    df_signals: pd.DataFrame
+    # NOTE: df_signals (OHLCV + indicadores) puede ser costoso de construir.
+    # Se permite None para optimizar trials donde no se generan plots.
+    df_signals: Optional[pd.DataFrame]
     trades: pd.DataFrame
     equity_curve: List[float]
     indicators_used: List[str]

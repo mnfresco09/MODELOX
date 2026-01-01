@@ -195,7 +195,12 @@ class CSVReporter(Reporter):
             return
 
         safe = self._safe_strategy_name(strategy_name)
-        excel_path = os.path.join(self.resumen_excel_dir, f"resumen_trials_{safe}.xlsx")
+        # Keep excel outputs grouped as: resultados/excel/<ESTRATEGIA>/<ACTIVO>/...
+        # We infer ACTIVO from trades_base_dir because ejecutar.py configures CSVReporter per asset.
+        activo_safe = os.path.basename(os.path.normpath(self.trades_base_dir)) or "DEFAULT"
+        excel_dir = os.path.join(self.resumen_excel_dir, safe, activo_safe)
+        os.makedirs(excel_dir, exist_ok=True)
+        excel_path = os.path.join(excel_dir, "resumen_trials.xlsx")
         convertir_resumen_csv_a_excel(
             csv_path=csv_path,
             excel_path=excel_path,

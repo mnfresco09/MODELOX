@@ -48,6 +48,23 @@ PERFORMANCE:
 ================================================================================
 """
 
+# =============================================================================
+# GRAFICO (UNIFICADO)
+# =============================================================================
+#
+# Este archivo es el ÚNICO responsable de la gráfica.
+#
+# CONTRATO (por trial):
+# - Recibe `params` (normalmente `TrialArtifacts.params_reporting`).
+# - Si existe `params["__indicators_used"]`, SOLO se dibujan esas columnas.
+#   Esto permite que cada trial pinte exactamente los indicadores que calculó.
+#
+# INDICADORES:
+# - Los cálculos de indicadores se hacen dentro de cada estrategia.
+# - El plot solo consume columnas ya calculadas (guiado por `params`).
+#
+# =============================================================================
+
 from __future__ import annotations
 
 import os
@@ -84,278 +101,161 @@ if TYPE_CHECKING:
 
 
 # =============================================================================
-# INDICATOR DETECTION CONFIGURATION (Refactored v3.0)
+# INDICATOR DETECTION CONFIGURATION (Strategy-driven)
 # =============================================================================
+#
+# IMPORTANT:
+# - No hardcoded indicator lists, bounds, or colors.
+# - The strategy decides what to plot via:
+#     params["__indicators_used"]: list[str]
+#     params["__indicator_bounds"]: dict[col -> dict[level_name -> value]]
+#     params["__indicator_specs"]: dict[col -> {panel,type,color,name,precision,bounds}]
+#
 
-# Color map for consistent indicator colors across all strategies
-INDICATOR_COLORS = {
-    # Oscillators (sub-panels)
-    "rsi": "#60a5fa",        # Blue
-    "stc": "#f472b6",        # Pink
-    "chop": "#fb923c",       # Orange
-    "dpo": "#22c55e",        # Green (DPO)
-    "adx": "#a78bfa",        # Purple
-    # Strategy 388 colors
-    "rsi14": "#f59e0b",       # Orange
-    "rsi9": "#10b981",        # Green
-    "wavetrend": "#8b5cf6",   # Violet
-    "cci": "#ec4899",         # Pink
-    "ml_prediction": "#06b6d4",# Cyan
-    "mfi": "#34d399",        # Emerald
-    "zscore": "#fbbf24",     # Amber
-    "macd": "#60a5fa",       # Blue
-    "macd_hist": "#60a5fa",  # Blue
-    "macd_signal": "#fbbf24", # Amber
-    
-    # NEW: Stochastic & ROC
-    "stoch_k": "#f472b6",    # Pink
-    "stoch_d": "#a78bfa",    # Purple
-    "roc": "#fb923c",        # Orange
+_COLOR_PALETTE = [
+  "#60a5fa",  # blue
+  "#f472b6",  # pink
+  "#fb923c",  # orange
+  "#22c55e",  # green
+  "#a78bfa",  # purple
+  "#22d3ee",  # cyan
+  "#fbbf24",  # amber
+  "#ef4444",  # red
+  "#94a3b8",  # gray
+]
 
-    # NEW: SuperIndicador 9955
-    "super_9955": "#f97316",  # Orange
-    
-    # NEW: ML Learning / Lorentzian
-    "ml_vote": "#22d3ee",    # Cyan
-    "zscore_kalman": "#fbbf24",  # Amber
-    "hma_slope": "#ec4899",  # Pink
-    "kalman_dist": "#a78bfa",  # Purple
-    "slope_signal": "#f97316",  # Orange
-    
-    # Overlays (price panel)
-    "ema": "#fbbf24",        # Amber (generic EMA)
-    "ema_200": "#fbbf24",    # Amber
-    "ema200_mtf": "#a855f7", # Violet
-    "ema_base": "#f97316",   # Orange (Mean Reversion base EMA)
-    "sma": "#94a3b8",        # Gray
-    "wma": "#60a5fa",        # Blue
-    "vwma": "#22d3ee",       # Cyan
-    "vwap_session": "#38bdf8", # Sky
-    "supertrend": "#10b981", # Emerald
-    "ema_50": "#f97316",     # Orange
-    "ema_20": "#84cc16",     # Lime
-    "hma": "#ec4899",        # Pink
-    "donchian_hi": "#22c55e", # Green
-    "donchian_lo": "#ef4444", # Red
 
-    # ALMA family (Strategy 2000)
-    "alma": "#fbbf24",
-    "alma_5": "#22c55e",   # Green
-    "alma_25": "#fbbf24",  # Amber
-    "alma_60": "#ef4444",  # Red
-    
-    # Nadaraya-Watson
-    "nw_baseline": "#a78bfa", # Purple
-    "nw_upper": "#22c55e",    # Green
-    "nw_lower": "#ef4444",    # Red
-    
-    # SSL Hull
-    "ssl_baseline": "#a78bfa", # Purple
-    "ssl_line": "#22c55e",     # Green
-    "ssl_trend": "#fbbf24",    # Amber
-    # SSL Hybrid Advanced
-    "ssl_upper": "#22c55e",    # Green
-    "ssl_lower": "#ef4444",    # Red
-    "ssl1_line": "#f472b6",   # Pink
-    "ssl2_line": "#60a5fa",   # Blue
-    "ssl_exit_line": "#fbbf24", # Amber
-    "ssl_hlv": "#a78bfa",     # Purple
-    "ssl_candle_violation": "#ef4444", # Red
-    
-    # TTM Squeeze
-    "squeeze": "#f472b6",    # Pink
-    "squeeze_mom": "#60a5fa", # Blue
-    "bb_basis": "#94a3b8",   # Gray
-    "bb_upper": "#94a3b8",   # Gray
-    "bb_lower": "#94a3b8",   # Gray
-    "kc_basis": "#fbbf24",   # Amber
-    "kc_upper": "#fbbf24",   # Amber
-    "kc_lower": "#fbbf24",   # Amber
-    
-    # ATR
-    "atr": "#fb923c",        # Orange
-    "atr_p90": "#ef4444",    # Red (ATR Percentile 90 threshold)
-    
-    # Laguerre RSI
-    "laguerre_rsi": "#a78bfa", # Purple
-    
-    # KAMA
-    "kama": "#22d3ee",       # Cyan
-    "er": "#34d399",         # Emerald (Efficiency Ratio)
-    "er_kaufman": "#34d399", # Emerald
-    
-    # Elder Ray
-    "elder_ema": "#fbbf24",  # Amber
-    "bull_power": "#22c55e", # Green
-    "bear_power": "#ef4444", # Red
-    
-    # Kalman
-    "kalman": "#a855f7",     # Violet
-    
-    # LinReg
-    "linreg_slope": "#fb923c", # Orange
-    "lrs": "#fb923c",          # Orange (raw slope)
-    "lrs_smooth": "#22d3ee",    # Cyan (smoothed slope)
-    "lrs_signal": "#94a3b8",    # Gray (signal line)
+def _color_for(name: str) -> str:
+  try:
+    idx = abs(hash(name)) % len(_COLOR_PALETTE)
+  except Exception:
+    idx = 0
+  return _COLOR_PALETTE[idx]
 
-    # ALMA Z-Score Slope (Strategy 3001)
-    "alma_base": "#fbbf24",     # Amber
-    "zscore_alma": "#fbbf24",   # Amber
-    "slope_s": "#22d3ee",       # Cyan
-    
-    # ADX components
-    "plus_di": "#22c55e",    # Green
-    "minus_di": "#ef4444",   # Red
-    
-    # Kinematics (Derivatives)
-    "velocity": "#06b6d4",      # Cyan
-    "acceleration": "#f43f5e",  # Rose
-    "hma_velocity": "#06b6d4",  # Cyan
-    "hma_acceleration": "#f43f5e", # Rose
-    "hma_fast_velocity": "#06b6d4",  # Cyan
-    "hma_slow_velocity": "#0ea5e9",  # Sky
-    "hma_fast_acceleration": "#f43f5e", # Rose
 
-    # SuperGolay (causal SG smoothing + score)
-    "supergolay": "#a855f7",        # Violet (reuse existing palette)
-    "supergolay_score": "#fbbf24",  # Amber
-}
+def _get_indicator_specs(params: Optional[Dict[str, Any]]) -> Dict[str, Any]:
+  if not params:
+    return {}
+  specs = params.get("__indicator_specs", None)
+  return specs if isinstance(specs, dict) else {}
 
-# Overlay indicators (values in price range, drawn on main chart)
-OVERLAY_INDICATORS = {
-    # Moving Averages
-    "ema", "ema_200", "ema200_mtf", "ema_50", "ema_20", "ema_base",
-    "sma", "wma", "hma", "vwma", "vwap_session",
-    "alma", "alma_5", "alma_25", "alma_60",
-    "alma_base",
-    "kama", "kalman",
-    
-    # Trend
-    "supertrend",
-    
-    # Bands/Channels
-    "donchian_hi", "donchian_lo",
-    "bb_basis", "bb_upper", "bb_lower",
-    "kc_basis", "kc_upper", "kc_lower",
-    "nw_baseline", "nw_upper", "nw_lower",
-    "ssl_baseline", "ssl_line",
-    # SSL Hybrid Advanced overlay lines
-    "ssl_upper", "ssl_lower", "ssl1_line", "ssl2_line", "ssl_exit_line",
-    
-    # Elder Ray
-    "elder_ema",
 
-    # SuperGolay
-    "supergolay",
-}
+def _get_indicator_bounds(params: Optional[Dict[str, Any]]) -> Dict[str, Any]:
+  if not params:
+    return {}
+  bounds = params.get("__indicator_bounds", None)
+  return bounds if isinstance(bounds, dict) else {}
 
-# Sub-panel oscillators (bounded 0-100 or unbounded, separate panel)
-OSCILLATOR_INDICATORS = {
-    # Classic Oscillators
-    "rsi", "stc", "chop", "adx", "mfi", "zscore", "dpo", "rsi14", "rsi9", "wavetrend", "cci", "ml_prediction",
-    
-    # Strategy 388 Lorentzian indicators
-    "rsi14", "rsi9", "wavetrend", "cci", "ml_prediction",
-    
-    # NEW: Stochastic & ROC
-    "stoch_k", "stoch_d", "roc",
-    
-    # NEW: ML Learning / Lorentzian
-    "ml_vote", "zscore_kalman", "hma_slope", "kalman_dist", "slope_signal",
-    
-    # MACD components
-    "macd", "macd_hist", "macd_signal",
-    
-    # Efficiency/Trend
-    "er", "er_kaufman", "efficiency_ratio",
-    "linreg_slope",
-    "zscore_alma",
-    "slope_s",
-    "lrs", "lrs_smooth", "lrs_signal",  # LRS Advanced
-    
-    # Advanced Oscillators
-    "laguerre_rsi",
-    "mfi_slope",
-    
-    # Elder Ray
-    "bull_power", "bear_power",
-    
-    # SSL / Trend direction
-    "ssl_trend", "ssl_hlv", "ssl_candle_violation",
-    
-    # TTM Squeeze
-    "squeeze", "squeeze_mom",
-    
-    # ADX components
-    "plus_di", "minus_di",
-    
-    # ATR (can be sub-panel for visibility)
-    "atr", "atr_p90",
-    
-    # Kinematics (Derivatives)
-    "velocity", "acceleration",
-    "hma_velocity", "hma_acceleration",
-    "hma_fast_velocity", "hma_slow_velocity", "hma_fast_acceleration",
 
-    # SuperGolay score
-    "supergolay_score",
+def _is_overlay_heuristic(series: "pd.Series", price_range: tuple) -> bool:
+  """Heurística simple: si el rango del indicador parece estar en escala precio."""
+  try:
+    s = series.dropna()
+    if s.empty:
+      return False
+    min_p, max_p = float(price_range[0]), float(price_range[1])
+    if not (np.isfinite(min_p) and np.isfinite(max_p) and max_p > min_p):
+      return False
+    ind_min = float(s.min())
+    ind_max = float(s.max())
+    if not (np.isfinite(ind_min) and np.isfinite(ind_max)):
+      return False
 
-    # SuperIndicador 9955
-    "super_9955",
-}
+    price_span = max_p - min_p
+    ind_span = ind_max - ind_min
+    # overlay si el indicador está mayormente dentro del rango de precio
+    within_min = (ind_min >= (min_p - 0.25 * price_span))
+    within_max = (ind_max <= (max_p + 0.25 * price_span))
+    span_ok = ind_span <= 2.5 * price_span
+    return within_min and within_max and span_ok
+  except Exception:
+    return False
 
-# Reference lines for bounded oscillators
-OSCILLATOR_BOUNDS = {
-    "dpo": {"hi": 10, "lo": -10, "mid": 0},
-    "rsi": {"hi": 70, "lo": 30, "mid": 50},
-    "stc": {"hi": 75, "lo": 25, "mid": 50},
-    "chop": {"hi": 61.8, "lo": 38.2, "mid": 50},
-    "mfi": {"hi": 80, "lo": 20, "mid": 50},
-    "stoch_k": {"hi": 80, "lo": 20, "mid": 50},
-    "stoch_d": {"hi": 80, "lo": 20, "mid": 50},
-    "laguerre_rsi": {"hi": 0.8, "lo": 0.2, "mid": 0.5},
-    "er": {"hi": 0.6, "lo": 0.2, "mid": 0.4},
-    "er_kaufman": {"hi": 0.6, "lo": 0.2, "mid": 0.4},
-    "adx": {"hi": 40, "lo": 20, "mid": 25},
-    # Strategy 388 bounds
-    "rsi14": {"hi": 70, "lo": 30, "mid": 50},
-    "rsi9": {"hi": 70, "lo": 30, "mid": 50},
-    "wavetrend": {"hi": 60, "lo": -60, "mid": 0},
-    "cci": {"hi": 100, "lo": -100, "mid": 0},
-    "ml_prediction": {"hi": 8, "lo": -8, "mid": 0},
-    "plus_di": {"hi": 40, "lo": 20, "mid": 25},
-    "minus_di": {"hi": 40, "lo": 20, "mid": 25},
-    # ML Learning / Lorentzian bounds
-    "ml_vote": {"hi": 0.5, "lo": -0.5, "mid": 0},
-    "zscore_kalman": {"hi": 2.0, "lo": -2.0, "mid": 0},
-    "zscore": {"hi": 3.0, "lo": -3.0, "mid": 0},  # Z-Score bounds
-    "zscore_alma": {"hi": 3.0, "lo": -3.0, "mid": 0},
-    "atr_p90": {},  # ATR Percentile 90 - no bounds (same panel as ATR)
-    
-    # Kinematics - no bounds (unbounded oscillators)
-    "velocity": {"mid": 0},
-    "acceleration": {"mid": 0},
-    "hma_velocity": {"mid": 0},
-    "hma_acceleration": {"mid": 0},
-    "hma_fast_velocity": {"mid": 0},
-    "hma_slow_velocity": {"mid": 0},
-    "hma_fast_acceleration": {"mid": 0},
 
-    # SuperIndicador 9955
-    "super_9955": {"hi": 2.0, "lo": -2.0, "mid": 0.0},
+def _detect_indicators(
+  df: "pd.DataFrame",
+  price_range: tuple,
+  params: Optional[Dict[str, Any]] = None,
+) -> Dict[str, Any]:
+  """Detecta qué columnas graficar, 100% guiado por estrategia.
 
-    # SuperGolay score zones
-    "supergolay_score": {"hi": 1.0, "lo": -1.0, "mid": 0.0},
-}
+  Si la estrategia proporciona `__indicators_used`, se usan SOLO esas columnas.
+  Si no, se infiere de las columnas del DF excluyendo OHLCV/señales.
+  """
 
-# MACD-style indicators (need special rendering with histogram)
-MACD_STYLE_INDICATORS = {"macd", "macd_hist", "macd_signal"}
+  skip_cols = {
+    "timestamp",
+    "open",
+    "high",
+    "low",
+    "close",
+    "volume",
+    "signal_long",
+    "signal_short",
+    "_session_day",
+  }
 
-# Histogram-style oscillators (colored bars like momentum)
-HISTOGRAM_INDICATORS = {
-    "macd_hist", "squeeze_mom", "bull_power", "bear_power",
-    "roc",  # ROC can be rendered as histogram
-}
+  indicators_used = params.get("__indicators_used", None) if params else None
+  if isinstance(indicators_used, list) and indicators_used:
+    candidate_cols = [c for c in indicators_used if isinstance(c, str)]
+  else:
+    candidate_cols = [
+      c
+      for c in df.columns
+      if isinstance(c, str) and c not in skip_cols and not c.startswith("_")
+    ]
+
+  specs = _get_indicator_specs(params)
+  bounds_map = _get_indicator_bounds(params)
+
+  overlays: List[Dict[str, Any]] = []
+  sub_panels: List[Dict[str, Any]] = []
+
+  for col in candidate_cols:
+    if col not in df.columns:
+      continue
+    spec = specs.get(col, {}) if isinstance(specs.get(col, {}), dict) else {}
+
+    panel = spec.get("panel", None)
+    if panel not in {"overlay", "sub"}:
+      panel = "overlay" if _is_overlay_heuristic(df[col], price_range) else "sub"
+
+    series_type = str(spec.get("type", "line"))
+    if series_type not in {"line", "histogram"}:
+      series_type = "line"
+
+    color = str(spec.get("color", _color_for(col)))
+    name = str(spec.get("name", col.upper()))
+
+    bounds = spec.get("bounds", None)
+    if not isinstance(bounds, dict):
+      bounds = bounds_map.get(col, None)
+    # Fallback: infer bounds/levels from params using generic naming patterns.
+    if not isinstance(bounds, dict) and params:
+      inferred = _extract_indicator_params_from_optuna(params, col)
+      bounds = inferred if isinstance(inferred, dict) and inferred else None
+    if not isinstance(bounds, dict):
+      bounds = None
+
+    precision = spec.get("precision", None)
+    if not isinstance(precision, int):
+      precision = 2 if panel == "overlay" else 4
+
+    if panel == "overlay":
+      overlays.append({"col": col, "color": color, "type": series_type, "precision": precision})
+    else:
+      sub_panels.append(
+        {
+          "col": col,
+          "name": name,
+          "color": color,
+          "type": series_type,
+          "bounds": bounds,
+          "precision": precision,
+        }
+      )
+
+  return {"overlays": overlays, "sub_panels": sub_panels}
 
 
 # =============================================================================
@@ -677,39 +577,19 @@ def _apply_warmup_mask(aligned_values: list, warmup_period: int) -> list:
 
 
 def _extract_indicator_params_from_optuna(params: Optional[Dict[str, Any]], indicator_name: str) -> Dict[str, Any]:
+    """Extrae niveles de referencia desde `params` para un indicador.
+
+    Es deliberadamente GENÉRICO y se basa en patrones de nombres comunes.
+    La fuente de verdad sigue siendo la estrategia (params), no la gráfica.
     """
-    Extract indicator-specific parameters from Optuna trial params.
-    
-    100% MODULAR: Dynamically compares column names with param keys.
-    
-    Searches for keys like:
-    - '{indicator}_overbought', '{indicator}_oversold', '{indicator}_period'
-    - 'overbought_{indicator}', 'oversold_{indicator}', 'period_{indicator}'
-    - 'entry_long_{indicator}', 'exit_short_{indicator}' (strategy levels)
-    - Generic 'overbought', 'oversold', 'period' if only one oscillator
-    
-    Returns dict with 'hi', 'lo', 'mid', 'period', 'entry_long', 'entry_short', 'exit_long', 'exit_short' if found.
-    """
+
     if not params:
         return {}
     
-    result = {}
+    result: Dict[str, Any] = {}
     ind_lower = indicator_name.lower()
-
-    # Strategy 3001 (ALMA z-score) uses asymmetric param names.
-    # Map them to bounds so the plot can draw reference lines.
-    if ind_lower == "zscore_alma":
-      try:
-        if "z_threshold_upper" in params and params["z_threshold_upper"] is not None:
-          result["hi"] = float(params["z_threshold_upper"])
-        if "z_threshold_lower" in params and params["z_threshold_lower"] is not None:
-          result["lo"] = float(params["z_threshold_lower"])
-        if result:
-          result.setdefault("mid", 0.0)
-      except (ValueError, TypeError):
-        pass
     
-    # === PERIOD DETECTION ===
+    # === PERIOD DETECTION (solo para nombre del panel, opcional) ===
     period_patterns = [
         f"{ind_lower}_period", f"period_{ind_lower}", f"{ind_lower}_length",
         f"length_{ind_lower}", f"{ind_lower}_len", f"{ind_lower}_window",
@@ -723,16 +603,26 @@ def _extract_indicator_params_from_optuna(params: Optional[Dict[str, Any]], indi
             except (ValueError, TypeError):
                 pass
     
-    # === OVERBOUGHT/OVERSOLD DETECTION ===
+    # === HI/LO DETECTION ===
     overbought_patterns = [
-        f"{ind_lower}_overbought", f"overbought_{ind_lower}", f"{ind_lower}_ob",
-        f"{ind_lower}_upper", f"upper_{ind_lower}", f"{ind_lower}_hi",
-        f"{ind_lower}_threshold_hi", "overbought", "ob_level", "upper_threshold"
+      f"{ind_lower}_overbought",
+      f"overbought_{ind_lower}",
+      f"{ind_lower}_ob",
+      f"{ind_lower}_upper",
+      f"upper_{ind_lower}",
+      f"{ind_lower}_hi",
+      f"hi_{ind_lower}",
+      f"{ind_lower}_threshold_hi",
     ]
     oversold_patterns = [
-        f"{ind_lower}_oversold", f"oversold_{ind_lower}", f"{ind_lower}_os",
-        f"{ind_lower}_lower", f"lower_{ind_lower}", f"{ind_lower}_lo",
-        f"{ind_lower}_threshold_lo", "oversold", "os_level", "lower_threshold"
+      f"{ind_lower}_oversold",
+      f"oversold_{ind_lower}",
+      f"{ind_lower}_os",
+      f"{ind_lower}_lower",
+      f"lower_{ind_lower}",
+      f"{ind_lower}_lo",
+      f"lo_{ind_lower}",
+      f"{ind_lower}_threshold_lo",
     ]
     
     for key in overbought_patterns:
@@ -751,7 +641,7 @@ def _extract_indicator_params_from_optuna(params: Optional[Dict[str, Any]], indi
             except (ValueError, TypeError):
                 pass
     
-    # === STRATEGY ENTRY/EXIT LEVELS (Pendulum Logic) ===
+    # === ENTRY/EXIT LEVELS (opcionales) ===
     # Entry Long: when indicator reaches this level, enter long
     entry_long_patterns = [
         f"entry_long_{ind_lower}", f"{ind_lower}_entry_long", f"entry_long",
@@ -802,14 +692,15 @@ def _extract_indicator_params_from_optuna(params: Optional[Dict[str, Any]], indi
             except (ValueError, TypeError):
                 pass
     
-    # Calculate mid if we have hi and lo
-    # For z-score style oscillators, mid should be 0 (even if hi/lo are asymmetric).
-    if ind_lower in {"zscore", "zscore_alma", "zscore_kalman"}:
-      result['mid'] = 0.0
-    elif 'hi' in result and 'lo' in result:
-      result['mid'] = (result['hi'] + result['lo']) / 2
+    # mid opcional: si no viene dado, calcularlo si tenemos hi/lo.
+    if 'mid' not in result and 'hi' in result and 'lo' in result:
+        try:
+            result['mid'] = (float(result['hi']) + float(result['lo'])) / 2.0
+        except (ValueError, TypeError):
+            pass
     
     return result
+
 
 
 def _generate_dynamic_combo(params: Optional[Dict[str, Any]], strategy_name: str = "") -> str:
@@ -867,166 +758,20 @@ def _generate_dynamic_combo(params: Optional[Dict[str, Any]], strategy_name: str
     return ' | '.join(parts) if parts else strategy_name or "TRIAL"
 
 
-def _detect_indicators(
-    df_cols: set, 
-    price_range: tuple,
-    params: Optional[Dict[str, Any]] = None
+def _detect_indicators_legacy(
+  df_cols: set,
+  price_range: tuple,
+  params: Optional[Dict[str, Any]] = None,
 ) -> Dict[str, Any]:
-    """
-    Auto-detect indicators from DataFrame columns.
-    Categorizes into overlays vs sub-panels based on indicator type.
-    
-    NEW: Reads Optuna params to dynamically set bounds and panel names.
-    
-    Args:
-        df_cols: Set of column names in DataFrame
-        price_range: (min_price, max_price) tuple for overlay detection
-        params: Optuna trial parameters dict for dynamic bounds
-        
-    Returns:
-        Dict with 'overlays' and 'sub_panels' lists
-    """
-    # Columns to skip (base OHLCV data)
-    skip_cols = {"timestamp", "open", "high", "low", "close", "volume", 
-                 "signal_long", "signal_short", "_session_day"}
-    
-    overlays = []
-    sub_panels = []
-    
-    for col in df_cols:
-        if col in skip_cols or col.startswith("_"):
-            continue
-            
-        # Check if overlay (price-range indicator)
-        if col in OVERLAY_INDICATORS or col.endswith("_upper") or col.endswith("_lower"):
-            overlays.append({
-                "col": col,
-                "color": INDICATOR_COLORS.get(col, "#fbbf24"),
-                "type": "line"
-            })
-        # Check if oscillator (sub-panel indicator)
-        elif col in OSCILLATOR_INDICATORS:
-            # Get default bounds
-            default_bounds = OSCILLATOR_BOUNDS.get(col, None)
-            
-            # Extract dynamic params from Optuna trial
-            optuna_params = _extract_indicator_params_from_optuna(params, col)
-            
-            # Merge: Optuna params override defaults
-            if default_bounds:
-                merged_bounds = default_bounds.copy()
-                if 'hi' in optuna_params:
-                    merged_bounds['hi'] = optuna_params['hi']
-                if 'lo' in optuna_params:
-                    merged_bounds['lo'] = optuna_params['lo']
-                if 'mid' in optuna_params:
-                    merged_bounds['mid'] = optuna_params['mid']
-            else:
-                merged_bounds = optuna_params.copy() if optuna_params else {}
-            
-            # === ADD STRATEGY ENTRY/EXIT LEVELS TO BOUNDS ===
-            # These will be drawn as reference lines on the oscillator panel
-            if 'entry_long' in optuna_params:
-                merged_bounds['entry_long'] = optuna_params['entry_long']
-            if 'entry_short' in optuna_params:
-                merged_bounds['entry_short'] = optuna_params['entry_short']
-            if 'exit_long' in optuna_params:
-                merged_bounds['exit_long'] = optuna_params['exit_long']
-            if 'exit_short' in optuna_params:
-                merged_bounds['exit_short'] = optuna_params['exit_short']
-            
-            # === DPO SYMMETRIC TRIGGER LINES ===
-            # dpo_trigger: +value for LONG, -value for SHORT
-            if col == 'dpo' and 'dpo_trigger' in optuna_params:
-                trigger = optuna_params['dpo_trigger']
-                merged_bounds['dpo_long'] = trigger       # +trigger (LONG entry)
-                merged_bounds['dpo_short'] = -trigger     # -trigger (SHORT entry)
-            if col == 'dpo' and 'dpo_exit' in optuna_params:
-                exit_val = optuna_params['dpo_exit']
-                # Mirrored: LONG exits at dpo_exit, SHORT exits at -dpo_exit
-                merged_bounds['dpo_exit_long'] = exit_val    # LONG exit (e.g. -0.75)
-                merged_bounds['dpo_exit_short'] = -exit_val  # SHORT exit (e.g. +0.75)
-            
-            # === ADX THRESHOLD LINE ===
-            # adx_threshold: minimum ADX for entry (same for LONG and SHORT)
-            if col == 'adx' and 'adx_threshold' in optuna_params:
-                merged_bounds['adx_threshold'] = optuna_params['adx_threshold']
-            
-            # === RSI ENTRY LEVELS ===
-            # rsi_long: RSI level for LONG entry (cross UP)
-            # rsi_short: RSI level for SHORT entry (cross DOWN)
-            if col == 'rsi' and 'rsi_long' in optuna_params:
-                merged_bounds['rsi_long'] = optuna_params['rsi_long']
-            if col == 'rsi' and 'rsi_short' in optuna_params:
-                merged_bounds['rsi_short'] = optuna_params['rsi_short']
-            
-            # === DPO CYCLE LEVELS (Strategy 6) ===
-            # dpo_extreme: normalized DPO level for zones [-10, +10]
-            # RSA = +extreme, RSM = +extreme-3, 0 = neutral, RIM = -extreme+3, RIB = -extreme
-            if col == 'dpo' and params and 'dpo_extreme' in params:
-                dpo_ext = params['dpo_extreme']
-                merged_bounds['dpo_rsa'] = dpo_ext          # Upper High (+8) - Euphoria
-                merged_bounds['dpo_rsm'] = dpo_ext - 3.0    # Upper Mid (+5) - Distribution
-                merged_bounds['dpo_zero'] = 0.0             # Neutral line
-                merged_bounds['dpo_rim'] = -dpo_ext + 3.0   # Lower Mid (-5) - Accumulation
-                merged_bounds['dpo_rib'] = -dpo_ext         # Lower Low (-8) - Panic
-            
-            # === MFI THRESHOLD LEVELS (Strategy 6) ===
-            # mfi_threshold: symmetric around 50 (e.g., 70 -> zones at 70, 50, 30)
-            if col == 'mfi' and params and 'mfi_threshold' in params:
-                mfi_thresh = params['mfi_threshold']
-                merged_bounds['mfi_high'] = mfi_thresh          # High zone (ZA=70) - Overbought
-                merged_bounds['mfi_mid'] = 50.0                 # Equilibrium (50)
-                merged_bounds['mfi_low'] = 100.0 - mfi_thresh   # Low zone (ZB=30) - Oversold
-            
-            # === Z-SCORE ENTRY LEVELS (Strategy 13 Mean Reversion) ===
-            # z_entry: Z-Score threshold for entry (symmetric for LONG/SHORT)
-            if col == 'zscore' and params and 'z_entry' in params:
-                z_entry = params['z_entry']
-                merged_bounds['z_entry_long'] = -z_entry   # LONG entry (Z < -z_entry)
-                merged_bounds['z_entry_short'] = z_entry   # SHORT entry (Z > z_entry)
-            if col == 'zscore' and params and 'tp_z_return' in params:
-                tp_z = params['tp_z_return']
-                merged_bounds['z_tp_long'] = -tp_z   # LONG TP (Z >= -tp_z_return)
-                merged_bounds['z_tp_short'] = tp_z   # SHORT TP (Z <= tp_z_return)
-            
-            # === Z-SCORE RANGE LEVELS (Strategy 13 v2 Mean Reversion) ===
-            # z_long_min, z_long_max: Range for LONG entry (negative values)
-            # z_short_min, z_short_max: Range for SHORT entry (positive values)
-            if col == 'zscore' and params:
-                if 'z_long_min' in params:
-                    merged_bounds['z_long_min'] = params['z_long_min']   # e.g. -2.5
-                if 'z_long_max' in params:
-                    merged_bounds['z_long_max'] = params['z_long_max']   # e.g. -1.5
-                if 'z_short_min' in params:
-                    merged_bounds['z_short_min'] = params['z_short_min'] # e.g. +1.5
-                if 'z_short_max' in params:
-                    merged_bounds['z_short_max'] = params['z_short_max'] # e.g. +2.5
-                # Z-Score entry threshold (Strategy 13 ER version)
-                if 'z_entry_threshold' in params:
-                    z_thresh = params['z_entry_threshold']
-                    merged_bounds['z_entry_long'] = z_thresh         # e.g. -2.0 (LONG entry)
-                    merged_bounds['z_entry_short'] = abs(z_thresh)   # e.g. +2.0 (SHORT entry)
-            
-            # === EFFICIENCY RATIO THRESHOLD (Strategy 13 ER) ===
-            if col in ('er', 'er_kaufman') and params and 'er_threshold' in params:
-                merged_bounds['er_threshold'] = params['er_threshold']  # e.g. 0.3
-            
-            # Build dynamic panel name with period if available
-            panel_name = col.upper()
-            if 'period' in optuna_params:
-                panel_name = f"{col.upper()} ({optuna_params['period']})"
-            
-            sub_panels.append({
-                "col": col,
-                "name": panel_name,
-                "color": INDICATOR_COLORS.get(col, "#60a5fa"),
-                "type": "histogram" if col in HISTOGRAM_INDICATORS else "line",
-                "bounds": merged_bounds,
-                "optuna_params": optuna_params  # Store for reference
-            })
-    
-    return {"overlays": overlays, "sub_panels": sub_panels}
+  """LEGACY – mantenido solo por compatibilidad interna.
+
+  La detección real ahora es 100% guiada por estrategia y se hace con la
+  versión nueva de `_detect_indicators(df: pd.DataFrame, ...)` definida arriba.
+  """
+  raise RuntimeError(
+    "Legacy _detect_indicators(df_cols, ...) ya no está soportado. "
+    "Usa la detección strategy-driven con el DataFrame alineado."
+  )
 
 
 # =============================================================================
@@ -1753,6 +1498,18 @@ try {
       return mo+'/'+dy+' '+hr+':'+mn+' UTC';
     }catch(e){return '-';}
   };
+
+  // Basic HTML escaping (trade fields may contain arbitrary strings)
+  const escapeHtml=(s)=>{
+    const str=String(s);
+    return str.replace(/[&<>"']/g,(m)=>({
+      '&':'&amp;',
+      '<':'&lt;',
+      '>':'&gt;',
+      '"':'&quot;',
+      "'":'&#39;'
+    }[m]||m));
+  };
   
   // Handle crosshair move on ALL panels to update unified tooltip
   const handleCrosshair=(param)=>{
@@ -1774,8 +1531,12 @@ try {
         const pnlCls=isWin?'pos':'neg';
         const typeCls=tr.type==='LONG'?'long':'short';
         const badgeCls=isWin?'win':'loss';
+
+        const exitTypeRow=(tr.xs!==undefined&&tr.xs!==null&&String(tr.xs).length>0)
+          ? '<div class="tt-row"><span class="tt-label">ExitType</span><span class="tt-val">'+escapeHtml(tr.xs)+'</span></div>'
+          : '';
         
-        tt.innerHTML='<div class="tt-header"><span class="tt-type '+typeCls+'">'+tr.type+'</span><span class="tt-badge '+badgeCls+'">'+(isWin?'WIN':'LOSS')+'</span></div><div class="tt-row"><span class="tt-label">Entry</span><span class="tt-val">'+(tr.ep?tr.ep.toFixed(2):'-')+'</span></div><div class="tt-row"><span class="tt-label">Exit</span><span class="tt-val">'+(tr.xp?tr.xp.toFixed(2):'-')+'</span></div><div class="tt-row"><span class="tt-label">Qty</span><span class="tt-val">'+(tr.qty?tr.qty.toFixed(4):'-')+'</span></div><div class="tt-row"><span class="tt-label">Comm</span><span class="tt-val">$'+(tr.comm?tr.comm.toFixed(2):'0')+'</span></div><div class="tt-pnl"><span class="tt-pnl-label">PnL Neto</span><span class="tt-pnl-val '+pnlCls+'">'+pnlSign+'$'+(tr.pnl?tr.pnl.toFixed(2):'0')+'</span></div>';
+        tt.innerHTML='<div class="tt-header"><span class="tt-type '+typeCls+'">'+tr.type+'</span><span class="tt-badge '+badgeCls+'">'+(isWin?'WIN':'LOSS')+'</span></div><div class="tt-row"><span class="tt-label">Entry</span><span class="tt-val">'+(tr.ep?tr.ep.toFixed(2):'-')+'</span></div><div class="tt-row"><span class="tt-label">Exit</span><span class="tt-val">'+(tr.xp?tr.xp.toFixed(2):'-')+'</span></div>'+exitTypeRow+'<div class="tt-row"><span class="tt-label">Qty</span><span class="tt-val">'+(tr.qty?tr.qty.toFixed(4):'-')+'</span></div><div class="tt-row"><span class="tt-label">Comm</span><span class="tt-val">$'+(tr.comm?tr.comm.toFixed(2):'0')+'</span></div><div class="tt-pnl"><span class="tt-pnl-label">PnL Neto</span><span class="tt-pnl-val '+pnlCls+'">'+pnlSign+'$'+(tr.pnl?tr.pnl.toFixed(2):'0')+'</span></div>';
         tt.style.display='block';
         const maxX=window.innerWidth-260;
         const maxY=window.innerHeight-200;
@@ -2076,12 +1837,9 @@ def plot_trades(
         missing_in_source = len(ts_q) - len(df_aligned)
         print(f"[PLOT WARN] Missing {missing_in_source} timestamps in source DataFrame. Using mapping fallback.")
     
-    # Detect indicators from columns (with Optuna params for dynamic bounds)
+    # Detect indicators (strategy-driven via __indicators_used/__indicator_specs/__indicator_bounds)
     price_range = (float(closes.min()), float(closes.max()))
-    detected = _detect_indicators(set(df_aligned.columns), price_range, params)
-    
-    # Lazy loading check - only use indicators if present in params
-    indicators_used = params.get("__indicators_used", None) if params else None
+    detected = _detect_indicators(df_aligned, price_range, params)
     
     indicators = {"overlays": [], "sub_panels": []}
     
@@ -2089,9 +1847,6 @@ def plot_trades(
     for overlay_cfg in detected["overlays"]:
         col = overlay_cfg["col"]
         if col not in df_aligned.columns:
-            continue
-        # Lazy check
-        if indicators_used is not None and col not in indicators_used:
             continue
         
         # Extract values and align using the mapper
@@ -2101,9 +1856,9 @@ def plot_trades(
         # Only add if we have valid data
         valid_count = aligner.count_valid(aligned_vals)
         if valid_count > 0:
-            # Quantize for JSON efficiency (overlays use price precision)
-            quantized, factor = aligner.quantize(aligned_vals, precision=2)
-            
+            precision = int(overlay_cfg.get("precision", 2))
+            quantized, factor = aligner.quantize(aligned_vals, precision=precision)
+
             indicators["overlays"].append({
                 "t": ts_q.tolist(),  # AUTHORITATIVE timestamps
                 "v": quantized,
@@ -2116,9 +1871,6 @@ def plot_trades(
         col = panel_cfg["col"]
         if col not in df_aligned.columns:
             continue
-        # Lazy check
-        if indicators_used is not None and col not in indicators_used:
-            continue
         
         # Extract values and align using the mapper
         vals = df_aligned[col].values.astype(np.float64)
@@ -2129,17 +1881,16 @@ def plot_trades(
         if valid_count > 0:
             # Use dynamic name from detection (includes period if found in params)
             panel_name = panel_cfg.get("name", col.upper())
-            
-            # Quantize (higher precision for MACD/zscore, standard for others)
-            precision = 4 if col in {"macd", "macd_hist", "macd_signal", "zscore", "zscore_kalman", "zscore_alma"} else 2
+
+            precision = int(panel_cfg.get("precision", 4))
             quantized, factor = aligner.quantize(aligned_vals, precision=precision)
-            
+
             indicators["sub_panels"].append({
                 "name": panel_name,
                 "type": panel_cfg["type"],
                 "color": panel_cfg["color"],
-                "bounds": panel_cfg.get("bounds"),  # Already merged with Optuna params
-                "zero_line": col in {"macd", "macd_hist", "zscore", "zscore_kalman", "zscore_alma"},
+                "bounds": panel_cfg.get("bounds"),
+                "zero_line": bool(panel_cfg.get("bounds", {}) and ("mid" in (panel_cfg.get("bounds") or {}))),
                 "data": {
                     "t": ts_q.tolist(),  # AUTHORITATIVE timestamps - ZERO-LAG GUARANTEED
                     "v": quantized,
@@ -2230,6 +1981,7 @@ def plot_trades(
                     ep = float(row.get("entry_price", 0))
                     xp = float(row.get("exit_price", 0)) if pd.notna(row.get("exit_price")) else None
                     pnl = float(row.get("pnl_neto", 0))
+                    tipo_salida = row.get("tipo_salida", None)
                     
                     # WARMUP FILTER: Skip trades that occur within the global warmup period
                     # This ensures no visual inconsistencies with indicator start points
@@ -2249,6 +2001,9 @@ def plot_trades(
                             "comm": round(comm, 2),
                             "qty": round(qty, 6)
                         }
+
+                        if tipo_salida is not None and pd.notna(tipo_salida):
+                          trade_info["xs"] = str(tipo_salida)
                         
                         # DOT-STYLE CENTERED MARKERS (circles, inBar for precision)
                         entry_color = "#3b82f6" if trade_type == "LONG" else "#a855f7"
@@ -2324,7 +2079,7 @@ def plot_trades(
     
     # Sanitize combo name for filename (remove special chars, limit length)
     combo_safe = re.sub(r"[^a-zA-Z0-9_-]", "_", combo or "STRATEGY")[:30]
-    filename = f"TRIAL-{trial_number}_SC-{score:.2f}_{combo_safe}.html"
+    filename = f"TRIAL-{trial_number}_SCORE-{score:.2f}_{combo_safe}.html"
     filepath = os.path.join(plot_base, filename)
     
     with open(filepath, "w", encoding="utf-8") as f:
@@ -2336,31 +2091,36 @@ def plot_trades(
 
 
 def _cleanup_old_plots(plot_base: str, max_archivos: int):
-    """Remove old plot files, keeping only the best scores."""
-    try:
-        all_files = [
-            f
-            for f in os.listdir(plot_base)
-            if f.endswith(".html") and f.startswith("TRIAL-")
-        ]
-        files_with_scores = []
-        for fname in all_files:
-            # Match new format: TRIAL-{n}_SC-{score}_{combo}.html
-            match = re.search(r"TRIAL-\d+_SC-([\d.]+)_.*\.html", fname)
-            if not match:
-                continue
-            try:
-                files_with_scores.append((fname, float(match.group(1))))
-            except ValueError:
-                continue
+  """Remove old plot files, keeping only the best scores."""
+  try:
+    all_files = [
+      f
+      for f in os.listdir(plot_base)
+      if f.endswith(".html") and f.startswith("TRIAL-")
+    ]
 
-        files_with_scores.sort(key=lambda x: x[1], reverse=True)
+    files_with_scores: list[tuple[str, float]] = []
 
-        if len(files_with_scores) > max_archivos:
-            for fname, _ in files_with_scores[max_archivos:]:
-                old_path = os.path.join(plot_base, fname)
-                if os.path.exists(old_path):
-                    os.remove(old_path)
-    except Exception:
-        # Best-effort cleanup only
-        pass
+    for fname in all_files:
+      # Match format: TRIAL-{n}_SCORE-{score}_{combo}.html
+      match = re.search(r"TRIAL-\d+_SCORE-(-?\d+(?:\.\d+)?)_.*\.html$", fname)
+      if not match:
+        # Archivos legacy (u otro formato) deben eliminarse primero
+        # para garantizar el límite max_archivos.
+        files_with_scores.append((fname, float("-inf")))
+        continue
+      try:
+        files_with_scores.append((fname, float(match.group(1))))
+      except ValueError:
+        files_with_scores.append((fname, float("-inf")))
+
+    files_with_scores.sort(key=lambda x: x[1], reverse=True)
+
+    if len(files_with_scores) > max_archivos:
+      for fname, _ in files_with_scores[max_archivos:]:
+        old_path = os.path.join(plot_base, fname)
+        if os.path.exists(old_path):
+          os.remove(old_path)
+  except Exception:
+    # Best-effort cleanup only
+    pass

@@ -6,7 +6,7 @@ from dataclasses import dataclass
 from typing import List, Optional
 
 from modelox.core.types import Reporter, TrialArtifacts
-from visual.plot import plot_trades
+from visual.grafico import plot_trades
 
 
 @dataclass
@@ -26,7 +26,7 @@ class PlotReporter(Reporter):
     Para el plot debemos usar `params_reporting` para poder filtrar indicadores y mostrar best-so-far.
     """
 
-    plot_base: str = "resultados/plots"
+    plot_base: str = "resultados/graficos"
     fecha_inicio_plot: str = (
         "2025-01-01"  # Valores por defecto (se sobrescriben desde ejecutar.py)
     )
@@ -43,7 +43,7 @@ class PlotReporter(Reporter):
             return []
 
         try:
-            # New format: TRIAL-{n}_SC-{score}_{combo}.html
+            # Format: TRIAL-{n}_SCORE-{score}_{combo}.html
             all_files = [
                 f
                 for f in os.listdir(self.plot_base)
@@ -51,7 +51,7 @@ class PlotReporter(Reporter):
             ]
             scores = []
             for f in all_files:
-                match = re.search(r"TRIAL-\d+_SC-([\d.]+)_.*\.html", f)
+                match = re.search(r"TRIAL-\d+_SCORE-(-?\d+(?:\.\d+)?)_.*\.html$", f)
                 if match:
                     try:
                         score_val = float(match.group(1))
@@ -86,7 +86,11 @@ class PlotReporter(Reporter):
         if not self._should_generate_plot(artifacts.score):
             return  # No generar si el score no es mejor que los guardados
 
-        # Ensure directories exist (resultados/, resultados/plots/)
+        # df_signals puede ser None (optimización). Si falta, no podemos plotear.
+        if getattr(artifacts, "df_signals", None) is None:
+            return
+
+        # Ensure directories exist
         os.makedirs(self.plot_base, exist_ok=True)
 
         # Usar params_reporting para que el plot pueda:

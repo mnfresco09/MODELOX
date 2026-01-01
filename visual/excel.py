@@ -145,9 +145,9 @@ def exportar_trades_excel(
     - Trades: se guardan solo los max_archivos mejores según score (top-K).
     """
 
-    # ========= RESUMEN GENERAL (PAGINADO POR COMBO) =============
+    # ========= RESUMEN GENERAL =============
 
-    # 1. Detecta nombre de la combinación para el archivo
+    # 1. Detecta nombre de la combinación (solo para contenido, no para el filename)
     nombre_combo = params.get("NOMBRE_COMBO", None)
     if not nombre_combo:
         nombre_combo = "DEFAULT"
@@ -157,11 +157,8 @@ def exportar_trades_excel(
     if resumen_dir and not os.path.exists(resumen_dir):
         os.makedirs(resumen_dir)
 
-    resumen_name = os.path.basename(resumen_path).replace(".xlsx", f"_{nombre_combo}")
-    resumen_base = os.path.join(resumen_dir, resumen_name + ".xlsx")
-
-    # Resumen único por estrategia (sin paginado): siempre escribir en el mismo archivo
-    resumen_actual = resumen_base
+    # Resumen único: siempre escribir exactamente en `resumen_path`
+    resumen_actual = resumen_path
 
     if os.path.exists(resumen_actual):
         try:
@@ -227,7 +224,12 @@ def exportar_trades_excel(
     df_res.to_excel(resumen_actual, index=False)
 
     # Formato visual pro
-    wb = load_workbook(resumen_actual)
+    try:
+        wb = load_workbook(resumen_actual)
+    except FileNotFoundError:
+        # Si por cualquier motivo el archivo no está disponible inmediatamente
+        # (p.ej. creación inicial/carrera de FS), no rompemos el trial.
+        return
     ws = wb.active
     fill_header = PatternFill("solid", fgColor="376092")
     font_header = Font(bold=True, color="FFFFFF")
@@ -297,9 +299,10 @@ def exportar_trades_excel(
     if trades_dir and not os.path.exists(trades_dir):
         os.makedirs(trades_dir)
 
-    # Incluir score en el nombre del archivo para poder ordenarlos después
-    score_str = f"{score:.2f}".replace(".", "_") if score is not None else "unknown"
-    trades_actual_path = f"{trades_actual_base}_{trial_number}_score_{score_str}.xlsx"
+    # Nombre requerido: TRIAL-<n>_SCORE-<s>.xlsx
+    score_str = f"{score:.2f}" if score is not None else "unknown"
+    trades_dir = os.path.dirname(trades_actual_base) or os.path.dirname(resumen_actual) or "."
+    trades_actual_path = os.path.join(trades_dir, f"TRIAL-{trial_number}_SCORE-{score_str}.xlsx")
 
     # Copia solo si es necesario modificar (optimización: evitar copia si no hay cambios)
     # Como vamos a modificar columnas y tipos, necesitamos copia
@@ -390,18 +393,17 @@ def exportar_trades_excel(
         existing = [
             f
             for f in os.listdir(trades_dir)
-            if f.startswith(os.path.basename(trades_actual_base))
-            and f.endswith(".xlsx")
+            if f.endswith(".xlsx") and f.startswith("TRIAL-")
         ]
 
         # Extraer scores del nombre del archivo (incluyendo el que acabamos de guardar)
         files_with_scores = []
         for f in existing:
-            # Buscar score en el nombre del archivo: formato "trades_trial_X_score_Y.xlsx"
-            score_match = re.search(r"score_([\d_]+)\.xlsx", f)
+            # Buscar score en el nombre del archivo: formato "TRIAL-{n}_SCORE-{score}.xlsx"
+            score_match = re.search(r"TRIAL-\d+_SCORE-([\d.]+)\.xlsx", f)
             if score_match:
                 try:
-                    score_from_file = float(score_match.group(1).replace("_", "."))
+                    score_from_file = float(score_match.group(1))
                     files_with_scores.append((score_from_file, f))
                 except (ValueError, TypeError):
                     # Si no se puede extraer el score, usar un valor muy bajo para que se elimine

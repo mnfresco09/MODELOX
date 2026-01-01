@@ -1,107 +1,112 @@
-# general/configuracion.py
+"""general/configuracion.py
+
+CONFIGURACIÓN CENTRAL DE MODELOX.
+
+REGLA DE ORO
+  - TODO lo que vayas a ajustar tú está arriba en "AJUSTA AQUÍ".
+  - El resto es "NO TOCAR" (helpers + compatibilidad).
+
+ACTIVOS SOPORTADOS
+  - BTC, GOLD, SP500, NASDAQ
+
+TIMEFRAMES SOPORTADOS (minutos)
+  - 5  -> sufijo "5m"
+  - 15 -> sufijo "15m"
+  - 60 -> sufijo "1h"
 """
-MODELOX Configuration - Multi-Asset Timeframe System
 
-Supported Assets:
-  - BTC: Bitcoin (crypto)
-  - GOLD: Gold (commodity)
-  - SP500: S&P 500 Index (equities)
-  - NASDAQ: NASDAQ 100 Index (equities)
+from __future__ import annotations
 
-Nota:
-    - Los archivos de datos OHLCV usan el sufijo "_1h".
-"""
+from typing import Iterable
 
-# ============================================================================
-# ASSET SELECTION
-# ============================================================================
-# Options: 'BTC', 'GOLD', 'SP500', 'NASDAQ'
+from modelox.core.exits import (
+    DEFAULT_EXIT_ATR_PERIOD,
+    DEFAULT_EXIT_ATR_PERIOD_RANGE,
+    DEFAULT_EXIT_SL_ATR,
+    DEFAULT_EXIT_SL_ATR_RANGE,
+    DEFAULT_EXIT_TIME_STOP_BARS,
+    DEFAULT_EXIT_TIME_STOP_BARS_RANGE,
+    DEFAULT_EXIT_TP_ATR,
+    DEFAULT_EXIT_TP_ATR_RANGE,
+    DEFAULT_OPTIMIZE_EXITS,
+)
+from modelox.core.timeframes import normalize_timeframe_to_suffix
+
+
+# =============================================================================
+# AJUSTA AQUÍ (CONFIGURACIÓN DEL USUARIO)
+# =============================================================================
+
+# ----------------------------------------------------------------------------
+# ACTIVOS A EJECUTAR
+# ----------------------------------------------------------------------------
+# Puedes pasar:
+#   - "GOLD"                    (uno)
+#   - "GOLD, BTC, SP500"        (varios, separado por coma)
+#   - ["GOLD", "BTC"]           (lista)
 ACTIVO = "GOLD, BTC, SP500"
 
 
-def _normalize_activos(v):
-    """Normaliza ACTIVO a una lista de strings (upper) sin vacíos.
-
-    Permite:
-    - "GOLD" (single)
-    - "GOLD,BTC" (comma-separated)
-    - ["GOLD", "BTC"] (list/tuple)
-    """
-    if isinstance(v, (list, tuple)):
-        raw = [str(x) for x in v]
-    else:
-        raw = str(v).split(",")
-    out = []
-    for a in raw:
-        a = a.strip()
-        if not a:
-            continue
-        out.append(a.upper())
-    return out or ["GOLD"]
+# ----------------------------------------------------------------------------
+# TIMEFRAME BASE (EJECUCIÓN)
+# ----------------------------------------------------------------------------
+# Timeframe base del backtest (minutos): 5 / 15 / 60
+TIMEFRAME = 15
 
 
-# Multi-asset support: ejecutar.py can iterate ACTIVOS sequentially.
-ACTIVOS = _normalize_activos(ACTIVO)
-ACTIVO_PRIMARIO = ACTIVOS[0]
+# ----------------------------------------------------------------------------
+# FECHAS (BACKTEST Y PLOT)
+# ----------------------------------------------------------------------------
+FECHA_INICIO = "2019-01-10"
+FECHA_FIN = "2025-10-15"
 
-# ============================================================================
-# DATA PATHS (1-Hour OHLCV Parquet)
-# ============================================================================
-ARCHIVO_DATA_BTC = "data/ohlcv/BTC_ohlcv_1h.parquet"
-ARCHIVO_DATA_GOLD = "data/ohlcv/GOLD_ohlcv_1h.parquet"
-ARCHIVO_DATA_SP500 = "data/ohlcv/SP500_ohlcv_1h.parquet"
-ARCHIVO_DATA_NASDAQ = "data/ohlcv/NASDAQ_ohlcv_1h.parquet"
-
-# Auto-select data file based on ACTIVO
-_DATA_MAP = {
-    "BTC": ARCHIVO_DATA_BTC,
-    "GOLD": ARCHIVO_DATA_GOLD,
-    "SP500": ARCHIVO_DATA_SP500,
-    "SP": ARCHIVO_DATA_SP500,  # Alias
-    "NASDAQ": ARCHIVO_DATA_NASDAQ,
-    "NDX": ARCHIVO_DATA_NASDAQ,  # Alias
-}
+FECHA_INICIO_PLOT = "2019-01-10"
+FECHA_FIN_PLOT = "2019-12-15"
 
 
-def resolve_archivo_data(activo: str) -> str:
-    return _DATA_MAP.get(str(activo).upper(), ARCHIVO_DATA_GOLD)
+# ----------------------------------------------------------------------------
+# OPTUNA
+# ----------------------------------------------------------------------------
+N_TRIALS = 15
+OPTUNA_N_JOBS = 1      # 1 recomendado en macOS (más estable)
+OPTUNA_SEED = None     # None = seed aleatoria
+OPTUNA_STORAGE = None  # None = in-memory (o ruta SQLite)
 
 
-# Backward compatibility: single path points to the primary asset.
-ARCHIVO_DATA = resolve_archivo_data(ACTIVO_PRIMARIO)
+# ----------------------------------------------------------------------------
+# EJECUCIÓN: QUÉ ESTRATEGIAS CORRER
+# ----------------------------------------------------------------------------
+# Single:    COMBINACION_A_EJECUTAR = 7
+# Multiple:  COMBINACION_A_EJECUTAR = [3, 4, 7]
+# All:       COMBINACION_A_EJECUTAR = "all"
+COMBINACION_A_EJECUTAR = [2]
 
-# ============================================================================
-# CAPITAL & EXECUTION SETTINGS
-# ============================================================================
+
+# ----------------------------------------------------------------------------
+# CUENTA / COSTES
+# ----------------------------------------------------------------------------
 SALDO_INICIAL = 300
 SALDO_OPERATIVO_MAX = 300
 APALANCAMIENTO = 50
 COMISION_PCT = 0.00043
-COMISION_SIDES = 1  # 1 = one-way, 2 = round-trip
-SALDO_MINIMO_OPERATIVO = 5  # Hard stop when balance <= this value
+COMISION_SIDES = 1
+SALDO_MINIMO_OPERATIVO = 5
 
-# ============================================================================
-# POSITION SIZING LIMITS (Per Asset)
-# ============================================================================
-# QTY_MAX_ACTIVO: Maximum quantity per trade for the selected asset.
-# This is the MAXIMUM AUTHORITY - even if leverage allows more, 
-# the bot will never exceed this limit.
-_QTY_MAX_MAP = {
-    "BTC": 0.025,       # BTC max per trade
-    "GOLD": 0.5,       # oz Gold max per trade
-    "SP500": 0.5,      # contracts SP500 max
-    "NASDAQ": 0.15,     # contracts NASDAQ max
+
+# ----------------------------------------------------------------------------
+# LÍMITES DE POSICIÓN POR ACTIVO
+# ----------------------------------------------------------------------------
+# Límite duro por trade (aunque el apalancamiento permita más).
+QTY_MAX_MAP = {
+    "BTC": 0.025,
+    "GOLD": 0.5,
+    "SP500": 0.5,
+    "NASDAQ": 0.15,
 }
 
-
-def resolve_qty_max_activo(activo: str) -> float:
-    return float(_QTY_MAX_MAP.get(str(activo).upper(), 3.0))
-
-
-# Optuna ranges for qty_max_activo per asset (min, max, step)
+# Permitir que Optuna optimice qty_max_activo dentro de un rango por activo.
 OPTIMIZAR_QTY_ACTIVO = True
-_QTY_MAX_RANGE_MAP = {
-    # Ajusta a tu mercado/broker
+QTY_MAX_RANGE_MAP = {
     "BTC": (0.01, 0.1, 0.01),
     "GOLD": (0.75, 3.5, 0.25),
     "SP500": (0.5, 4.0, 0.25),
@@ -109,113 +114,143 @@ _QTY_MAX_RANGE_MAP = {
 }
 
 
+# ----------------------------------------------------------------------------
+# SALIDAS (GLOBAL, ENGINE-OWNED)
+# ----------------------------------------------------------------------------
+EXIT_ATR_PERIOD = DEFAULT_EXIT_ATR_PERIOD
+EXIT_SL_ATR = DEFAULT_EXIT_SL_ATR
+EXIT_TP_ATR = DEFAULT_EXIT_TP_ATR
+EXIT_TIME_STOP_BARS = DEFAULT_EXIT_TIME_STOP_BARS
+
+OPTIMIZAR_SALIDAS = DEFAULT_OPTIMIZE_EXITS
+EXIT_ATR_PERIOD_RANGE = DEFAULT_EXIT_ATR_PERIOD_RANGE
+EXIT_SL_ATR_RANGE = DEFAULT_EXIT_SL_ATR_RANGE
+EXIT_TP_ATR_RANGE = DEFAULT_EXIT_TP_ATR_RANGE
+EXIT_TIME_STOP_BARS_RANGE = DEFAULT_EXIT_TIME_STOP_BARS_RANGE
+
+
+# ----------------------------------------------------------------------------
+# SALIDA DE RESULTADOS
+# ----------------------------------------------------------------------------
+MAX_ARCHIVOS_GUARDAR = 5
+GENERAR_PLOTS = True
+USAR_EXCEL = True
+
+
+# ----------------------------------------------------------------------------
+# MANTENIMIENTO (OPCIONAL)
+# ----------------------------------------------------------------------------
+# `ejecutar.py` puede usarlo para purgar __pycache__ al finalizar.
+PURGE_PYCACHE_ON_EXIT = True
+
+
+# =============================================================================
+# NO TOCAR (HELPERS + COMPATIBILIDAD)
+# =============================================================================
+
+_ACTIVO_ALIASES = {
+    "SP": "SP500",
+    "NDX": "NASDAQ",
+}
+
+
+def _normalize_activos(v: object) -> list[str]:
+    """Normaliza ACTIVO a una lista de símbolos (upper) sin vacíos."""
+    if isinstance(v, (list, tuple)):
+        raw: Iterable[str] = [str(x) for x in v]
+    else:
+        raw = str(v).split(",")
+
+    out: list[str] = []
+    for a in raw:
+        a = str(a).strip().upper()
+        if not a:
+            continue
+        a = _ACTIVO_ALIASES.get(a, a)
+        out.append(a)
+
+    return out or ["GOLD"]
+
+
+# Multi-asset support: ejecutar.py iterará esta lista.
+ACTIVOS = _normalize_activos(ACTIVO)
+ACTIVO_PRIMARIO = ACTIVOS[0]
+
+
+def resolve_archivo_data_tf(activo: str, timeframe: object = None, *, formato: str = "parquet") -> str:
+    """Resuelve archivo de datos por activo + timeframe.
+
+    Convención:
+      data/ohlcv/<ACTIVO>_ohlcv_<SUFIJO>.<formato>
+    donde SUFIJO ∈ {"5m", "15m", "1h"}
+    """
+    suf = normalize_timeframe_to_suffix(timeframe if timeframe is not None else TIMEFRAME)
+    a = _ACTIVO_ALIASES.get(str(activo).upper().strip(), str(activo).upper().strip()) or "GOLD"
+    ext = str(formato).lower().lstrip(".")
+    return f"data/ohlcv/{a}_ohlcv_{suf}.{ext}"
+
+
+def resolve_archivo_data(activo: str) -> str:
+    """Compat: devuelve el path del timeframe 1h (histórico) en parquet."""
+    return resolve_archivo_data_tf(activo, 60, formato="parquet")
+
+
+# Compat (algunos outputs/prints lo usan)
+ARCHIVO_DATA = resolve_archivo_data_tf(ACTIVO_PRIMARIO, TIMEFRAME, formato="parquet")
+
+
+def resolve_qty_max_activo(activo: str) -> float:
+    a = _ACTIVO_ALIASES.get(str(activo).upper().strip(), str(activo).upper().strip())
+    return float(QTY_MAX_MAP.get(a, 3.0))
+
+
 def resolve_qty_max_activo_range(activo: str) -> tuple[float, float, float]:
-    return tuple(_QTY_MAX_RANGE_MAP.get(str(activo).upper(), (0.01, 5.0, 0.01)))
+    a = _ACTIVO_ALIASES.get(str(activo).upper().strip(), str(activo).upper().strip())
+    return tuple(QTY_MAX_RANGE_MAP.get(a, (0.01, 5.0, 0.01)))
 
 
-# Backward compatibility: single qty limit points to the primary asset.
+# Compat: límites “por defecto” apuntan al activo primario
 QTY_MAX_ACTIVO = resolve_qty_max_activo(ACTIVO_PRIMARIO)
 
-# ============================================================================
-# DATE RANGES (Backtest & Plot)
-# ============================================================================
-FECHA_INICIO = "2024-01-21"
-FECHA_FIN = "2024-11-15"
-FECHA_INICIO_PLOT = "2024-01-22"
-FECHA_FIN_PLOT = "2024-10-15"
 
-# ============================================================================
-# OPTUNA OPTIMIZATION
-# ============================================================================
-N_TRIALS = 300
-    
-# ==========================================================================
-# EXIT SETTINGS (GLOBAL, ENGINE-OWNED)
-# ==========================================================================
-# Salidas fijas (no móviles) por ATR calculado en el momento de entrada.
-# Se ejecutan intra-vela al nivel exacto si el precio lo toca.
-EXIT_ATR_PERIOD = 14
-EXIT_SL_ATR = 1.0
-EXIT_TP_ATR = 1.0
-EXIT_TIME_STOP_BARS = 260
-
-# Optuna: permitir optimizar también la salida global desde configuración
-OPTIMIZAR_SALIDAS = True
-
-# Rangos para Optuna (min, max, step)
-EXIT_ATR_PERIOD_RANGE = (7, 30, 1)
-EXIT_SL_ATR_RANGE = (0.5, 3.0, 0.1)
-EXIT_TP_ATR_RANGE = (1.0, 8.0, 0.1)
-EXIT_TIME_STOP_BARS_RANGE = (250, 800, 10)
-OPTUNA_N_JOBS = 1      # Parallel jobs (1 = sequential)
-OPTUNA_SEED = None     # None = random seed each run
-OPTUNA_STORAGE = None  # None = in-memory, or SQLite path
-
-# ============================================================================
-# STRATEGY SELECTION
-# ============================================================================
-# Available strategies (see modelox/strategies/):
-#   1 = MFI Persistence
-#   2 = Kalman Sniper
-#   3 = Nadaraya-Watson
-#   4 = SSL Hull Hybrid
-#   5 = TTM Squeeze
-#   6 = Connors RSI(2)
-#   7 = Laguerre RSI
-#   9 = KAMA Trend
-#  10 = Elder Ray
-#  13 = Lorentzian ML (Machine Learning)
-#
-# Single strategy:  COMBINACION_A_EJECUTAR = 7
-# Multiple:         COMBINACION_A_EJECUTAR = [3, 4, 7, 9, 10]
-# All available:    COMBINACION_A_EJECUTAR = "all"
-#
-COMBINACION_A_EJECUTAR = [6]
-
-# ============================================================================
-# OUTPUT SETTINGS
-# ============================================================================
-MAX_ARCHIVOS_GUARDAR = 5  # Keep only top N results
-GENERAR_PLOTS = True      # Generate interactive HTML charts
-USAR_EXCEL = True         # Generate Excel reports
-
-# ============================================================================
-# UNIFIED CONFIG DICT (For Backward Compatibility)
-# ============================================================================
+# Dict unificado (compatibilidad con módulos legacy)
 CONFIG = {
-    # Backward compatibility: expose one ACTIVO as the primary one.
     "ACTIVO": ACTIVO_PRIMARIO,
-    # New: list of assets to run sequentially.
     "ACTIVOS": ACTIVOS,
-    "TIMEFRAME": "1h",
+    "TIMEFRAME": TIMEFRAME,
+
     "SALDO_INICIAL": SALDO_INICIAL,
     "SALDO_OPERATIVO_MAX": SALDO_OPERATIVO_MAX,
     "APALANCAMIENTO": APALANCAMIENTO,
     "COMISION_PCT": COMISION_PCT,
     "COMISION_SIDES": COMISION_SIDES,
     "SALDO_MINIMO_OPERATIVO": SALDO_MINIMO_OPERATIVO,
+
     "QTY_MAX_ACTIVO": QTY_MAX_ACTIVO,
     "OPTIMIZAR_QTY_ACTIVO": OPTIMIZAR_QTY_ACTIVO,
-    # Per-asset caps and Optuna ranges for qty_max_activo
-    "QTY_MAX_MAP": _QTY_MAX_MAP,
-    "QTY_MAX_RANGE_MAP": _QTY_MAX_RANGE_MAP,
-    "GENERAR_PLOTS": GENERAR_PLOTS,
-    "USAR_EXCEL": USAR_EXCEL,
-    "USAR_DATA_LIMPIA": False,
+    "QTY_MAX_MAP": QTY_MAX_MAP,
+    "QTY_MAX_RANGE_MAP": QTY_MAX_RANGE_MAP,
+
+    "N_TRIALS": N_TRIALS,
     "OPTUNA_N_JOBS": OPTUNA_N_JOBS,
     "OPTUNA_SEED": OPTUNA_SEED,
     "OPTUNA_STORAGE": OPTUNA_STORAGE,
 
-    # Global exits (engine)
+    "COMBINACION_A_EJECUTAR": COMBINACION_A_EJECUTAR,
+
     "EXIT_ATR_PERIOD": EXIT_ATR_PERIOD,
     "EXIT_SL_ATR": EXIT_SL_ATR,
     "EXIT_TP_ATR": EXIT_TP_ATR,
     "EXIT_TIME_STOP_BARS": EXIT_TIME_STOP_BARS,
-
-    # Optuna exits
     "OPTIMIZAR_SALIDAS": OPTIMIZAR_SALIDAS,
     "EXIT_ATR_PERIOD_RANGE": EXIT_ATR_PERIOD_RANGE,
     "EXIT_SL_ATR_RANGE": EXIT_SL_ATR_RANGE,
     "EXIT_TP_ATR_RANGE": EXIT_TP_ATR_RANGE,
     "EXIT_TIME_STOP_BARS_RANGE": EXIT_TIME_STOP_BARS_RANGE,
+
+    "MAX_ARCHIVOS_GUARDAR": MAX_ARCHIVOS_GUARDAR,
+    "GENERAR_PLOTS": GENERAR_PLOTS,
+    "USAR_EXCEL": USAR_EXCEL,
+
+    "PURGE_PYCACHE_ON_EXIT": PURGE_PYCACHE_ON_EXIT,
 }

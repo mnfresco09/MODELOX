@@ -7,7 +7,11 @@ import pandas as pd
 import polars as pl
 
 from modelox.core.types import BacktestConfig, Strategy
-from modelox.core.exits import check_exit_sl_tp_intrabar, compute_atr_wilder
+from modelox.core.exits import (
+    compute_atr_wilder,
+    decide_exit_for_trade,
+    exit_settings_from_params,
+)
 
 
 def generate_trades(
@@ -44,17 +48,13 @@ def generate_trades(
 
     block_velas_after_exit = int(params.get("block_velas_after_exit", 0))
 
-    # Exit settings: fixed SL/TP by ATR at entry (global, engine-owned).
-    # Use runtime-injected (__exit_*) first, fallback to non-__ names for compatibility.
-    exit_atr_period = int(params.get("__exit_atr_period", params.get("exit_atr_period", 14)))
-    exit_sl_atr = float(params.get("__exit_sl_atr", params.get("exit_sl_atr", 1.0)))
-    exit_tp_atr = float(params.get("__exit_tp_atr", params.get("exit_tp_atr", 1.0)))
-    exit_time_stop_bars = int(params.get("__exit_time_stop_bars", params.get("exit_time_stop_bars", 260)))
+    # Exit settings (global) are centralized in modelox/core/exits.py
+    exit_settings = exit_settings_from_params(params)
 
     if open_ is None or high is None or low is None:
         raise ValueError("Para SL/TP intra-vela por ATR se requieren columnas open/high/low")
 
-    atr = compute_atr_wilder(high, low, close, exit_atr_period)
+    atr = compute_atr_wilder(high, low, close, exit_settings.atr_period)
     operaciones: List[Dict[str, Any]] = []
     last_exit_idx = -1
 
@@ -76,35 +76,24 @@ def generate_trades(
             entry_idx = i
             entry_price = float(close[entry_idx])
 
-            atr_entry = float(atr[entry_idx])
-            if not np.isfinite(atr_entry) or atr_entry <= 0:
-                atr_entry = max(float(high[entry_idx]) - float(low[entry_idx]), entry_price * 0.001)
-
-            sl_dist = atr_entry * max(exit_sl_atr, 0.0)
-            tp_dist = atr_entry * max(exit_tp_atr, 0.0)
-            stop_loss = entry_price - sl_dist if sl_dist > 0 else None
-            take_profit = entry_price + tp_dist if tp_dist > 0 else None
-
-            start = entry_idx + 1
-            end_idx = min(len(close) - 1, entry_idx + max(int(exit_time_stop_bars), 1))
-            exit_idx = end_idx
-            exit_price = float(close[end_idx])
-            tipo_salida = "TIME_EXIT"
-
-            for j in range(start, end_idx + 1):
-                hit = check_exit_sl_tp_intrabar(
-                    side="LONG",
-                    o=float(open_[j]),
-                    h=float(high[j]),
-                    l=float(low[j]),
-                    stop_loss=stop_loss,
-                    take_profit=take_profit,
-                )
-                if hit.triggered:
-                    exit_idx = j
-                    exit_price = float(hit.exit_price) if hit.exit_price is not None else float(close[j])
-                    tipo_salida = "SL_ATR" if hit.reason == "SL" else "TP_ATR"
-                    break
+            exit_result = decide_exit_for_trade(
+                strategy=strategy,
+                df=df,
+                params=params,
+                saldo_apertura=float(saldo_apertura),
+                side="LONG",
+                entry_idx=int(entry_idx),
+                entry_price=float(entry_price),
+                close=close,
+                open_=open_,
+                high=high,
+                low=low,
+                atr=atr,
+                settings=exit_settings,
+            )
+            exit_idx = int(exit_result.exit_idx)
+            exit_price = float(exit_result.exit_price)
+            tipo_salida = str(exit_result.tipo_salida)
 
             operaciones.append(
                 {
@@ -125,35 +114,24 @@ def generate_trades(
             entry_idx = i
             entry_price = float(close[entry_idx])
 
-            atr_entry = float(atr[entry_idx])
-            if not np.isfinite(atr_entry) or atr_entry <= 0:
-                atr_entry = max(float(high[entry_idx]) - float(low[entry_idx]), entry_price * 0.001)
-
-            sl_dist = atr_entry * max(exit_sl_atr, 0.0)
-            tp_dist = atr_entry * max(exit_tp_atr, 0.0)
-            stop_loss = entry_price + sl_dist if sl_dist > 0 else None
-            take_profit = entry_price - tp_dist if tp_dist > 0 else None
-
-            start = entry_idx + 1
-            end_idx = min(len(close) - 1, entry_idx + max(int(exit_time_stop_bars), 1))
-            exit_idx = end_idx
-            exit_price = float(close[end_idx])
-            tipo_salida = "TIME_EXIT"
-
-            for j in range(start, end_idx + 1):
-                hit = check_exit_sl_tp_intrabar(
-                    side="SHORT",
-                    o=float(open_[j]),
-                    h=float(high[j]),
-                    l=float(low[j]),
-                    stop_loss=stop_loss,
-                    take_profit=take_profit,
-                )
-                if hit.triggered:
-                    exit_idx = j
-                    exit_price = float(hit.exit_price) if hit.exit_price is not None else float(close[j])
-                    tipo_salida = "SL_ATR" if hit.reason == "SL" else "TP_ATR"
-                    break
+            exit_result = decide_exit_for_trade(
+                strategy=strategy,
+                df=df,
+                params=params,
+                saldo_apertura=float(saldo_apertura),
+                side="SHORT",
+                entry_idx=int(entry_idx),
+                entry_price=float(entry_price),
+                close=close,
+                open_=open_,
+                high=high,
+                low=low,
+                atr=atr,
+                settings=exit_settings,
+            )
+            exit_idx = int(exit_result.exit_idx)
+            exit_price = float(exit_result.exit_price)
+            tipo_salida = str(exit_result.tipo_salida)
 
             operaciones.append(
                 {

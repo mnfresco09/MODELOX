@@ -1,12 +1,19 @@
+# Ignora entornos, cachés, datos y resultados
 .venv/
 __pycache__/
 .DS_Store
 *.pyc
+
+# Carpeta de datos y resultados (no subir nunca)
 data/
 resultados/
+
+# Archivos de datos generados
 *.csv
 *.xlsx
 *.feather
 *.parquet
 *.html
+
+# Otros
 logic/ml_kernels.py
