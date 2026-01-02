@@ -473,7 +473,18 @@ def exportar_trades_excel(
     for col in df_trades.columns:
         if any(
             x in col
-            for x in ["QTY", "PRICE", "PNL", "COMISION", "STAKE", "NOTIONAL", "SALDO"]
+            for x in [
+                "QTY",
+                "PRICE",
+                "PNL",
+                "COMISION",
+                "STAKE",
+                "NOTIONAL",
+                "SALDO",
+                "APALANC",
+                "LEVER",
+                "VOLUM",
+            ]
         ) or col.endswith("_PCT"):
             try:
                 df_trades[col] = pd.to_numeric(df_trades[col], errors="coerce").round(2)

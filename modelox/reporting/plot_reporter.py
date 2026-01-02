@@ -92,6 +92,16 @@ class PlotReporter(BaseReporter):
         return score > worst_of_best
 
     def on_trial_end(self, artifacts: TrialArtifacts) -> None:
+        # Si el directorio contiene plots de runs anteriores con scores muy altos,
+        # el filtro top-K puede impedir generar nuevos plots. Reseteamos al inicio.
+        if artifacts.trial_number == 0 and os.path.exists(self.plot_base):
+            try:
+                for f in os.listdir(self.plot_base):
+                    if f.startswith("TRIAL-") and f.endswith(".html"):
+                        os.remove(os.path.join(self.plot_base, f))
+            except Exception:
+                pass
+
         # Verificar si debemos generar el plot
         if not self._should_generate_plot(artifacts.score):
             return  # No generar si el score no es mejor que los guardados

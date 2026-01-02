@@ -71,12 +71,26 @@ def generate_trades(
     # Exit settings (sistema porcentual)
     exit_settings = exit_settings_from_params(params)
 
-    # Sizing base para exits basados en STAKE
-    STAKE_MIN = 60.0
-    qty_target = float(params.get("__qty_max_activo", params.get("qty_max_activo", 0.0)))
-    max_leverage = float(params.get("__apalancamiento", 1.0))
-    if max_leverage <= 0:
-        max_leverage = 1.0
+    # =========================================================================
+    # POSITION SIZING SIMPLIFICADO
+    # =========================================================================
+    # - SALDO_USADO: Fijo (margen/colateral por trade)
+    # - QTY: Fija (del config, opcionalmente optimizada)
+    # - APALANCAMIENTO: Variable, calculado, nunca supera APALANCAMIENTO_MAX
+    #
+    # Fórmula:
+    #   volumen = qty × precio
+    #   apalancamiento_necesario = volumen / saldo_usado
+    #   Si apalancamiento_necesario > APALANCAMIENTO_MAX:
+    #     volumen_max = saldo_usado × APALANCAMIENTO_MAX
+    #     qty = volumen_max / precio
+    # =========================================================================
+    saldo_usado_cfg = float(params.get("__saldo_usado", 75.0))
+    apalancamiento_max = float(params.get("__apalancamiento_max", 60.0))
+    qty_objetivo = float(params.get("__qty_max_activo", params.get("qty_max_activo", 0.0)))
+    
+    if apalancamiento_max <= 0:
+        apalancamiento_max = 60.0
 
     if open_ is None or high is None or low is None:
         raise ValueError("Se requieren columnas open/high/low para lógica intra-vela")
@@ -107,12 +121,32 @@ def generate_trades(
             entry_idx = i
             entry_price = float(close[entry_idx])
 
-            # stake/qty para este trade (se usan para SL/TP/Trailing sobre stake)
-            q = float(qty_target) if qty_target > 0 else 0.0001
-            notional = float(q * entry_price)
-            lev_needed_for_stake_min = (notional / STAKE_MIN) if STAKE_MIN > 0 else max_leverage
-            leverage_eff = min(max_leverage, max(1.0, lev_needed_for_stake_min))
-            stake = (notional / leverage_eff) if leverage_eff > 0 else notional
+            # ================================================================
+            # SIZING: SALDO_USADO fijo, QTY fija, APALANCAMIENTO variable
+            # ================================================================
+            # Saldo usado: nunca más que el saldo disponible
+            saldo_usado = min(saldo_usado_cfg, float(saldo_apertura)) if float(saldo_apertura) > 0 else saldo_usado_cfg
+            
+            # QTY objetivo
+            q = float(qty_objetivo) if qty_objetivo > 0 else 0.0001
+            
+            # Calcular volumen y apalancamiento necesario
+            volumen = q * entry_price
+            apalancamiento_necesario = (volumen / saldo_usado) if saldo_usado > 0 else 1.0
+            
+            # Si excede el máximo, reducir QTY
+            if apalancamiento_necesario > apalancamiento_max:
+                apalancamiento_eff = apalancamiento_max
+                volumen = saldo_usado * apalancamiento_max
+                q = (volumen / entry_price) if entry_price > 0 else 0.0001
+            else:
+                apalancamiento_eff = apalancamiento_necesario
+            
+            # Ajustes finales
+            if q <= 0:
+                q = 0.0001
+            volumen = float(q * entry_price)
+            apalancamiento_eff = float(max(1.0, apalancamiento_eff))
 
             exit_result = decide_exit_for_trade(
                 strategy=strategy,
@@ -123,7 +157,7 @@ def generate_trades(
                 entry_idx=int(entry_idx),
                 entry_price=float(entry_price),
                 qty=float(q),
-                stake=float(stake),
+                stake=float(saldo_usado),
                 close=close,
                 open_=open_,
                 high=high,
@@ -157,7 +191,7 @@ def generate_trades(
                         entry_idx=int(entry_idx),
                         entry_price=float(entry_price),
                         qty=float(q),
-                        stake=float(stake),
+                        stake=float(saldo_usado),
                         timestamps=timestamps,
                         close=close,
                         open_=open_,
@@ -185,8 +219,9 @@ def generate_trades(
                     "tipo_salida": tipo_salida,
                     "sl_distance": sl_distance,
                     "qty": float(q),
-                    "stake": float(stake),
-                    "leverage_eff": float(leverage_eff),
+                    "saldo_usado": float(saldo_usado),
+                    "volumen": float(volumen),
+                    "apalancamiento": float(apalancamiento_eff),
                 }
             )
             last_exit_idx = int(exit_idx)
@@ -198,11 +233,32 @@ def generate_trades(
             entry_idx = i
             entry_price = float(close[entry_idx])
 
-            q = float(qty_target) if qty_target > 0 else 0.0001
-            notional = float(q * entry_price)
-            lev_needed_for_stake_min = (notional / STAKE_MIN) if STAKE_MIN > 0 else max_leverage
-            leverage_eff = min(max_leverage, max(1.0, lev_needed_for_stake_min))
-            stake = (notional / leverage_eff) if leverage_eff > 0 else notional
+            # ================================================================
+            # SIZING: SALDO_USADO fijo, QTY fija, APALANCAMIENTO variable
+            # ================================================================
+            # Saldo usado: nunca más que el saldo disponible
+            saldo_usado = min(saldo_usado_cfg, float(saldo_apertura)) if float(saldo_apertura) > 0 else saldo_usado_cfg
+            
+            # QTY objetivo
+            q = float(qty_objetivo) if qty_objetivo > 0 else 0.0001
+            
+            # Calcular volumen y apalancamiento necesario
+            volumen = q * entry_price
+            apalancamiento_necesario = (volumen / saldo_usado) if saldo_usado > 0 else 1.0
+            
+            # Si excede el máximo, reducir QTY
+            if apalancamiento_necesario > apalancamiento_max:
+                apalancamiento_eff = apalancamiento_max
+                volumen = saldo_usado * apalancamiento_max
+                q = (volumen / entry_price) if entry_price > 0 else 0.0001
+            else:
+                apalancamiento_eff = apalancamiento_necesario
+            
+            # Ajustes finales
+            if q <= 0:
+                q = 0.0001
+            volumen = float(q * entry_price)
+            apalancamiento_eff = float(max(1.0, apalancamiento_eff))
 
             exit_result = decide_exit_for_trade(
                 strategy=strategy,
@@ -213,7 +269,7 @@ def generate_trades(
                 entry_idx=int(entry_idx),
                 entry_price=float(entry_price),
                 qty=float(q),
-                stake=float(stake),
+                stake=float(saldo_usado),
                 close=close,
                 open_=open_,
                 high=high,
@@ -245,7 +301,7 @@ def generate_trades(
                         entry_idx=int(entry_idx),
                         entry_price=float(entry_price),
                         qty=float(q),
-                        stake=float(stake),
+                        stake=float(saldo_usado),
                         timestamps=timestamps,
                         close=close,
                         open_=open_,
@@ -272,8 +328,9 @@ def generate_trades(
                     "tipo_salida": tipo_salida,
                     "sl_distance": sl_distance,
                     "qty": float(q),
-                    "stake": float(stake),
-                    "leverage_eff": float(leverage_eff),
+                    "saldo_usado": float(saldo_usado),
+                    "volumen": float(volumen),
+                    "apalancamiento": float(apalancamiento_eff),
                 }
             )
             last_exit_idx = int(exit_idx)
@@ -299,21 +356,22 @@ def simulate_trades(
 ) -> Tuple[pd.DataFrame, List[float]]:
     """Simulación financiera.
 
-    Sizing por trade (modo actual):
-    - `qty` objetivo = `qty_max_activo` (fijo por trial/config)
-    - Si no es posible por saldo/stake_max/apalancamiento, se reduce `qty` al máximo factible.
-    - Si el stake resultante es < 60, se fuerza stake=60 reduciendo el apalancamiento efectivo
-      (manteniendo la qty objetivo) siempre que el stake máximo posible lo permita.
+    Sizing por trade:
+    - Modo "saldo_usado": se fija el margen, qty y volumen se calculan
+    - Modo "volumen": se fija el volumen, saldo_usado se deriva
 
     EARLY EXIT si el saldo cae por debajo del mínimo operativo.
     """
     saldo = float(config.saldo_inicial)
-    stake_max = float(config.saldo_operativo_max)
-    apalancamiento = float(config.apalancamiento)
+    saldo_max = float(config.saldo_operativo_max)
     comision_pct = float(config.comision_pct)
     comision_sides = int(config.comision_sides)
     saldo_min = float(config.saldo_minimo_operativo)
     qty_max_limit = float(config.qty_max_activo)
+    
+    # Position Sizing: SALDO_USADO fijo, APALANCAMIENTO_MAX como límite
+    saldo_usado_cfg = float(getattr(config, "saldo_usado", 75.0))
+    apalancamiento_max = float(getattr(config, "apalancamiento_max", 60.0))
     
     # === EARLY EXIT: Cuenta ya quebrada desde el inicio ===
     if saldo <= saldo_min:
@@ -327,9 +385,10 @@ def simulate_trades(
     exit_p = trades_base["exit_price"].values
     sides = trades_base["type"].values
 
-    # qty/stake vienen de generate_trades (si no existen, fallback a qty_max_activo y stake mínimo)
+    # qty/saldo_usado vienen de generate_trades (si no existen, fallback seguro)
     qty_arr = trades_base["qty"].values if "qty" in trades_base.columns else None
-    stake_arr = trades_base["stake"].values if "stake" in trades_base.columns else None
+    saldo_usado_arr = trades_base["saldo_usado"].values if "saldo_usado" in trades_base.columns else None
+    volumen_arr = trades_base["volumen"].values if "volumen" in trades_base.columns else None
 
     # Inicialización de arrays para métricas
     pnl_bruto = np.zeros(n)
@@ -337,7 +396,7 @@ def simulate_trades(
     pnl_pct = np.zeros(n)
     saldo_despues = np.zeros(n)
     saldo_antes = np.zeros(n)
-    stake_aplicado = np.zeros(n)
+    saldo_usado_aplicado = np.zeros(n)
     qty_aplicada = np.zeros(n)
     comisiones = np.zeros(n)
 
@@ -352,18 +411,21 @@ def simulate_trades(
         saldo_antes[i] = saldo
         
         # =====================================================
-        # QTY/STAKE: coherente con exits (basado en stake)
+        # QTY/SALDO_USADO: coherente con generate_trades
         # =====================================================
         q = float(qty_arr[i]) if qty_arr is not None else float(qty_max_limit)
         if q <= 0:
             q = 0.0001
 
-        stk = float(stake_arr[i]) if stake_arr is not None else 60.0
+        # Saldo usado: nunca más que el saldo disponible
+        saldo_usado_target = min(saldo_usado_cfg, float(saldo)) if float(saldo) > 0 else 0.0
+        
+        stk = float(saldo_usado_arr[i]) if saldo_usado_arr is not None else float(saldo_usado_target)
         if stk <= 0:
-            stk = 60.0
-
-        # Nota: por diseño, el stake usado en exits es el stake del trade.
-        # Si quieres impedir abrir trades cuando stk > saldo/stake_max, eso requiere
+            stk = float(saldo_usado_target)
+        # Nunca reportar/usar más saldo_usado que disponible
+        if saldo_usado_target > 0:
+            stk = min(stk, saldo_usado_target)
         # mover la lógica de apertura/validación a un motor secuencial (saldo-aware).
 
         # =====================================================
@@ -391,7 +453,7 @@ def simulate_trades(
             pnl_neto[i] = neto
             pnl_pct[i] = (neto / stk) * 100 if stk > 0 else 0
             comisiones[i] = c_tot
-            stake_aplicado[i] = stk
+            saldo_usado_aplicado[i] = stk
             qty_aplicada[i] = q
             saldo = float(nuevo_saldo)
             saldo_despues[i] = saldo
@@ -404,7 +466,7 @@ def simulate_trades(
         pnl_neto[i] = neto
         pnl_pct[i] = (neto / stk) * 100 if stk > 0 else 0
         comisiones[i] = c_tot
-        stake_aplicado[i] = stk
+        saldo_usado_aplicado[i] = stk
         qty_aplicada[i] = q
 
         saldo = nuevo_saldo
@@ -419,8 +481,16 @@ def simulate_trades(
     df_exec["pnl_pct"] = pnl_pct[:last_idx]
     df_exec["saldo_despues"] = saldo_despues[:last_idx]
     df_exec["saldo_antes"] = saldo_antes[:last_idx]
-    df_exec["stake"] = stake_aplicado[:last_idx]
+    df_exec["saldo_usado"] = saldo_usado_aplicado[:last_idx]
     df_exec["qty"] = qty_aplicada[:last_idx]
+
+    # Calcular volumen y apalancamiento efectivo
+    df_exec["volumen"] = df_exec["qty"].to_numpy(dtype=float) * df_exec["entry_price"].to_numpy(dtype=float)
+    df_exec["apalancamiento"] = np.where(
+        df_exec["saldo_usado"].to_numpy(dtype=float) > 0,
+        df_exec["volumen"].to_numpy(dtype=float) / df_exec["saldo_usado"].to_numpy(dtype=float),
+        1.0,
+    )
     df_exec["comision"] = comisiones[:last_idx]
 
     return df_exec, equity_curve

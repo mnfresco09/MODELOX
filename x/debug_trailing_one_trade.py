@@ -31,7 +31,8 @@ from general.configuracion import (
     FECHA_INICIO,
     FECHA_FIN,
     SALDO_INICIAL,
-    APALANCAMIENTO,
+    SALDO_USADO,
+    APALANCAMIENTO_MAX,
     EXIT_SL_PCT,
     EXIT_TP_PCT,
     EXIT_TRAIL_ACT_PCT,
@@ -70,7 +71,8 @@ def main() -> None:
         "exit_trail_act_pct": float(EXIT_TRAIL_ACT_PCT),
         "exit_trail_dist_pct": float(EXIT_TRAIL_DIST_PCT),
         "__qty_max_activo": float(resolve_qty_max_activo(activo)),
-        "__apalancamiento": float(APALANCAMIENTO),
+        "__saldo_usado": float(SALDO_USADO),
+        "__apalancamiento_max": float(APALANCAMIENTO_MAX),
         "__activo": activo,
     }
 

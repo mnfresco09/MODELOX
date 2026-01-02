@@ -11,13 +11,16 @@ import polars as pl
 class BacktestConfig:
     saldo_inicial: float
     saldo_operativo_max: float
-    apalancamiento: float
     comision_pct: float
     comision_sides: int = 2
     saldo_minimo_operativo: float = 1.0
     qty_max_activo: float = float("inf")
 
-    # Position Sizing: Fixed Fractional (riesgo % por trade)
+    # Position Sizing: SALDO_USADO fijo, QTY fija, APALANCAMIENTO variable
+    saldo_usado: float = 75.0            # Margen fijo por trade
+    apalancamiento_max: float = 60.0     # Límite máximo de apalancamiento
+
+    # Position Sizing: Fixed Fractional (riesgo % por trade) - legacy
     riesgo_por_trade_pct: float = 0.10  # 10% del saldo por trade
 
     # Global exit settings (engine-owned) - SISTEMA PNL_PCT

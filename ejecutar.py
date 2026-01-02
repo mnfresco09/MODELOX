@@ -286,13 +286,16 @@ def main() -> None:
             cfg = BacktestConfig(
                 saldo_inicial=float(CONFIG.get("SALDO_INICIAL", 300)),
                 saldo_operativo_max=float(CONFIG.get("SALDO_OPERATIVO_MAX", 100000)),
-                apalancamiento=float(CONFIG.get("APALANCAMIENTO", 1)),
                 comision_pct=float(CONFIG.get("COMISION_PCT", 0.0001)),
                 comision_sides=int(CONFIG.get("COMISION_SIDES", 2)),
                 saldo_minimo_operativo=float(CONFIG.get("SALDO_MINIMO_OPERATIVO", 5.0)),
                 qty_max_activo=float(qty_max_activo),
 
-                # Fixed Fractional Sizing
+                # Position Sizing: SALDO_USADO fijo, QTY fija, APALANCAMIENTO variable
+                saldo_usado=float(CONFIG.get("SALDO_USADO", 75.0)),
+                apalancamiento_max=float(CONFIG.get("APALANCAMIENTO_MAX", 60.0)),
+
+                # Fixed Fractional Sizing (legacy)
                 riesgo_por_trade_pct=float(CONFIG.get("RIESGO_POR_TRADE_PCT", 0.10)),
 
                 # Optuna qty cap (per asset)

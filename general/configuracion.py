@@ -58,17 +58,16 @@ TIMEFRAME = 15
 # ----------------------------------------------------------------------------
 # FECHAS (BACKTEST Y PLOT)
 # ----------------------------------------------------------------------------
-FECHA_INICIO = "2021-01-10"
+FECHA_INICIO = "2022-01-10"
 FECHA_FIN = "2024-08-15"
 
-FECHA_INICIO_PLOT = "2021-01-10"
-FECHA_FIN_PLOT = "2021-08-15"
-
+FECHA_INICIO_PLOT = "2022-01-10"
+FECHA_FIN_PLOT = "2022-08-15"
 
 # ----------------------------------------------------------------------------
 # OPTUNA
 # ----------------------------------------------------------------------------
-N_TRIALS = 500
+N_TRIALS = 1500
 OPTUNA_N_JOBS = 1      # 1 recomendado en macOS (más estable)
 OPTUNA_SEED = None     # None = seed aleatoria
 OPTUNA_STORAGE = None  # None = in-memory (o ruta SQLite)
@@ -80,7 +79,7 @@ OPTUNA_STORAGE = None  # None = in-memory (o ruta SQLite)
 # Single:    COMBINACION_A_EJECUTAR = 7
 # Multiple:  COMBINACION_A_EJECUTAR = [3, 4, 7]
 # All:       COMBINACION_A_EJECUTAR = "all"
-COMBINACION_A_EJECUTAR = [3]
+COMBINACION_A_EJECUTAR = [11,10]
 
 
 # ----------------------------------------------------------------------------
@@ -88,27 +87,48 @@ COMBINACION_A_EJECUTAR = [3]
 # ----------------------------------------------------------------------------
 SALDO_INICIAL = 300
 SALDO_OPERATIVO_MAX = 300
-APALANCAMIENTO = 50
 COMISION_PCT = 0.00043
 COMISION_SIDES = 1
 SALDO_MINIMO_OPERATIVO = 15
 
 
 # ----------------------------------------------------------------------------
-# LÍMITES DE POSICIÓN POR ACTIVO
+# POSITION SIZING
 # ----------------------------------------------------------------------------
-# Límite duro por trade (aunque el apalancamiento permita más).
+# Sistema simplificado:
+#   - SALDO_USADO: Fijo (margen/colateral por trade)
+#   - QTY: Fija (del QTY_MAX_MAP, opcionalmente optimizable)
+#   - APALANCAMIENTO: Variable, calculado dinámicamente, nunca supera el máximo
+#
+# Fórmula:
+#   volumen = qty × precio
+#   apalancamiento_necesario = volumen / saldo_usado
+#
+# Si apalancamiento_necesario > APALANCAMIENTO_MAX:
+#   - Se usa APALANCAMIENTO_MAX
+#   - Se reduce qty para respetar el límite:
+#     volumen_max = saldo_usado × APALANCAMIENTO_MAX
+#     qty = volumen_max / precio
+#
+SALDO_USADO = 75.0           # Margen/colateral fijo por trade
+APALANCAMIENTO_MAX = 60      # Límite máximo de apalancamiento (nunca se supera)
+
+
+# ----------------------------------------------------------------------------
+# LÍMITES DE POSICIÓN POR ACTIVO (QTY)
+# ----------------------------------------------------------------------------
+# Cantidad objetivo por trade (se reduce si el apalancamiento excede el máximo).
 QTY_MAX_MAP = {
-    "BTC": 0.065,
-    "GOLD": 1.5,
-    "SP500": 1.5,
+    "BTC": 0.04,
+    "GOLD": 1.25,
+    "SP500": 1.0,
     "NASDAQ": 0.25,
 }
 
 # Permitir que Optuna optimice qty_max_activo dentro de un rango por activo.
-OPTIMIZAR_QTY_ACTIVO = True
+OPTIMIZAR_QTY_ACTIVO = False
 QTY_MAX_RANGE_MAP = {
-    "BTC": (0.005, 0.075, 0.005),
+    "BTC": (0.005, 0.03, 0.005),
     "GOLD": (0.25, 2.0, 0.25),
     "SP500": (0.25, 2.5, 0.25),
     "NASDAQ": (0.025, 0.5, 0.01),
@@ -262,7 +282,8 @@ CONFIG = {
 
     "SALDO_INICIAL": SALDO_INICIAL,
     "SALDO_OPERATIVO_MAX": SALDO_OPERATIVO_MAX,
-    "APALANCAMIENTO": APALANCAMIENTO,
+    "SALDO_USADO": SALDO_USADO,
+    "APALANCAMIENTO_MAX": APALANCAMIENTO_MAX,
     "COMISION_PCT": COMISION_PCT,
     "COMISION_SIDES": COMISION_SIDES,
     "SALDO_MINIMO_OPERATIVO": SALDO_MINIMO_OPERATIVO,

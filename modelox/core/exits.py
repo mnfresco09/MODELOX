@@ -30,25 +30,24 @@ from modelox.core.types import ExitDecision
 # =============================================================================
 
 # Tipo de salida: "pnl_fixed", "pnl_trailing", o "all"
-DEFAULT_EXIT_TYPE = "all"
+DEFAULT_EXIT_TYPE = "pnl_fixed"
 
 # Parámetros en términos de PNL_PCT (ROI % del trade)
 DEFAULT_EXIT_SL_PCT = 10.0       # Salir si PNL_PCT <= -10% (pérdida)
-DEFAULT_EXIT_TP_PCT = 20.0       # Salir si PNL_PCT >= +20% (ganancia)
+DEFAULT_EXIT_TP_PCT = 10.0       # Salir si PNL_PCT >= +10% (ganancia)
 
 # Parámetros exclusivos para pnl_trailing
-DEFAULT_EXIT_TRAIL_ACT_PCT = 10.0   # Activar trailing cuando PNL_PCT >= +10%
+DEFAULT_EXIT_TRAIL_ACT_PCT = 10.0   # Activar trailing cuando PNL_PCT >= +20%
 DEFAULT_EXIT_TRAIL_DIST_PCT = 5.0  # Trailing retrocede 5% desde máximo PNL
 
 # Optimización con Optuna
 DEFAULT_OPTIMIZE_EXITS = True
 
 # Rangos de optimización Optuna (min, max, step) - en PNL_PCT
-DEFAULT_EXIT_SL_PCT_RANGE = (5.0, 40.0, 2.5)      # SL: 5% a 40%
-DEFAULT_EXIT_TP_PCT_RANGE = (5.0, 100.0, 5.0)     # TP: 5% a 100%
-DEFAULT_EXIT_TRAIL_ACT_PCT_RANGE = (5.0, 100.0, 5.0)   # Activación: 10% a 100%
-DEFAULT_EXIT_TRAIL_DIST_PCT_RANGE = (2.5, 50.0, 2.5)  # Distancia: 5% a 50%
-
+DEFAULT_EXIT_SL_PCT_RANGE = (5.0, 40.0, 2.5)      # SL: 5% a 30%
+DEFAULT_EXIT_TP_PCT_RANGE = (5.0, 50.0, 2.5)     # TP: 5% a 100%
+DEFAULT_EXIT_TRAIL_ACT_PCT_RANGE = (5.0, 20.0, 5.0)   # Activación: 5% a 100%
+DEFAULT_EXIT_TRAIL_DIST_PCT_RANGE = (2.5, 15.0, 2.5)  # Distancia: 2.5% a 50%
 
 # =============================================================================
 # DATACLASSES

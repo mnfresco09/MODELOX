@@ -169,6 +169,61 @@ def trades_por_dia(
     return float(len(trades)) / float(days) if days > 0 else 0.0
 
 
+def _to_utc(ts: pd.Timestamp) -> pd.Timestamp:
+    """Convert timestamp-like to tz-aware UTC Timestamp."""
+
+    t = pd.Timestamp(ts)
+    if t.tz is None:
+        return t.tz_localize("UTC")
+    return t.tz_convert("UTC")
+
+
+def pnl_neto_por_dia_operado(
+    trades: pd.DataFrame,
+    *,
+    period_start: Optional[pd.Timestamp] = None,
+    period_end: Optional[pd.Timestamp] = None,
+) -> float:
+    """PnL neto por día operado.
+
+    Definición solicitada: PnL neto dividido entre los *días en los que se opera*
+    (días que tienen al menos un evento de trade: entry o exit), dentro de la
+    ventana del backtest (respetando `period_start/period_end`) y con corte en el
+    último trade real (early stop).
+    """
+
+    if _empty(trades):
+        return 0.0
+
+    entry_times = pd.to_datetime(trades["entry_time"], utc=True, errors="coerce")
+    exit_times = pd.to_datetime(trades["exit_time"], utc=True, errors="coerce")
+    events = pd.concat([entry_times.dropna(), exit_times.dropna()], ignore_index=True)
+    if events.empty:
+        return 0.0
+
+    last_trade_ts = _to_utc(events.max())
+
+    if period_start is None or period_end is None:
+        start = _to_utc(events.min())
+        end = _to_utc(events.max())
+    else:
+        start = _to_utc(period_start)
+        end_cfg = _to_utc(period_end)
+        end = min(end_cfg, last_trade_ts)
+
+    # Filtrar eventos dentro de la ventana efectiva.
+    events_in = events[(events >= start) & (events <= end)]
+    if events_in.empty:
+        return 0.0
+
+    dias_operados = int(pd.Series(events_in).dt.normalize().nunique())
+    if dias_operados <= 0:
+        return 0.0
+
+    pnl_neto_total = float(trades["pnl_neto"].sum())
+    return pnl_neto_total / float(dias_operados)
+
+
 def riesgo_beneficio(trades: pd.DataFrame) -> float:
     """Average win / average loss (absolute)."""
 
@@ -397,6 +452,9 @@ def resumen_metricas(
         "porc_ganadoras": porc_gan,
         "porc_perdedoras": porc_perd,
         "trades_por_dia": trades_por_dia(trades, period_start=period_start, period_end=period_end),
+        "pnl_neto_por_dia_operado": pnl_neto_por_dia_operado(
+            trades, period_start=period_start, period_end=period_end
+        ),
         # Trade counts - multiple keys for compatibility
         "n_trades": int(len(trades)),
         "total_trades": int(len(trades)),  # Alias for rich reporter

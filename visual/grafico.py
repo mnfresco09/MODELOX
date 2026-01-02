@@ -148,7 +148,13 @@ def _get_indicator_bounds(params: Optional[Dict[str, Any]]) -> Dict[str, Any]:
 
 
 def _is_overlay_heuristic(series: "pd.Series", price_range: tuple) -> bool:
-  """Heurística simple: si el rango del indicador parece estar en escala precio."""
+  """Heurística mejorada: overlay sólo si el indicador claramente está en escala precio.
+  
+  Indicadores normalizados, z-scores, osciladores, etc. NO son overlay.
+  Un overlay real (MA, ALMA, bandas) debe:
+    - Tener valores en el mismo orden de magnitud que el precio.
+    - Tener un mínimo > 0 para activos como BTC/GOLD (precio siempre positivo).
+  """
   try:
     s = series.dropna()
     if s.empty:
@@ -161,12 +167,23 @@ def _is_overlay_heuristic(series: "pd.Series", price_range: tuple) -> bool:
     if not (np.isfinite(ind_min) and np.isfinite(ind_max)):
       return False
 
-    price_span = max_p - min_p
+    # REGLA 1: Si el indicador puede ser negativo y el precio mínimo es > 100,
+    # es muy probable que sea un oscilador/z-score, NO overlay.
+    if ind_min < 0 and min_p > 100:
+      return False
+
+    # REGLA 2: Si el rango del indicador es pequeño (ej: -3 a +3 para z-score),
+    # y el precio está en miles/cientos, no es overlay.
     ind_span = ind_max - ind_min
-    # overlay si el indicador está mayormente dentro del rango de precio
-    within_min = (ind_min >= (min_p - 0.25 * price_span))
-    within_max = (ind_max <= (max_p + 0.25 * price_span))
-    span_ok = ind_span <= 2.5 * price_span
+    if ind_span < 20 and min_p > 50:
+      return False
+
+    # REGLA 3: Overlay real debe estar dentro del rango de precio.
+    price_span = max_p - min_p
+    within_min = (ind_min >= (min_p - 0.15 * price_span))
+    within_max = (ind_max <= (max_p + 0.15 * price_span))
+    span_ok = ind_span >= 0.1 * price_span and ind_span <= 1.5 * price_span
+    
     return within_min and within_max and span_ok
   except Exception:
     return False
@@ -905,6 +922,15 @@ const ct=document.getElementById('ct');
 const charts=[];
 let syncingCharts=false;
 
+// Evitar zoom involuntario por pinch (trackpad) dentro del chart.
+// En Chrome/Edge en macOS el pinch suele llegar como wheel con ctrlKey.
+if(ct){
+  ct.addEventListener('wheel',(e)=>{ if(e && e.ctrlKey){ e.preventDefault(); } },{passive:false});
+  ['gesturestart','gesturechange','gestureend'].forEach((ev)=>{
+    ct.addEventListener(ev,(e)=>{ if(e) e.preventDefault(); },{passive:false});
+  });
+}
+
 const baseOpts={
 layout:{background:{type:'solid',color:'#0b1220'},textColor:'#94a3b8',fontSize:10,fontFamily:"'SF Pro Display',system-ui"},
 grid:{vertLines:{color:'rgba(148,163,184,.04)'},horzLines:{color:'rgba(148,163,184,.04)'}},
@@ -914,7 +940,8 @@ rightPriceScale:{borderColor:'rgba(148,163,184,.1)',scaleMargins:{top:.1,bottom:
 // Desactivamos zoom con rueda/pinch; se permite zoom sólo
 // arrastrando ejes (time/price) y con los botones + y -.
 handleScale:{axisPressedMouseMove:{time:true,price:true},mouseWheel:false,pinch:false},
-// Mantenemos el scroll horizontal/vertical para desplazarse por el gráfico.
+// Permitimos deslizar (pan) con rueda/trackpad, pero SIN zoom.
+// El zoom queda sólo con drag de ejes (time/price) o con los botones + / -.
 handleScroll:{mouseWheel:true,pressedMouseMove:true,horzTouchDrag:true,vertTouchDrag:true},
 kineticScroll:{touch:true,mouse:true},
 localization:{
@@ -1762,18 +1789,33 @@ def plot_trades(
     else:
         ts_compare = timestamps.astype('datetime64[ns]')
     
+    # Guardar copia por si el rango configurado no cruza el dataset.
+    timestamps_all = timestamps
+    opens_all = opens
+    highs_all = highs
+    lows_all = lows
+    closes_all = closes
+    volumes_all = volumes
+
     mask = (ts_compare >= start) & (ts_compare <= end)
-    
+
     timestamps = timestamps[mask]
     opens = opens[mask]
     highs = highs[mask]
     lows = lows[mask]
     closes = closes[mask]
     if volumes is not None:
-        volumes = volumes[mask]
-    
+      volumes = volumes[mask]
+
+    # Si el rango de plot no tiene datos (muy común al cambiar timeframe),
+    # hacemos fallback a todo el dataset disponible para no “dejar de generar”.
     if len(timestamps) == 0:
-        return
+      timestamps = timestamps_all
+      opens = opens_all
+      highs = highs_all
+      lows = lows_all
+      closes = closes_all
+      volumes = volumes_all
     
     # ================== BANKRUPTCY CUTOFF ==================
     saldo_minimo_operativo = 5.0
@@ -2026,7 +2068,8 @@ def plot_trades(
                     
                     # Use snapped timestamps that exactly match candle times
                     et = int(snapped_entry_ts[i])
-                    xt = int(snapped_exit_ts[i]) if pd.notna(exit_timestamps[i]) else None
+                    # exit_timestamps is a pandas Series with a filtered index; use positional access.
+                    xt = int(snapped_exit_ts[i]) if pd.notna(exit_timestamps.iloc[i]) else None
                     
                     ep = float(row.get("entry_price", 0))
                     xp = float(row.get("exit_price", 0)) if pd.notna(row.get("exit_price")) else None

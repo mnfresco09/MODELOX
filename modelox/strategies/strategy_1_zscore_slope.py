@@ -1,205 +1,98 @@
 from __future__ import annotations
-
 from typing import Any, Dict
-
 import numpy as np
 import polars as pl
 
-
-def _zscore_alma(values: np.ndarray, *, window: int, sigma: float, offset: float) -> np.ndarray:
-    """Z-Score con ALMA (media y desviación ponderadas gausianas)."""
-
-    n = int(values.shape[0])
-    out = np.full(n, np.nan, dtype=np.float64)
-    if window < 2 or n < window:
-        return out
-
-    if not np.isfinite(sigma) or sigma <= 0:
-        sigma = 6.0
-    if not np.isfinite(offset):
-        offset = 0.85
-    offset = float(np.clip(offset, 0.0, 1.0))
-
-    m = offset * (window - 1)
-    s = window / sigma
-    if s <= 0:
-        return out
-
-    i = np.arange(window, dtype=np.float64)
-    w = np.exp(-((i - m) ** 2) / (2.0 * (s**2)))
-    w_sum = float(w.sum())
-    if not np.isfinite(w_sum) or w_sum == 0.0:
-        return out
-    W = w / w_sum
-
-    for idx in range(window - 1, n):
-        win = values[idx - window + 1 : idx + 1]
-        if np.isnan(win).any():
-            continue
-        mu = float(np.dot(W, win))
-        var = float(np.dot(W, (win - mu) ** 2))
-        if not np.isfinite(var) or var <= 0.0:
-            out[idx] = 0.0
-            continue
-        sd = float(np.sqrt(var))
-        out[idx] = (float(values[idx]) - mu) / sd
-
-    return out
-
-
-def _linreg_slope(values: np.ndarray, *, window: int) -> np.ndarray:
-    """Pendiente de regresión lineal rolling (x=0..window-1)."""
-
-    n = int(values.shape[0])
-    out = np.full(n, np.nan, dtype=np.float64)
-    if window < 2 or n < window:
-        return out
-
+def _rolling_linreg_slope(y: np.ndarray, window: int) -> np.ndarray:
+    """Calcula la pendiente (Slope) de la Regresión Lineal Rolling."""
+    n = len(y)
     x = np.arange(window, dtype=np.float64)
-    sum_x = float(x.sum())
-    sum_x2 = float((x * x).sum())
-    denom = window * sum_x2 - (sum_x * sum_x)
+    sum_x = x.sum()
+    sum_x2 = (x**2).sum()
+    denom = float(window) * sum_x2 - sum_x**2
     if denom == 0.0:
-        return out
+        return np.full(n, np.nan)
 
-    for idx in range(window - 1, n):
-        win = values[idx - window + 1 : idx + 1]
-        if np.isnan(win).any():
-            continue
-        sum_y = float(win.sum())
-        sum_xy = float(np.dot(x, win))
-        out[idx] = (window * sum_xy - sum_x * sum_y) / denom
+    # Rolling view
+    y_strided = np.lib.stride_tricks.sliding_window_view(y, window_shape=window)
+    sum_y = y_strided.sum(axis=1)
+    sum_xy = (y_strided * x).sum(axis=1)
+    
+    # Beta (Pendiente)
+    beta = (float(window) * sum_xy - sum_x * sum_y) / denom
+    
+    pad = np.full(window - 1, np.nan)
+    return np.concatenate([pad, beta])
 
-    return out
-
-
-class Strategy1ZScoreSlope:
-    """Z-SCORE + SLOPE
-
-    Reglas (según tu descripción):
-    - Define umbral simétrico de ZScore: +thr / -thr, con thr en [1.5..2.0].
-
-    LONG:
-    1) Cuando ZScore cruza hacia arriba +thr:
-       - si en ese punto la tendencia era creciente (slope > 0), se arma el long.
-    2) Tras el cruce, se espera a que el slope cambie a decreciente (cruce a <0).
-    3) Se confirma la entrada LONG en el cambio de slope siempre que ZScore > 0.
-
-    SHORT (inverso):
-    1) Cuando ZScore cruza hacia abajo -thr:
-       - si en ese punto la tendencia era decreciente (slope < 0), se arma el short.
-    2) Tras el cruce, se espera a que el slope cambie a creciente (cruce a >0).
-    3) Se confirma la entrada SHORT en el cambio de slope siempre que ZScore < 0.
+class StrategyZScorePullback:
     """
-
-    combinacion_id = 1
-    name = "Z-SCORE + SLOPE"
+    ESTRATEGIA: Z-SCORE RECOVERY + LINREG TREND
+    
+    Lógica (Reincorporación a Tendencia):
+    - LONG: 
+        1. Z-Score cruza -2.0 hacia ARRIBA (Recuperación desde sobreventa).
+        2. La Regresión Lineal tiene pendiente POSITIVA (Tendencia Alcista).
+        
+    - SHORT: 
+        1. Z-Score cruza +2.0 hacia ABAJO (Corrección desde sobrecompra).
+        2. La Regresión Lineal tiene pendiente NEGATIVA (Tendencia Bajista).
+    """
+    
+    combinacion_id = 9
+    name = "Z-SCORE TREND PULLBACK"
 
     parametros_optuna: Dict[str, Any] = {
-        "z_window": (20, 80, 1),
-        "z_sigma": (4.0, 9.0, 0.5),
-        "z_offset": (0.60, 0.95, 0.05),
-        "z_thr": (1.5, 2.0, 0.1),
-        "slope_window": (10, 80, 1),
+        "ema_len": (10, 50, 5),          # Suavizado del Z-Score
+        "z_lookback": (20, 100, 10),     # Ventana estadística
+        "linreg_len": (50, 200, 10),     # Tendencia de fondo
+        "z_threshold": (1.5, 3.0, 0.1),  # Gatillo (ej. 2.0)
     }
 
     def suggest_params(self, trial: Any) -> Dict[str, Any]:
-        z_window = int(trial.suggest_int("z_window", 20, 80))
-        z_sigma = float(trial.suggest_float("z_sigma", 4.0, 9.0, step=0.5))
-        z_offset = float(trial.suggest_float("z_offset", 0.60, 0.95, step=0.05))
-        z_thr = float(trial.suggest_float("z_thr", 1.5, 2.0, step=0.1))
-        slope_window = int(trial.suggest_int("slope_window", 10, 80))
         return {
-            "z_window": z_window,
-            "z_sigma": z_sigma,
-            "z_offset": z_offset,
-            "z_thr": z_thr,
-            "slope_window": slope_window,
+            "ema_len": trial.suggest_int("ema_len", 10, 50, step=5),
+            "z_lookback": trial.suggest_int("z_lookback", 20, 100, step=10),
+            "linreg_len": trial.suggest_int("linreg_len", 50, 200, step=10),
+            "z_threshold": trial.suggest_float("z_threshold", 1.5, 3.0, step=0.1),
         }
 
     def generate_signals(self, df: pl.DataFrame, params: Dict[str, Any]) -> pl.DataFrame:
-        z_window = max(2, int(params.get("z_window", 50)))
-        z_sigma = float(params.get("z_sigma", 6.0))
-        z_offset = float(params.get("z_offset", 0.85))
-        z_thr = float(params.get("z_thr", 1.8))
-        slope_window = max(2, int(params.get("slope_window", 20)))
+        ema_len = int(params.get("ema_len", 20))
+        z_lookback = int(params.get("z_lookback", 50))
+        linreg_len = int(params.get("linreg_len", 100))
+        thr = float(params.get("z_threshold", 2.0))
 
-        params["__warmup_bars"] = max(z_window, slope_window) + 10
+        # Metadata Visual
+        params["__indicators_used"] = ["z_score", "linreg_slope"]
+        params["__indicator_bounds"] = {"z_score": {"hi": thr, "lo": -thr, "mid": 0.0}}
 
-        # Bounds/specs para plot (por trial)
-        params["__indicator_bounds"] = {
-            "zscore_alma": {"hi": z_thr, "lo": -z_thr, "mid": 0.0},
-            "slope": {"mid": 0.0},
-        }
-        params["__indicator_specs"] = {
-            "zscore_alma": {
-                "panel": "sub",
-                "type": "line",
-                "name": f"ZScore ALMA ({z_window}, σ={z_sigma:g}, off={z_offset:g})",
-                "precision": 3,
-            },
-            "slope": {
-                "panel": "sub",
-                "type": "line",
-                "name": f"Slope ({slope_window})",
-                "precision": 6,
-            },
-        }
+        # 1. Z-SCORE
+        ema = df["close"].ewm_mean(span=ema_len, min_periods=ema_len)
+        z_mean = ema.rolling_mean(window_size=z_lookback, min_periods=z_lookback)
+        z_std = ema.rolling_std(window_size=z_lookback, min_periods=z_lookback)
+        z_score = (ema - z_mean) / z_std
+        z_score = z_score.fill_nan(0.0)
 
-        params["__indicators_used"] = ["zscore_alma", "slope"]
+        # 2. LINEAR REGRESSION SLOPE (Tendencia)
+        close_np = df["close"].to_numpy()
+        slope_vals = _rolling_linreg_slope(close_np, linreg_len)
+        slope_series = pl.Series("linreg_slope", slope_vals).fill_nan(0.0)
 
-        close = np.asarray(df["close"].to_numpy(), dtype=np.float64)
-        z = _zscore_alma(close, window=z_window, sigma=z_sigma, offset=z_offset)
-        sl = _linreg_slope(close, window=slope_window)
-        df = df.with_columns(
-            [
-                pl.Series("zscore_alma", z).cast(pl.Float64),
-                pl.Series("slope", sl).cast(pl.Float64),
-            ]
-        )
+        # 3. SEÑALES CORREGIDAS
+        
+        # LONG: Cruce -2 hacia ARRIBA + Slope > 0
+        z_cross_up = (z_score.shift(1) < -thr) & (z_score > -thr)
+        trend_up = slope_series > 0
+        signal_long = z_cross_up & trend_up
 
-        # Señales (state machine)
-        z = np.asarray(df["zscore_alma"].to_numpy(), dtype=np.float64)
-        sl = np.asarray(df["slope"].to_numpy(), dtype=np.float64)
-        n = len(z)
+        # SHORT: Cruce +2 hacia ABAJO + Slope < 0
+        z_cross_down = (z_score.shift(1) > thr) & (z_score < thr)
+        trend_down = slope_series < 0
+        signal_short = z_cross_down & trend_down
 
-        sig_long = np.zeros(n, dtype=np.bool_)
-        sig_short = np.zeros(n, dtype=np.bool_)
-
-        armed_long = False
-        armed_short = False
-
-        for i in range(1, n):
-            if not (np.isfinite(z[i]) and np.isfinite(z[i - 1]) and np.isfinite(sl[i]) and np.isfinite(sl[i - 1])):
-                continue
-
-            # --- LONG arm: z crosses above +thr and slope is rising at cross ---
-            z_cross_up = (z[i - 1] <= z_thr) and (z[i] > z_thr)
-            if z_cross_up and (sl[i] > 0.0):
-                armed_long = True
-
-            # --- SHORT arm: z crosses below -thr and slope is falling at cross ---
-            z_cross_dn = (z[i - 1] >= -z_thr) and (z[i] < -z_thr)
-            if z_cross_dn and (sl[i] < 0.0):
-                armed_short = True
-
-            # --- Confirm LONG: slope turns down and z stays > 0 ---
-            if armed_long:
-                slope_turn_down = (sl[i - 1] >= 0.0) and (sl[i] < 0.0)
-                if slope_turn_down and (z[i] > 0.0):
-                    sig_long[i] = True
-                    armed_long = False
-
-            # --- Confirm SHORT: slope turns up and z stays < 0 ---
-            if armed_short:
-                slope_turn_up = (sl[i - 1] <= 0.0) and (sl[i] > 0.0)
-                if slope_turn_up and (z[i] < 0.0):
-                    sig_short[i] = True
-                    armed_short = False
-
-        return df.with_columns(
-            [
-                pl.Series("signal_long", sig_long).cast(pl.Boolean),
-                pl.Series("signal_short", sig_short).cast(pl.Boolean),
-            ]
-        )
+        return df.with_columns([
+            z_score.alias("z_score"),
+            slope_series.alias("linreg_slope"),
+            signal_long.fill_null(False).alias("signal_long"),
+            signal_short.fill_null(False).alias("signal_short")
+        ])

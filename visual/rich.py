@@ -91,6 +91,13 @@ class MetricMapper:
         "count_longs": ("count_longs", "num_longs", "longs", "long_count", "n_longs"),
         "count_shorts": ("count_shorts", "num_shorts", "shorts", "short_count", "n_shorts"),
         "pnl_neto": ("pnl_neto", "pnl", "net_pnl", "profit", "net_profit"),
+        "pnl_neto_por_dia_operado": (
+            "pnl_neto_por_dia_operado",
+            "pnl_por_dia_operado",
+            "pnl_dia_operado",
+            "net_pnl_per_trading_day",
+            "net_pnl_per_operated_day",
+        ),
     }
     
     @classmethod
@@ -332,6 +339,7 @@ def _build_financials_grid(metrics: Dict[str, Any], saldo_inicial: float) -> Tab
     comisiones = M.get_float(metrics, "comisiones_total")
     roi = M.get_float(metrics, "roi") if saldo_inicial > 0 else 0.0
     pnl_neto = saldo_final - saldo_inicial
+    pnl_por_dia = M.get_float(metrics, "pnl_neto_por_dia_operado", 0.0)
     
     grid = Table.grid(padding=(0, 2), expand=True)
     grid.add_column("label", style=THEME.TEXT_SECONDARY, width=14)
@@ -343,6 +351,14 @@ def _build_financials_grid(metrics: Dict[str, Any], saldo_inicial: float) -> Tab
     grid.add_row(
         "[bold]PnL Neto[/]",
         f"[bold {pnl_color}]{pnl_sign}${pnl_neto:,.2f}[/]"
+    )
+
+    # PnL por día operado
+    pnl_dia_sign = "+" if pnl_por_dia >= 0 else ""
+    pnl_dia_color = get_pnl_color(pnl_por_dia)
+    grid.add_row(
+        "PnL/Día",
+        f"[{pnl_dia_color}]{pnl_dia_sign}${pnl_por_dia:,.2f}[/]"
     )
 
     # ROI (neutro)

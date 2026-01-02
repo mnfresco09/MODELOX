@@ -99,10 +99,13 @@ class OptimizationRunner:
             # Kept under __ prefix so reporters can ignore them.
             params_rt = dict(params_puros)
             params_rt["__saldo_operativo_max"] = float(self.config.saldo_operativo_max)
-            params_rt["__apalancamiento"] = float(self.config.apalancamiento)
             params_rt["__qty_max_activo"] = float(self.config.qty_max_activo)
             params_rt["__comision_pct"] = float(self.config.comision_pct)
             params_rt["__comision_sides"] = int(self.config.comision_sides)
+            
+            # Position Sizing: SALDO_USADO fijo, QTY fija, APALANCAMIENTO variable
+            params_rt["__saldo_usado"] = float(self.config.saldo_usado)
+            params_rt["__apalancamiento_max"] = float(self.config.apalancamiento_max)
 
             # Qty cap (per asset): optionally optimized by Optuna
             optimize_qty = bool(getattr(self.config, "optimize_qty_max_activo", False))
@@ -125,6 +128,7 @@ class OptimizationRunner:
 
             # Global exits (centralizados): `modelox/core/exits.py`
             exit_settings = resolve_exit_settings_for_trial(trial=trial, config=config_trial)
+
 
             # IMPORTANT: engine reads exits ONLY from params.
             # Sistema porcentual - inyectar parámetros de salida
