@@ -15,6 +15,42 @@ class StrategyInfo:
     cls: Type[Strategy]
 
 
+def validate_strategy(cls: Type) -> List[str]:
+    """
+    Valida que una clase de estrategia cumpla con los requisitos.
+    
+    Returns:
+        Lista de errores de validación (vacía si no hay errores)
+    """
+    errors = []
+    
+    # Validar name
+    name = getattr(cls, "name", None)
+    if not isinstance(name, str) or not name.strip():
+        errors.append(f"Estrategia {cls.__name__}: atributo 'name' faltante o vacío")
+    
+    # Validar combinacion_id
+    combinacion_id = getattr(cls, "combinacion_id", None)
+    if not isinstance(combinacion_id, int):
+        errors.append(f"Estrategia {cls.__name__}: atributo 'combinacion_id' debe ser int")
+    elif combinacion_id <= 0:
+        errors.append(f"Estrategia {cls.__name__}: 'combinacion_id' debe ser > 0")
+    
+    # Validar métodos requeridos
+    required_methods = ["suggest_params", "generate_signals"]
+    for method_name in required_methods:
+        if not hasattr(cls, method_name):
+            errors.append(f"Estrategia {cls.__name__}: método '{method_name}' faltante")
+        elif not callable(getattr(cls, method_name)):
+            errors.append(f"Estrategia {cls.__name__}: '{method_name}' no es callable")
+    
+    # Validar parametros_optuna (recomendado)
+    if not hasattr(cls, "parametros_optuna"):
+        errors.append(f"Estrategia {cls.__name__}: 'parametros_optuna' no definido (recomendado)")
+    
+    return errors
+
+
 def discover_strategies(*, package: str = "modelox.strategies") -> Dict[str, Type[Strategy]]:
     """
     Auto-discover strategies from `modelox/strategies/*.py`.
@@ -44,6 +80,15 @@ def discover_strategies(*, package: str = "modelox.strategies") -> Dict[str, Typ
             # Heuristic: class must have the expected methods.
             if not all(hasattr(obj, m) for m in ("suggest_params", "generate_signals")):
                 continue
+            
+            # Validar estrategia
+            validation_errors = validate_strategy(obj)
+            if validation_errors:
+                import logging
+                logger = logging.getLogger(__name__)
+                for error in validation_errors:
+                    logger.warning(error)
+            
             if combinacion_id in ids_seen and ids_seen[combinacion_id] != name:
                 raise ValueError(
                     f"combinacion_id duplicado: {combinacion_id} en '{name}' y '{ids_seen[combinacion_id]}'"

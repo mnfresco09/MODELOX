@@ -438,13 +438,15 @@ def mostrar_panel_elegante(
     combo_str: str = "",
     activo: str = "",
     best_so_far: Optional[float] = None,
+    timeframe_entry: str = "",
+    timeframe_exit: str = "",
 ) -> None:
     """
     Display institutional 3-column trial results panel.
     
     Layout:
     ┌─────────────────────────────────────────────────────────────────┐
-    │ ASSET │ STRATEGY │ TRIAL # │ SCORE ★                           │
+    │ ASSET │ STRATEGY │ TF Entry→Exit │ TRIAL # │ SCORE ★           │
     ├───────────────────┬───────────────────┬─────────────────────────┤
     │ PERFORMANCE       │ FINANCIALS        │ PARAMETERS              │
     │ Win Rate    55.0% │ PnL Neto  +$45.20 │ rsi_period = 14         │
@@ -470,6 +472,16 @@ def mostrar_panel_elegante(
     # Strategy
     if combo_str:
         header_parts.append(f"[{THEME.ACCENT}]{combo_str}[/]")
+    
+    # Timeframes (Entry → Exit)
+    if timeframe_entry and timeframe_exit:
+        if timeframe_entry == timeframe_exit:
+            tf_display = f"[{THEME.TEXT_SECONDARY}]TF {timeframe_entry.upper()}[/]"
+        else:
+            tf_display = f"[{THEME.TEXT_SECONDARY}]TF[/] [{THEME.TEXT_PRIMARY}]{timeframe_entry.upper()}→{timeframe_exit.upper()}[/]"
+        header_parts.append(tf_display)
+    elif timeframe_entry:
+        header_parts.append(f"[{THEME.TEXT_SECONDARY}]TF {timeframe_entry.upper()}[/]")
     
     # Trial number
     header_parts.append(f"[{THEME.TEXT_SECONDARY}]TRIAL[/] [{THEME.TEXT_PRIMARY}]{trial_num}[/]")
@@ -667,63 +679,104 @@ def mostrar_cabecera_inicio(
     indicadores: List[str],
     n_trials: int,
     archivo_data: str = "",
+    timeframe: str = "",
+    periodo: str = "",
+    exit_type: str = "atr_fixed",
 ) -> None:
     """
-    Display minimalist startup header (institutional style).
+    Display minimalist startup header (institutional style) - Two panel layout.
+    
+    Args:
+        exit_type: "atr_fixed", "trailing", or "all"
+            - When "all" is used in config, this function will be called twice
+              (once for each exit type sequentially)
     """
     console = Console()
     
     # Clear screen
     os.system('cls' if os.name == 'nt' else 'clear')
     
-    # Build content grid
-    grid = Table.grid(padding=(0, 2), expand=False)
-    grid.add_column("label", style=THEME.TEXT_SECONDARY, width=12, justify="right")
-    grid.add_column("value")
+    # ===== PANEL 1: STRATEGY INFO =====
+    grid1 = Table.grid(padding=(0, 2), expand=False)
+    grid1.add_column("label", style=THEME.TEXT_SECONDARY, width=12, justify="right")
+    grid1.add_column("value")
     
     # Asset with icon
     asset_icons = {
         "BTC": "₿", "GOLD": "●", "SP500": "◆", "SP": "◆", "NASDAQ": "■", "NDX": "■"
     }
     asset_icon = asset_icons.get(activo.upper(), "○")
-    grid.add_row("ASSET", f"[bold {THEME.ACCENT}]{asset_icon} {activo.upper()}[/]")
+    grid1.add_row("ASSET", f"[bold {THEME.ACCENT}]{asset_icon} {activo.upper()}[/]")
     
     # Strategy
-    grid.add_row("STRATEGY", f"[{THEME.TEXT_PRIMARY}]{combo_nombre}[/]")
+    grid1.add_row("STRATEGY", f"[bold {THEME.TEXT_PRIMARY}]{combo_nombre}[/]")
     
-    # Indicators
-    if indicadores:
-        inds_str = " · ".join([f"[{THEME.TEXT_MUTED}]{ind.upper()}[/]" for ind in indicadores])
-        grid.add_row("INDICATORS", inds_str)
+    # Timeframe
+    if timeframe:
+        grid1.add_row("TIMEFRAME", f"[{THEME.TEXT_PRIMARY}]{timeframe}[/]")
+
+    # Data period
+    if periodo:
+        # Formato más limpio: eliminar "UTC" y simplificar
+        periodo_clean = periodo.replace(" UTC", "").strip()
+        # Si es muy largo, usar formato corto
+        if len(periodo_clean) > 40:
+            parts = periodo_clean.split(" → ")
+            if len(parts) == 2:
+                # Extraer solo fechas sin horas
+                fecha1 = parts[0].split(" ")[0] if " " in parts[0] else parts[0]
+                fecha2 = parts[1].split(" ")[0] if " " in parts[1] else parts[1]
+                periodo_clean = f"{fecha1} → {fecha2}"
+        grid1.add_row("PERIOD", f"[{THEME.TEXT_MUTED}]{periodo_clean}[/]")
     
-    # Trials
-    grid.add_row("TRIALS", f"[bold {THEME.TEXT_PRIMARY}]{n_trials}[/]")
-    
-    # Data file
-    if archivo_data:
-        grid.add_row("DATA", f"[{THEME.TEXT_DIM}]{archivo_data}[/]")
-    
-    # Title
-    title_text = Text()
-    title_text.append("═══ ", style=THEME.BORDER_LIGHT)
-    title_text.append("MODELOX", style=f"bold {THEME.TEXT_PRIMARY}")
-    title_text.append(" ═══", style=THEME.BORDER_LIGHT)
-    
-    # Panel
-    panel = Panel(
-        Align.center(grid),
-        title=title_text,
+    panel1 = Panel(
+        Align.center(grid1),
+        title=f"[{THEME.BORDER_LIGHT}]═══ [{THEME.TEXT_PRIMARY}]MODELOX[/] ═══[/]",
         title_align="center",
-        subtitle=f"[{THEME.TEXT_DIM}]Optuna Backtesting Engine[/]",
-        subtitle_align="center",
         box=THEME.BOX_PANEL,
         border_style=THEME.BORDER_LIGHT,
         padding=(1, 3),
-        width=60
+        width=62
     )
     
+    # ===== PANEL 2: OPTIMIZATION CONFIG =====
+    grid2 = Table.grid(padding=(0, 2), expand=False)
+    grid2.add_column("label", style=THEME.TEXT_SECONDARY, width=12, justify="right")
+    grid2.add_column("value")
+    
+    # Exit type
+    exit_display = {
+        "atr_fixed": "TP/SL Fijos (ATR)",
+        "trailing": "Trailing Stop + SL Emergencia"
+    }.get(exit_type, exit_type.upper())
+    grid2.add_row("EXIT MODE", f"[{THEME.ACCENT}]{exit_display}[/]")
+    
+    # Trials
+    grid2.add_row("TRIALS", f"[bold {THEME.TEXT_PRIMARY}]{n_trials}[/]")
+    
+    # Indicators (solo mostrar si existen, más compacto)
+    if indicadores:
+        # Mostrar solo los primeros 3 si hay muchos
+        inds_display = indicadores[:3] if len(indicadores) > 3 else indicadores
+        inds_str = " · ".join([f"{ind.upper()}" for ind in inds_display])
+        if len(indicadores) > 3:
+            inds_str += f" · +{len(indicadores)-3}"
+        grid2.add_row("PARAMS", f"[{THEME.TEXT_MUTED}]{inds_str}[/]")
+    
+    panel2 = Panel(
+        Align.center(grid2),
+        title=f"[{THEME.TEXT_SECONDARY}]Optimization Config[/]",
+        title_align="center",
+        box=THEME.BOX_PANEL,
+        border_style=THEME.BORDER_LIGHT,
+        padding=(1, 3),
+        width=62
+    )
+    
+    # Render both panels
     console.print()
-    console.print(Align.center(panel))
+    console.print(Align.center(panel1))
+    console.print(Align.center(panel2))
     console.print()
 
 

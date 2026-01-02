@@ -67,6 +67,11 @@ def generate_trades(
     while idx_pos < len(all_indices):
         i = all_indices[idx_pos]
 
+        # No abrir trades en la última vela: no hay barra siguiente para evaluar salidas.
+        if i >= (len(close) - 1):
+            idx_pos += 1
+            continue
+
         if block_velas_after_exit > 0 and last_exit_idx >= 0:
             if (i - last_exit_idx) <= block_velas_after_exit:
                 idx_pos += 1
@@ -239,6 +244,9 @@ def simulate_trades(
 
         neto = bruto - c_tot
         nuevo_saldo = saldo + neto
+        # El saldo no puede ser negativo (liquidación/margin call implícita)
+        if nuevo_saldo < 0:
+            nuevo_saldo = 0.0
 
         # (diagnostic print removed)
 
@@ -248,7 +256,17 @@ def simulate_trades(
             pnl_bruto[i] = bruto
             pnl_neto[i] = neto
             pnl_pct[i] = (neto / stk) * 100 if stk > 0 else 0
-                        # (debug print removed)
+
+            # Registrar contexto financiero del último trade
+            comisiones[i] = c_tot
+            stake_aplicado[i] = stk
+            qty_aplicada[i] = q
+
+            # Importante: dejar el saldo final real para métricas/reporting
+            saldo = float(nuevo_saldo)
+            saldo_despues[i] = saldo
+            equity_curve.append(saldo)
+
             last_idx = i + 1
             break  # STOP INMEDIATO - Cuenta quebrada
 

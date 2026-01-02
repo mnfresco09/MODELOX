@@ -22,12 +22,17 @@ from typing import Iterable
 from modelox.core.exits import (
     DEFAULT_EXIT_ATR_PERIOD,
     DEFAULT_EXIT_ATR_PERIOD_RANGE,
+    DEFAULT_EXIT_EMERGENCY_SL_ATR_MULT,
+    DEFAULT_EXIT_EMERGENCY_SL_ATR_MULT_RANGE,
     DEFAULT_EXIT_SL_ATR,
     DEFAULT_EXIT_SL_ATR_RANGE,
     DEFAULT_EXIT_TIME_STOP_BARS,
     DEFAULT_EXIT_TIME_STOP_BARS_RANGE,
     DEFAULT_EXIT_TP_ATR,
     DEFAULT_EXIT_TP_ATR_RANGE,
+    DEFAULT_EXIT_TRAILING_ATR_MULT,
+    DEFAULT_EXIT_TRAILING_ATR_MULT_RANGE,
+    DEFAULT_EXIT_TYPE,
     DEFAULT_OPTIMIZE_EXITS,
 )
 from modelox.core.timeframes import normalize_timeframe_to_suffix
@@ -44,7 +49,7 @@ from modelox.core.timeframes import normalize_timeframe_to_suffix
 #   - "GOLD"                    (uno)
 #   - "GOLD, BTC, SP500"        (varios, separado por coma)
 #   - ["GOLD", "BTC"]           (lista)
-ACTIVO = "GOLD, BTC, SP500"
+ACTIVO = " BTC"
 
 
 # ----------------------------------------------------------------------------
@@ -57,17 +62,17 @@ TIMEFRAME = 15
 # ----------------------------------------------------------------------------
 # FECHAS (BACKTEST Y PLOT)
 # ----------------------------------------------------------------------------
-FECHA_INICIO = "2019-01-10"
-FECHA_FIN = "2025-10-15"
+FECHA_INICIO = "2021-01-10"
+FECHA_FIN = "2024-08-15"
 
-FECHA_INICIO_PLOT = "2019-01-10"
-FECHA_FIN_PLOT = "2019-12-15"
+FECHA_INICIO_PLOT = "2021-01-10"
+FECHA_FIN_PLOT = "2021-08-15"
 
 
 # ----------------------------------------------------------------------------
 # OPTUNA
 # ----------------------------------------------------------------------------
-N_TRIALS = 15
+N_TRIALS = 20
 OPTUNA_N_JOBS = 1      # 1 recomendado en macOS (más estable)
 OPTUNA_SEED = None     # None = seed aleatoria
 OPTUNA_STORAGE = None  # None = in-memory (o ruta SQLite)
@@ -79,7 +84,7 @@ OPTUNA_STORAGE = None  # None = in-memory (o ruta SQLite)
 # Single:    COMBINACION_A_EJECUTAR = 7
 # Multiple:  COMBINACION_A_EJECUTAR = [3, 4, 7]
 # All:       COMBINACION_A_EJECUTAR = "all"
-COMBINACION_A_EJECUTAR = [2]
+COMBINACION_A_EJECUTAR = [3]
 
 
 # ----------------------------------------------------------------------------
@@ -90,7 +95,7 @@ SALDO_OPERATIVO_MAX = 300
 APALANCAMIENTO = 50
 COMISION_PCT = 0.00043
 COMISION_SIDES = 1
-SALDO_MINIMO_OPERATIVO = 5
+SALDO_MINIMO_OPERATIVO = 15
 
 
 # ----------------------------------------------------------------------------
@@ -98,14 +103,14 @@ SALDO_MINIMO_OPERATIVO = 5
 # ----------------------------------------------------------------------------
 # Límite duro por trade (aunque el apalancamiento permita más).
 QTY_MAX_MAP = {
-    "BTC": 0.025,
-    "GOLD": 0.5,
-    "SP500": 0.5,
-    "NASDAQ": 0.15,
+    "BTC": 0.065,
+    "GOLD": 1.5,
+    "SP500": 1.5,
+    "NASDAQ": 0.25,
 }
 
 # Permitir que Optuna optimice qty_max_activo dentro de un rango por activo.
-OPTIMIZAR_QTY_ACTIVO = True
+OPTIMIZAR_QTY_ACTIVO = False
 QTY_MAX_RANGE_MAP = {
     "BTC": (0.01, 0.1, 0.01),
     "GOLD": (0.75, 3.5, 0.25),
@@ -117,16 +122,54 @@ QTY_MAX_RANGE_MAP = {
 # ----------------------------------------------------------------------------
 # SALIDAS (GLOBAL, ENGINE-OWNED)
 # ----------------------------------------------------------------------------
+# Tipo de salida: "atr_fixed", "trailing" o "all"
+#
+# OPCIONES:
+#   1. "atr_fixed": SL/TP por ATR fijo al inicio + TIME EXIT
+#      - Los niveles de SL y TP se calculan una vez al abrir el trade
+#      - No se modifican durante la vida del trade
+#      - Optimiza: exit_sl_atr, exit_tp_atr
+#
+#   2. "trailing": Trailing stop + SL emergencia + TIME EXIT
+#      - SL emergencia fijo (protección máxima)
+#      - Trailing stop que se actualiza siguiendo el precio favorable
+#      - Optimiza: exit_trailing_atr_mult, exit_emergency_sl_atr_mult
+#
+#   3. "all": Ejecuta AMBOS tipos secuencialmente
+#      - Primero ejecuta N trials con "atr_fixed"
+#      - Luego ejecuta N trials con "trailing"
+#      - Los resultados se guardan en carpetas separadas:
+#          * resultados/<ESTRATEGIA>_ATR_FIXED/
+#          * resultados/<ESTRATEGIA>_TRAILING/
+#
+EXIT_TYPE = DEFAULT_EXIT_TYPE
+
+# Parámetros comunes
 EXIT_ATR_PERIOD = DEFAULT_EXIT_ATR_PERIOD
-EXIT_SL_ATR = DEFAULT_EXIT_SL_ATR
-EXIT_TP_ATR = DEFAULT_EXIT_TP_ATR
 EXIT_TIME_STOP_BARS = DEFAULT_EXIT_TIME_STOP_BARS
 
+# Parámetros para EXIT_TYPE = "atr_fixed"
+EXIT_SL_ATR = DEFAULT_EXIT_SL_ATR
+EXIT_TP_ATR = DEFAULT_EXIT_TP_ATR
+
+# Parámetros para EXIT_TYPE = "trailing"
+EXIT_TRAILING_ATR_MULT = DEFAULT_EXIT_TRAILING_ATR_MULT
+EXIT_EMERGENCY_SL_ATR_MULT = DEFAULT_EXIT_EMERGENCY_SL_ATR_MULT
+
+# Optimización con Optuna
 OPTIMIZAR_SALIDAS = DEFAULT_OPTIMIZE_EXITS
+
+# Rangos comunes
 EXIT_ATR_PERIOD_RANGE = DEFAULT_EXIT_ATR_PERIOD_RANGE
+EXIT_TIME_STOP_BARS_RANGE = DEFAULT_EXIT_TIME_STOP_BARS_RANGE
+
+# Rangos para "atr_fixed"
 EXIT_SL_ATR_RANGE = DEFAULT_EXIT_SL_ATR_RANGE
 EXIT_TP_ATR_RANGE = DEFAULT_EXIT_TP_ATR_RANGE
-EXIT_TIME_STOP_BARS_RANGE = DEFAULT_EXIT_TIME_STOP_BARS_RANGE
+
+# Rangos para "trailing"
+EXIT_TRAILING_ATR_MULT_RANGE = DEFAULT_EXIT_TRAILING_ATR_MULT_RANGE
+EXIT_EMERGENCY_SL_ATR_MULT_RANGE = DEFAULT_EXIT_EMERGENCY_SL_ATR_MULT_RANGE
 
 
 # ----------------------------------------------------------------------------
@@ -141,7 +184,7 @@ USAR_EXCEL = True
 # MANTENIMIENTO (OPCIONAL)
 # ----------------------------------------------------------------------------
 # `ejecutar.py` puede usarlo para purgar __pycache__ al finalizar.
-PURGE_PYCACHE_ON_EXIT = True
+PURGE_PYCACHE_ON_EXIT = False
 
 
 # =============================================================================
@@ -238,15 +281,20 @@ CONFIG = {
 
     "COMBINACION_A_EJECUTAR": COMBINACION_A_EJECUTAR,
 
+    "EXIT_TYPE": EXIT_TYPE,
     "EXIT_ATR_PERIOD": EXIT_ATR_PERIOD,
     "EXIT_SL_ATR": EXIT_SL_ATR,
     "EXIT_TP_ATR": EXIT_TP_ATR,
     "EXIT_TIME_STOP_BARS": EXIT_TIME_STOP_BARS,
+    "EXIT_TRAILING_ATR_MULT": EXIT_TRAILING_ATR_MULT,
+    "EXIT_EMERGENCY_SL_ATR_MULT": EXIT_EMERGENCY_SL_ATR_MULT,
     "OPTIMIZAR_SALIDAS": OPTIMIZAR_SALIDAS,
     "EXIT_ATR_PERIOD_RANGE": EXIT_ATR_PERIOD_RANGE,
     "EXIT_SL_ATR_RANGE": EXIT_SL_ATR_RANGE,
     "EXIT_TP_ATR_RANGE": EXIT_TP_ATR_RANGE,
     "EXIT_TIME_STOP_BARS_RANGE": EXIT_TIME_STOP_BARS_RANGE,
+    "EXIT_TRAILING_ATR_MULT_RANGE": EXIT_TRAILING_ATR_MULT_RANGE,
+    "EXIT_EMERGENCY_SL_ATR_MULT_RANGE": EXIT_EMERGENCY_SL_ATR_MULT_RANGE,
 
     "MAX_ARCHIVOS_GUARDAR": MAX_ARCHIVOS_GUARDAR,
     "GENERAR_PLOTS": GENERAR_PLOTS,

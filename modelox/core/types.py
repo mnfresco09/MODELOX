@@ -18,10 +18,13 @@ class BacktestConfig:
     qty_max_activo: float = float("inf")
 
     # Global exit settings (engine-owned)
+    exit_type: str = "atr_fixed"  # "atr_fixed", "trailing", or "all"
     exit_atr_period: int = 14
     exit_sl_atr: float = 1.0
     exit_tp_atr: float = 1.0
     exit_time_stop_bars: int = 260
+    exit_trailing_atr_mult: float = 2.0
+    exit_emergency_sl_atr_mult: float = 4.0
 
     # Optuna: allow optimizing global exits from configuration
     optimize_exits: bool = True
@@ -30,6 +33,8 @@ class BacktestConfig:
     exit_sl_atr_range: tuple[float, float, float] = (0.5, 3.0, 0.1)
     exit_tp_atr_range: tuple[float, float, float] = (1.0, 8.0, 0.1)
     exit_time_stop_bars_range: tuple[int, int, int] = (250, 800, 10)
+    exit_trailing_atr_mult_range: tuple[float, float, float] = (1.0, 4.0, 0.1)
+    exit_emergency_sl_atr_mult_range: tuple[float, float, float] = (2.0, 6.0, 0.1)
 
     # Optuna: allow optimizing qty cap per asset
     optimize_qty_max_activo: bool = False

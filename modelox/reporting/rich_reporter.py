@@ -6,14 +6,15 @@ High-end financial terminal interface for trial results.
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from typing import Optional, List
+from typing import Optional, List, Any
 
-from modelox.core.types import Reporter, TrialArtifacts
+from modelox.core.types import TrialArtifacts
+from modelox.reporting.base import BaseReporter
 from visual.rich import mostrar_panel_elegante, mostrar_top_trials
 
 
 @dataclass
-class ElegantRichReporter(Reporter):
+class ElegantRichReporter(BaseReporter):
     """
     Bloomberg/TradingView-style Rich console reporter.
     
@@ -32,6 +33,10 @@ class ElegantRichReporter(Reporter):
     saldo_inicial: float = 300.0
     activo: str = ""
     _best_score: float = field(default=float("-inf"), init=False, repr=False)
+    
+    def needs_dataframe(self, score: float) -> bool:
+        """RichReporter no necesita df_signals."""
+        return False
     
     def on_trial_end(self, artifacts: TrialArtifacts) -> None:
         """Display elegant panel for completed trial."""
@@ -63,6 +68,13 @@ class ElegantRichReporter(Reporter):
             # Never break reporting due to optional metrics enrichment.
             pass
 
+        # Extract timeframes from params
+        tf_entry = ""
+        tf_exit = ""
+        if artifacts.params:
+            tf_entry = str(artifacts.params.get("__timeframe_entry", ""))
+            tf_exit = str(artifacts.params.get("__timeframe_exit", ""))
+        
         # Display panel
         mostrar_panel_elegante(
             metrics=metrics,
@@ -74,6 +86,8 @@ class ElegantRichReporter(Reporter):
             combo_str=artifacts.strategy_name or "",
             activo=self.activo,
             best_so_far=best_so_far,
+            timeframe_entry=tf_entry,
+            timeframe_exit=tf_exit,
         )
     
     def on_strategy_end(self, strategy_name: str, study) -> None:

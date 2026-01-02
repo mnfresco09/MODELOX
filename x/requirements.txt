@@ -20,6 +20,16 @@ rich>=14.0
 openpyxl>=3.1
 plotly>=6.0
 
+# Scientific stack (signals)
+scipy>=1.10
+
+# System health guard in ejecutar.py
+psutil>=5.9
+
+# Hilbert–Huang Transform (EMD)
+# Note: pip package is `EMD-signal`, import is `from PyEMD import EMD`.
+EMD-signal>=1.6
+
 # Fast JSON (optional but used when available)
 orjson>=3.10
 

@@ -8,6 +8,7 @@ Ultra-modular reporting system:
 """
 
 __all__ = [
+    "BaseReporter",
     "ExcelReporter",
     "RichReporter",
     "PlotReporter",

@@ -3,6 +3,9 @@ from __future__ import annotations
 from dataclasses import dataclass, replace
 from typing import Any, Dict, Optional, Sequence
 
+import os
+import time
+
 import optuna
 import pandas as pd
 import polars as pl
@@ -65,6 +68,29 @@ class OptimizationRunner:
         df_map = df_by_timeframe or {base_tf: df}
         df_base = df_map.get(base_tf, df)
 
+        # Periodo del backtest (ya filtrado por FECHA_INICIO/FECHA_FIN en ejecutar.py).
+        # Se usa para métricas como trades/día, con fin capado al último trade ejecutado.
+        period_start = None
+        period_end = None
+        try:
+            ts_col = "timestamp" if "timestamp" in df_base.columns else ("datetime" if "datetime" in df_base.columns else None)
+            if ts_col:
+                period_start = df_base.select(pl.col(ts_col).min()).item()
+                period_end = df_base.select(pl.col(ts_col).max()).item()
+        except Exception:
+            period_start = None
+            period_end = None
+
+        timings_enabled = os.environ.get("MODELOX_TIMINGS", "0") in {"1", "true", "True", "YES", "yes"}
+        timings_acc: Dict[str, float] = {
+            "generate_signals_s": 0.0,
+            "align_signals_s": 0.0,
+            "generate_trades_s": 0.0,
+            "simulate_trades_s": 0.0,
+            "reporting_s": 0.0,
+            "trials": 0.0,
+        }
+
         def objetivo(trial: optuna.trial.Trial) -> float:
             nonlocal best_score_so_far
             params_puros = strategy.suggest_params(trial)
@@ -100,10 +126,15 @@ class OptimizationRunner:
             # Global exits (centralizados): `modelox/core/exits.py`
             exit_settings = resolve_exit_settings_for_trial(trial=trial, config=config_trial)
 
+            # IMPORTANT: engine reads exits ONLY from params.
+            # If we don't inject `__exit_type`, it falls back to DEFAULT_EXIT_TYPE ("all") and can mis-route.
+            params_rt["__exit_type"] = str(exit_settings.exit_type)
             params_rt["__exit_atr_period"] = int(exit_settings.atr_period)
             params_rt["__exit_sl_atr"] = float(exit_settings.sl_atr)
             params_rt["__exit_tp_atr"] = float(exit_settings.tp_atr)
             params_rt["__exit_time_stop_bars"] = int(exit_settings.time_stop_bars)
+            params_rt["__exit_trailing_atr_mult"] = float(exit_settings.trailing_atr_mult)
+            params_rt["__exit_emergency_sl_atr_mult"] = float(exit_settings.emergency_sl_atr_mult)
 
             # ===== TIMEFRAMES (entry/exit) =====
             entry_tf = normalize_timeframe_to_suffix(getattr(strategy, "timeframe_entry", None) or base_tf)
@@ -121,10 +152,17 @@ class OptimizationRunner:
 
             # 1. Generación de señales en Polars (en timeframe de entrada)
             df_entry = df_map.get(entry_tf, df_base)
+            t_sig0 = time.perf_counter()
             df_signals_entry = strategy.generate_signals(df_entry, params_rt)
+            t_sig1 = time.perf_counter()
+            if timings_enabled:
+                dt = float(t_sig1 - t_sig0)
+                timings_acc["generate_signals_s"] += dt
+                trial.set_user_attr("timing_generate_signals_s", dt)
 
             # Si la estrategia generó señales en otro TF, alinear al TF base (sin lookahead)
             if entry_tf != base_tf:
+                t_al0 = time.perf_counter()
                 # Ajustar warmup a base TF si la estrategia lo definió en el TF de entrada
                 warmup_entry = params_rt.get("__warmup_bars", None)
                 if warmup_entry is not None:
@@ -138,26 +176,50 @@ class OptimizationRunner:
                         pass
 
                 df_signals = align_signals_to_base(df_base=df_base, df_signals=df_signals_entry)
+                t_al1 = time.perf_counter()
+                if timings_enabled:
+                    dt = float(t_al1 - t_al0)
+                    timings_acc["align_signals_s"] += dt
+                    trial.set_user_attr("timing_align_signals_s", dt)
             else:
                 df_signals = df_signals_entry
 
             # 2. Generación y simulación de trades
+            t_gt0 = time.perf_counter()
             trades_base = generate_trades(
                 df_signals,
                 params_rt,
                 saldo_apertura=saldo_apertura,
                 strategy=strategy,
             )
+            t_gt1 = time.perf_counter()
+            if timings_enabled:
+                dt = float(t_gt1 - t_gt0)
+                timings_acc["generate_trades_s"] += dt
+                trial.set_user_attr("timing_generate_trades_s", dt)
+
+            t_sim0 = time.perf_counter()
             trades_exec, equity_curve = simulate_trades(
                 trades_base=trades_base, config=config_trial
             )
+            t_sim1 = time.perf_counter()
+            if timings_enabled:
+                dt = float(t_sim1 - t_sim0)
+                timings_acc["simulate_trades_s"] += dt
+                trial.set_user_attr("timing_simulate_trades_s", dt)
 
             if trades_exec is None or trades_exec.empty:
+                if timings_enabled:
+                    timings_acc["trials"] += 1.0
                 return 0.0
 
             # 3. Métricas y Scoring
             metricas = resumen_metricas(
-                trades_exec, saldo_inicial=saldo_apertura, equity_curve=equity_curve
+                trades_exec,
+                saldo_inicial=saldo_apertura,
+                equity_curve=equity_curve,
+                period_start=period_start,
+                period_end=period_end,
             )
             score = float(score_optuna(metricas))
             if score > best_score_so_far:
@@ -168,17 +230,12 @@ class OptimizationRunner:
 
             # 4. REPORTING (OPTIMIZADO)
             # Convertir Polars -> Pandas SOLO si algún reporter lo necesita.
-            # En la práctica, el único que lo necesita es PlotReporter (para el HTML).
+            # Usa el método needs_dataframe() de la interfaz BaseReporter.
             df_pandas = None
             try:
-                plot_reporters = [
-                    r
-                    for r in self.reporters
-                    if r.__class__.__name__ == "PlotReporter"
-                ]
                 need_df_for_plot = any(
-                    getattr(r, "_should_generate_plot")(score)  # type: ignore[misc]
-                    for r in plot_reporters
+                    r.needs_dataframe(score)
+                    for r in self.reporters
                 )
             except Exception:
                 need_df_for_plot = False
@@ -219,10 +276,13 @@ class OptimizationRunner:
             # to include things like __indicators_used / __warmup_bars.
             params_reporting = dict(params_puros)
             # Expose global exits in reports (so you can see what Optuna picked)
+            params_reporting["exit_type"] = str(exit_settings.exit_type)
             params_reporting["exit_atr_period"] = int(exit_settings.atr_period)
             params_reporting["exit_sl_atr"] = float(exit_settings.sl_atr)
             params_reporting["exit_tp_atr"] = float(exit_settings.tp_atr)
             params_reporting["exit_time_stop_bars"] = int(exit_settings.time_stop_bars)
+            params_reporting["exit_trailing_atr_mult"] = float(exit_settings.trailing_atr_mult)
+            params_reporting["exit_emergency_sl_atr_mult"] = float(exit_settings.emergency_sl_atr_mult)
             params_reporting["qty_max_activo"] = float(qty_max_activo)
             # Expose active asset to reporters (for filesystem routing, e.g. Excel folders)
             if getattr(self, "activo", None) is not None:
@@ -257,8 +317,15 @@ class OptimizationRunner:
                 indicators_used=indicators_used,
             )
 
+            t_rep0 = time.perf_counter()
             for r in self.reporters:
                 r.on_trial_end(artifacts)
+            t_rep1 = time.perf_counter()
+            if timings_enabled:
+                dt = float(t_rep1 - t_rep0)
+                timings_acc["reporting_s"] += dt
+                trial.set_user_attr("timing_reporting_s", dt)
+                timings_acc["trials"] += 1.0
             return score
 
         study = create_study_for_strategy(
@@ -270,6 +337,20 @@ class OptimizationRunner:
             n_jobs=max(1, int(self.optuna.n_jobs)),
             gc_after_trial=True,
         )
+
+        if timings_enabled:
+            trials_done = max(1.0, float(timings_acc.get("trials", 0.0) or 0.0))
+            study.set_user_attr(
+                "timings_avg_s",
+                {
+                    "generate_signals_s": float(timings_acc["generate_signals_s"] / trials_done),
+                    "align_signals_s": float(timings_acc["align_signals_s"] / trials_done),
+                    "generate_trades_s": float(timings_acc["generate_trades_s"] / trials_done),
+                    "simulate_trades_s": float(timings_acc["simulate_trades_s"] / trials_done),
+                    "reporting_s": float(timings_acc["reporting_s"] / trials_done),
+                    "trials": int(trials_done),
+                },
+            )
         for r in self.reporters:
             r.on_strategy_end(strategy.name, study)
         return study

@@ -1025,6 +1025,35 @@ try {
       }catch(e){console.warn('Markers error:',e);}    
     }
 
+    // Entry points at real price: colored dots only (NO connecting lines)
+    try{
+      if(T.ee && T.ee.length>0){
+        const ens=mc.addLineSeries({
+          color:'rgba(0,0,0,0)',
+          lineWidth:1,
+          priceLineVisible:false,
+          lastValueVisible:false,
+          crosshairMarkerVisible:false
+        });
+        ens.setData(T.ee);
+
+        if(T.em && T.em.length>0){
+          const entryMarkers=T.em.map(m=>({
+            time:m.time,
+            position:m.position||'inBar',
+            color:m.color,
+            shape:m.shape||'circle',
+            text:m.text||'',
+            size:m.size||2
+          }));
+          ens.setMarkers(entryMarkers);
+          mc.timeScale().subscribeVisibleTimeRangeChange(()=>{
+            ens.setMarkers(entryMarkers);
+          });
+        }
+      }
+    }catch(e){console.warn('Entry points error:',e);}    
+
     // Exit points at real price: white dots only (NO connecting lines)
     try{
       if(T.xe && T.xe.length>0){
@@ -1385,6 +1414,9 @@ try {
 }
 
 // === CHART SYNCHRONIZATION ===
+// Sync by TIME range (not logical range).
+// Logical range breaks when indicator panels have gaps (null-filtered points),
+// producing visible marker desync between panels.
 try {
   if(charts.length>1){
     const masterTS=charts[0].ch.timeScale();
@@ -1392,19 +1424,19 @@ try {
       try{
         if(idx===0||!ch)return;
         const slaveTS=ch.timeScale();
-        masterTS.subscribeVisibleLogicalRangeChange(range=>{
+        masterTS.subscribeVisibleTimeRangeChange(range=>{
           try{
             if(syncingCharts||!range)return;
             syncingCharts=true;
-            slaveTS.setVisibleLogicalRange(range);
+            slaveTS.setVisibleRange(range);
             syncingCharts=false;
           }catch(e){syncingCharts=false;}
         });
-        slaveTS.subscribeVisibleLogicalRangeChange(range=>{
+        slaveTS.subscribeVisibleTimeRangeChange(range=>{
           try{
             if(syncingCharts||!range)return;
             syncingCharts=true;
-            masterTS.setVisibleLogicalRange(range);
+            masterTS.setVisibleRange(range);
             syncingCharts=false;
           }catch(e){syncingCharts=false;}
         });
@@ -1585,21 +1617,28 @@ try {
 // === AUTO-FIT & KEYBOARD SHORTCUTS ===
 try {
   setTimeout(()=>{
-    // Show BEGINNING of data (first 200 bars visible)
-    charts.forEach(({ch})=>{
-      if(ch){
-        const ts=ch.timeScale();
-        // Set visible range to first 200 bars
-        ts.setVisibleLogicalRange({from:0,to:200});
-      }
-    });
+    // Show BEGINNING of data (first ~200 bars visible) using TIME range
+    if(D.t && D.t.length>0){
+      const toIdx=Math.min(200, D.t.length-1);
+      const homeRange={from:D.t[0], to:D.t[toIdx]};
+      charts.forEach(({ch})=>{
+        if(ch){
+          const ts=ch.timeScale();
+          ts.setVisibleRange(homeRange);
+        }
+      });
+    }
   },150);
   
   document.addEventListener('keydown',e=>{
     if(e.key==='f'||e.key==='F')charts.forEach(({ch})=>{if(ch)ch.timeScale().fitContent();});
     if(e.key==='r'||e.key==='R')charts.forEach(({ch})=>{if(ch)ch.timeScale().resetTimeScale();});
     // Press 'h' for home (beginning)
-    if(e.key==='h'||e.key==='H')charts.forEach(({ch})=>{if(ch)ch.timeScale().setVisibleLogicalRange({from:0,to:200});});
+    if((e.key==='h'||e.key==='H') && D.t && D.t.length>0){
+      const toIdx=Math.min(200, D.t.length-1);
+      const homeRange={from:D.t[0], to:D.t[toIdx]};
+      charts.forEach(({ch})=>{if(ch)ch.timeScale().setVisibleRange(homeRange);});
+    }
     // Press 'e' for end
     if(e.key==='e'||e.key==='E')charts.forEach(({ch})=>{if(ch)ch.timeScale().scrollToRealTime();});
   });
@@ -1772,12 +1811,17 @@ def plot_trades(
     # (debug print removed)
     
     # SLICE ALL DATA FROM WARMUP POINT - Everything synchronized
-    ts_q = ts_q_full[max_warmup:]
-    o_q = o_q_full[max_warmup:]
-    h_q = h_q_full[max_warmup:]
-    l_q = l_q_full[max_warmup:]
-    c_q = c_q_full[max_warmup:]
-    vol_q = vol_q_full[max_warmup:] if vol_q_full is not None else None
+    # Start on the *next* candle after warmup so indicator values are based on
+    # completed history only (reduces 1-bar visual desync vs trade execution).
+    start_idx = min(max_warmup + 1, len(ts_q_full) - 10)
+    start_idx = max(0, start_idx)
+
+    ts_q = ts_q_full[start_idx:]
+    o_q = o_q_full[start_idx:]
+    h_q = h_q_full[start_idx:]
+    l_q = l_q_full[start_idx:]
+    c_q = c_q_full[start_idx:]
+    vol_q = vol_q_full[start_idx:] if vol_q_full is not None else None
     
     # Get the warmup threshold timestamp for trade marker filtering
     warmup_threshold_ts = int(ts_q[0]) if len(ts_q) > 0 else 0
@@ -1903,10 +1947,12 @@ def plot_trades(
     # This prevents marker disappearance during scroll/zoom
     # WARMUP FILTER: Trades within the warmup period are not displayed
     # m: candle markers (entries; time-only)
+    # ee: entry points at exact entry_price (time+value)
+    # em: entry markers for the entry-price series
     # i: trade info for tooltips
     # xe: exit points at exact exit_price (time+value)
     # xm: exit markers for the exit series (white dots)
-    trades = {"m": [], "i": [], "xe": [], "xm": []}
+    trades = {"m": [], "ee": [], "em": [], "i": [], "xe": [], "xm": []}
     max_valid_ts = int(ts_q[-1]) if len(ts_q) > 0 else None
     
     # Build efficient lookup structure for candle timestamps
@@ -1947,11 +1993,9 @@ def plot_trades(
             exit_times_dt = exit_times_dt[valid_mask]
             
             if len(trades_df) > 0 and len(ts_q) > 0:
-                entry_times_np = entry_times_dt.values.astype('datetime64[s]')
-                exit_times_np = exit_times_dt.values.astype('datetime64[s]')
-                
-                entry_timestamps = np.floor(entry_times_np.astype(np.int64)).astype(np.int64)
-                exit_timestamps = np.floor(exit_times_np.astype(np.int64)).astype(np.int64)
+                # Robust epoch seconds (UTC) for tz-aware timestamps
+                entry_timestamps = (entry_times_dt.astype('int64') // 1_000_000_000).astype('int64')
+                exit_timestamps = (exit_times_dt.astype('int64') // 1_000_000_000).astype('int64')
                 
                 start_ts = int(start_pd.timestamp())
                 end_ts = max_valid_ts if max_valid_ts else int(end_pd.timestamp())
@@ -1961,22 +2005,28 @@ def plot_trades(
                 entry_timestamps = entry_timestamps[mask]
                 exit_timestamps = exit_timestamps[mask]
                 
-                # Vectorized snapping: snap all timestamps at once
-                # Use searchsorted to find the nearest candle for each trade
-                entry_snap_indices = np.searchsorted(ts_q, entry_timestamps, side='right') - 1
-                entry_snap_indices = np.clip(entry_snap_indices, 0, len(ts_q) - 1)
-                snapped_entry_ts = ts_q[entry_snap_indices]
-                
-                exit_snap_indices = np.searchsorted(ts_q, exit_timestamps, side='right') - 1
-                exit_snap_indices = np.clip(exit_snap_indices, 0, len(ts_q) - 1)
-                snapped_exit_ts = ts_q[exit_snap_indices]
+                # Vectorized snapping: snap to the NEAREST candle timestamp.
+                # This avoids 1-bar lag when timestamps have minor rounding offsets.
+                def _snap_nearest(candle_ts: np.ndarray, trade_ts: np.ndarray) -> np.ndarray:
+                  if len(candle_ts) == 0 or len(trade_ts) == 0:
+                    return trade_ts
+                  idx = np.searchsorted(candle_ts, trade_ts, side='left')
+                  idx = np.clip(idx, 0, len(candle_ts) - 1)
+                  prev_idx = np.clip(idx - 1, 0, len(candle_ts) - 1)
+                  next_ts = candle_ts[idx]
+                  prev_ts = candle_ts[prev_idx]
+                  choose_prev = (np.abs(trade_ts - prev_ts) <= np.abs(next_ts - trade_ts))
+                  return np.where(choose_prev, prev_ts, next_ts)
+
+                snapped_entry_ts = _snap_nearest(ts_q, entry_timestamps)
+                snapped_exit_ts = _snap_nearest(ts_q, exit_timestamps)
                 
                 for i, (idx, row) in enumerate(trades_df.iterrows()):
                     trade_type = str(row.get("type", "")).upper()
                     
                     # Use snapped timestamps that exactly match candle times
                     et = int(snapped_entry_ts[i])
-                    xt = int(snapped_exit_ts[i]) if not np.isnan(exit_timestamps[i]) else None
+                    xt = int(snapped_exit_ts[i]) if pd.notna(exit_timestamps[i]) else None
                     
                     ep = float(row.get("entry_price", 0))
                     xp = float(row.get("exit_price", 0)) if pd.notna(row.get("exit_price")) else None
@@ -2015,6 +2065,18 @@ def plot_trades(
                             "text": "",           # No text for cleaner look
                             "size": 2
                         })
+
+                        # Entry points at real price (NOT candle close) - colored dots only
+                        trades["ee"].append({"time": et, "value": float(ep)})
+                        trades["em"].append({
+                          "time": et,
+                          "position": "inBar",
+                          "color": entry_color,
+                          "shape": "circle",
+                          "text": "",
+                          "size": 2,
+                        })
+
                         trades["i"].append({"time": et, **trade_info})
                         
                         # Exit points at real price (NOT candle close) - render as white dots only
@@ -2031,6 +2093,8 @@ def plot_trades(
                           trades["i"].append({"time": xt, **trade_info})
                 
                 trades["m"].sort(key=lambda x: x["time"])
+                trades["ee"].sort(key=lambda x: x["time"])
+                trades["em"].sort(key=lambda x: x["time"])
                 trades["i"].sort(key=lambda x: x["time"])
                 trades["xe"].sort(key=lambda x: x["time"])
                 trades["xm"].sort(key=lambda x: x["time"])

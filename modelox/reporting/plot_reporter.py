@@ -3,14 +3,15 @@ from __future__ import annotations
 import os
 import re
 from dataclasses import dataclass
-from typing import List, Optional
+from typing import List, Optional, Any
 
-from modelox.core.types import Reporter, TrialArtifacts
+from modelox.core.types import TrialArtifacts
+from modelox.reporting.base import BaseReporter
 from visual.grafico import plot_trades
 
 
 @dataclass
-class PlotReporter(Reporter):
+class PlotReporter(BaseReporter):
     """Lightweight Charts (TradingView) HTML exporter.
 
     Features:
@@ -36,6 +37,15 @@ class PlotReporter(Reporter):
     max_archivos: int = 5  # Número máximo de plots a mantener según score
     saldo_inicial: float = 300.0  # Saldo inicial para calcular equity curve
     activo: Optional[str] = None  # Activo (BTC, GOLD, SP) para mostrar en el plot
+    
+    def needs_dataframe(self, score: float) -> bool:
+        """
+        PlotReporter necesita df_signals solo si el score está entre los top N.
+        """
+        existing_scores = self._get_existing_scores()
+        if len(existing_scores) < self.max_archivos:
+            return True
+        return score > min(existing_scores)
 
     def _get_existing_scores(self) -> List[float]:
         """Obtiene los scores de los plots existentes."""

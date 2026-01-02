@@ -33,15 +33,10 @@ MODELOX - Production Entry Point (Smart Mac Optimization).
 warnings.filterwarnings("ignore", category=FutureWarning)
 warnings.filterwarnings("ignore", category=UserWarning)
 
-import optuna
-optuna.logging.set_verbosity(optuna.logging.WARNING)
-logging.getLogger("optuna").setLevel(logging.WARNING)
+from modelox.core.logging_config import setup_logging
 
-# Silenciar Reporters
-logging.getLogger("modelox.reporting.excel_reporter").setLevel(logging.WARNING)
-logging.getLogger("modelox.reporting.plot_reporter").setLevel(logging.WARNING)
-
-logging.basicConfig(level=logging.WARNING)
+# Configurar logging centralizado
+setup_logging(level=logging.WARNING, enable_optuna=False)
 
 # ============================================================================
 # IMPORTS
@@ -57,6 +52,9 @@ from modelox.core.optuna_config import OptunaConfig
 from modelox.core.runner import OptimizationRunner
 from modelox.core.timeframes import normalize_timeframe_to_suffix
 from modelox.core.types import BacktestConfig, filter_by_date
+from modelox.core.health_monitor import HealthGuard, get_health_monitor
+from modelox.core.timeframe_cache import get_timeframe_cache
+from modelox.core.execution_helpers import run_single_exit_type
 from modelox.reporting.excel_reporter import ExcelReporter
 from modelox.reporting.plot_reporter import PlotReporter
 from modelox.reporting.rich_reporter import ElegantRichReporter
@@ -263,6 +261,23 @@ def main() -> None:
                 del df
                 HealthGuard.force_cleanup()
 
+            # Periodo real de datos usado (para mostrar en Rich)
+            periodo_datos = ""
+            try:
+                import polars as pl
+
+                ts_col = "timestamp" if "timestamp" in df_filtrado.columns else (
+                    "datetime" if "datetime" in df_filtrado.columns else None
+                )
+                if ts_col:
+                    ts_min = df_filtrado.select(pl.col(ts_col).min()).item()
+                    ts_max = df_filtrado.select(pl.col(ts_col).max()).item()
+                    if ts_min is not None and ts_max is not None:
+                        # dt puede venir como datetime python (tz-aware) -> strftime OK
+                        periodo_datos = f"{ts_min:%Y-%m-%d %H:%M} → {ts_max:%Y-%m-%d %H:%M} UTC"
+            except Exception:
+                periodo_datos = ""
+
             # Cache por activo: evita re-leer parquet de timeframes en cada estrategia.
             base_tf_suffix = normalize_timeframe_to_suffix(timeframe_base)
             tf_cache: dict[str, object] = {base_tf_suffix: df_filtrado}
@@ -313,108 +328,45 @@ def main() -> None:
                     # Normaliza nombre para carpeta (evita espacios y caracteres raros)
                     strategy_safe = re.sub(r"[^A-Za-z0-9_\-]+", "_", str(strategy_name).strip()).upper() or "MODELOX_STRAT"
 
-                    mostrar_cabecera_inicio(
-                        activo=activo,
-                        combo_nombre=strategy_name,
-                        indicadores=list(strategy.parametros_optuna.keys()),
-                        n_trials=int(N_TRIALS),
-                        archivo_data=archivo_data,
-                    )
+                    # Timeframes usados (base/entry/exit) en formato legible
+                    base_tf = normalize_timeframe_to_suffix(timeframe_base)
+                    entry_tf = normalize_timeframe_to_suffix(getattr(strategy, "timeframe_entry", None) or base_tf)
+                    exit_tf = normalize_timeframe_to_suffix(getattr(strategy, "timeframe_exit", None) or base_tf)
+                    if entry_tf == base_tf and exit_tf == base_tf:
+                        tf_display = str(base_tf)
+                    else:
+                        tf_display = f"BASE {base_tf} · ENTRY {entry_tf} · EXIT {exit_tf}"
 
-                    # REPORTERS SETUP
-                    activo_safe = str(activo).upper()
-                    # Estructura requerida:
-                    # resultados/<ESTRATEGIA>/excel/<ACTIVO>/...
-                    # resultados/<ESTRATEGIA>/graficos/<ACTIVO>/...
-                    strategy_root_dir = os.path.join("resultados", strategy_safe)
-                    excel_dir = os.path.join(strategy_root_dir, "excel")
-                    graficos_dir = os.path.join(strategy_root_dir, "graficos", activo_safe)
+                    # Get exit type from config
+                    exit_type = str(CONFIG.get("EXIT_TYPE", "atr_fixed"))
+                    
+                    # Determine if we need to run multiple exit types
+                    exit_types_to_run = []
+                    if exit_type.lower() == "all":
+                        exit_types_to_run = ["atr_fixed", "trailing"]
+                    else:
+                        exit_types_to_run = [exit_type]
 
-                    # Crear carpeta base de estrategia (y excel) por adelantado
-                    os.makedirs(excel_dir, exist_ok=True)
-                    os.makedirs(os.path.dirname(graficos_dir), exist_ok=True)
-
-                    reporters = [
-                        ElegantRichReporter(saldo_inicial=cfg.saldo_inicial, activo=activo),
-                    ]
-
-                    if USAR_EXCEL:
-                        reporters.append(
-                            ExcelReporter(
-                                resumen_path=f"{excel_dir}/resumen.xlsx",
-                                trades_base_dir=excel_dir,
-                                max_archivos=int(MAX_ARCHIVOS_GUARDAR),
-                            )
+                    # Iterate over exit types (one or multiple)
+                    for current_exit_type in exit_types_to_run:
+                        run_single_exit_type(
+                            exit_type=current_exit_type,
+                            strategy=strategy,
+                            strategy_name=strategy_name,
+                            strategy_safe=strategy_safe,
+                            activo=activo,
+                            df_filtrado=df_filtrado,
+                            tf_cache=tf_cache,
+                            timeframe_base=timeframe_base,
+                            cfg=cfg,
+                            tf_display=tf_display,
+                            archivo_data=archivo_data,
+                            periodo_datos=periodo_datos,
+                            is_all_mode=(exit_type.lower() == "all"),
+                            resolve_archivo_data_tf_func=resolve_archivo_data_tf,
+                            fecha_inicio=FECHA_INICIO,
+                            fecha_fin=FECHA_FIN,
                         )
-
-                    if GENERAR_PLOTS:
-                        reporters.append(
-                            PlotReporter(
-                                plot_base=graficos_dir,
-                                fecha_inicio_plot=FECHA_INICIO_PLOT,
-                                fecha_fin_plot=FECHA_FIN_PLOT,
-                                max_archivos=int(MAX_ARCHIVOS_GUARDAR),
-                                saldo_inicial=cfg.saldo_inicial,
-                                activo=activo,
-                            )
-                        )
-
-                    # RUNNER EXECUTION
-                    runner = OptimizationRunner(config=cfg, n_trials=int(N_TRIALS), reporters=reporters)
-
-                    # [MAC-OPTIMIZED] Configuración vital para single-core performance estable
-                    runner.optuna = OptunaConfig(
-                        seed=None,
-                        n_jobs=1,  # ESTRICTAMENTE 1. Optuna con n_jobs > 1 en Mac + Python es inestable.
-                        storage=None,
-                    )
-                    runner.activo = activo
-
-                    try:
-                        # Multi-timeframe: si la estrategia define `timeframe_entry/timeframe_exit`,
-                        # se carga ese TF; si no, se usa el TF base de CONFIG.
-                        entry_tf = getattr(strategy, "timeframe_entry", None) or timeframe_base
-                        exit_tf = getattr(strategy, "timeframe_exit", None) or timeframe_base
-
-                        needed_tfs = [timeframe_base, entry_tf, exit_tf]
-
-                        for tf in needed_tfs:
-                            tf_suffix = normalize_timeframe_to_suffix(tf)
-                            if tf_suffix in tf_cache:
-                                continue
-                            try:
-                                path_tf = resolve_archivo_data_tf(activo, tf, formato="parquet")
-                                df_tf = load_data(path_tf)
-                                df_tf = filter_by_date(df_tf, FECHA_INICIO, FECHA_FIN)
-                                tf_cache[tf_suffix] = df_tf
-                            except Exception:
-                                # Best-effort: si falta el archivo, se cae al base TF
-                                continue
-
-                        runner.optimize_strategies(
-                            df=df_filtrado,
-                            strategies=[strategy],
-                            df_by_timeframe=tf_cache,  # cache contiene solo lo necesario (base + overrides usados)
-                            base_timeframe=timeframe_base,
-                        )
-
-                        if hasattr(runner, '_last_study') and runner._last_study.best_trial:
-                            study = runner._last_study
-                            mostrar_fin_optimizacion(
-                                total_trials=len(study.trials),
-                                best_score=study.best_value,
-                                best_trial=study.best_trial.number,
-                                estrategia=strategy_name,
-                            )
-                    except KeyboardInterrupt:
-                        # Salida limpia: sin traceback, con cleanup final garantizado.
-                        raise
-                    except Exception as e:
-                        logging.error(f"Error optimizando estrategia {strategy_name}: {e}")
-                    finally:
-                        del runner
-                        del reporters
-                        HealthGuard.force_cleanup(deep=True)
 
             # Limpieza por activo
             del df_filtrado

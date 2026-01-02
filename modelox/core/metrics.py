@@ -125,21 +125,47 @@ def porcentaje_ganadoras_perdedoras(trades: pd.DataFrame) -> Tuple[float, float]
     return 100.0 * n_win / n, 100.0 * n_loss / n
 
 
-def trades_por_dia(trades: pd.DataFrame) -> float:
-    """
-    Trades per day based on the trade time range.
+def trades_por_dia(
+    trades: pd.DataFrame,
+    *,
+    period_start: Optional[pd.Timestamp] = None,
+    period_end: Optional[pd.Timestamp] = None,
+) -> float:
+    """Trades por día.
 
-    We intentionally base this on trade timestamps (not the raw candle dataframe),
-    because the runner may filter the data and the trade series is the relevant one.
+    Regla solicitada:
+    - Inicio: el día de inicio configurado (o, en práctica, el inicio del dataset ya filtrado).
+    - Fin: el día de fin configurado *o* el día en el que el sistema deja de operar
+      (último trade ejecutado), lo que ocurra primero.
+
+    Esto evita dividir por días donde ya no hay operativa tras llegar al
+    `saldo_minimo_operativo` (early stop).
     """
 
     if _empty(trades):
         return 0.0
-    entry_times = pd.to_datetime(trades["entry_time"], utc=True)
-    exit_times = pd.to_datetime(trades["exit_time"], utc=True)
-    start = min(entry_times.min(), exit_times.min())
-    end = max(entry_times.max(), exit_times.max())
-    days = (end.normalize() - start.normalize()).days + 1
+
+    entry_times = pd.to_datetime(trades["entry_time"], utc=True, errors="coerce")
+    exit_times = pd.to_datetime(trades["exit_time"], utc=True, errors="coerce")
+
+    # Último instante con operativa (entry o exit). Si no hay tiempos válidos, 0.
+    last_event = pd.concat([entry_times.dropna(), exit_times.dropna()], ignore_index=True)
+    if last_event.empty:
+        return 0.0
+    last_trade_ts = pd.Timestamp(last_event.max()).tz_convert("UTC")
+
+    # Si no se pasa periodo explícito, usar la ventana real de trades.
+    if period_start is None or period_end is None:
+        start = pd.Timestamp(last_event.min()).tz_convert("UTC")
+        end = pd.Timestamp(last_event.max()).tz_convert("UTC")
+    else:
+        start = pd.Timestamp(period_start).tz_convert("UTC")
+        end_cfg = pd.Timestamp(period_end).tz_convert("UTC")
+        end = min(end_cfg, last_trade_ts)
+
+    start_day = start.normalize()
+    end_day = end.normalize()
+    days = int((end_day - start_day).days) + 1
     return float(len(trades)) / float(days) if days > 0 else 0.0
 
 
@@ -297,6 +323,8 @@ def resumen_metricas(
     *,
     saldo_inicial: float,
     equity_curve: Optional[List[float]] = None,
+    period_start: Optional[pd.Timestamp] = None,
+    period_end: Optional[pd.Timestamp] = None,
 ) -> Dict[str, Any]:
     """
     Main metrics dictionary used by scoring and reporting.
@@ -368,7 +396,7 @@ def resumen_metricas(
         "racha_perdedora": racha_p,
         "porc_ganadoras": porc_gan,
         "porc_perdedoras": porc_perd,
-        "trades_por_dia": trades_por_dia(trades),
+        "trades_por_dia": trades_por_dia(trades, period_start=period_start, period_end=period_end),
         # Trade counts - multiple keys for compatibility
         "n_trades": int(len(trades)),
         "total_trades": int(len(trades)),  # Alias for rich reporter
