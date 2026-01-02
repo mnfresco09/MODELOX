@@ -127,14 +127,12 @@ class OptimizationRunner:
             exit_settings = resolve_exit_settings_for_trial(trial=trial, config=config_trial)
 
             # IMPORTANT: engine reads exits ONLY from params.
-            # If we don't inject `__exit_type`, it falls back to DEFAULT_EXIT_TYPE ("all") and can mis-route.
+            # Sistema porcentual - inyectar parámetros de salida
             params_rt["__exit_type"] = str(exit_settings.exit_type)
-            params_rt["__exit_atr_period"] = int(exit_settings.atr_period)
-            params_rt["__exit_sl_atr"] = float(exit_settings.sl_atr)
-            params_rt["__exit_tp_atr"] = float(exit_settings.tp_atr)
-            params_rt["__exit_time_stop_bars"] = int(exit_settings.time_stop_bars)
-            params_rt["__exit_trailing_atr_mult"] = float(exit_settings.trailing_atr_mult)
-            params_rt["__exit_emergency_sl_atr_mult"] = float(exit_settings.emergency_sl_atr_mult)
+            params_rt["__exit_sl_pct"] = float(exit_settings.sl_pct)
+            params_rt["__exit_tp_pct"] = float(exit_settings.tp_pct)
+            params_rt["__exit_trail_act_pct"] = float(exit_settings.trail_act_pct)
+            params_rt["__exit_trail_dist_pct"] = float(exit_settings.trail_dist_pct)
 
             # ===== TIMEFRAMES (entry/exit) =====
             entry_tf = normalize_timeframe_to_suffix(getattr(strategy, "timeframe_entry", None) or base_tf)
@@ -277,12 +275,11 @@ class OptimizationRunner:
             params_reporting = dict(params_puros)
             # Expose global exits in reports (so you can see what Optuna picked)
             params_reporting["exit_type"] = str(exit_settings.exit_type)
-            params_reporting["exit_atr_period"] = int(exit_settings.atr_period)
-            params_reporting["exit_sl_atr"] = float(exit_settings.sl_atr)
-            params_reporting["exit_tp_atr"] = float(exit_settings.tp_atr)
+            params_reporting["exit_sl_pct"] = float(exit_settings.sl_pct)
+            params_reporting["exit_tp_pct"] = float(exit_settings.tp_pct)
             params_reporting["exit_time_stop_bars"] = int(exit_settings.time_stop_bars)
-            params_reporting["exit_trailing_atr_mult"] = float(exit_settings.trailing_atr_mult)
-            params_reporting["exit_emergency_sl_atr_mult"] = float(exit_settings.emergency_sl_atr_mult)
+            params_reporting["exit_trail_act_pct"] = float(exit_settings.trail_act_pct)
+            params_reporting["exit_trail_dist_pct"] = float(exit_settings.trail_dist_pct)
             params_reporting["qty_max_activo"] = float(qty_max_activo)
             # Expose active asset to reporters (for filesystem routing, e.g. Excel folders)
             if getattr(self, "activo", None) is not None:

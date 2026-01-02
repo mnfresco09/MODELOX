@@ -17,24 +17,23 @@ class BacktestConfig:
     saldo_minimo_operativo: float = 1.0
     qty_max_activo: float = float("inf")
 
-    # Global exit settings (engine-owned)
-    exit_type: str = "atr_fixed"  # "atr_fixed", "trailing", or "all"
-    exit_atr_period: int = 14
-    exit_sl_atr: float = 1.0
-    exit_tp_atr: float = 1.0
-    exit_time_stop_bars: int = 260
-    exit_trailing_atr_mult: float = 2.0
-    exit_emergency_sl_atr_mult: float = 4.0
+    # Position Sizing: Fixed Fractional (riesgo % por trade)
+    riesgo_por_trade_pct: float = 0.10  # 10% del saldo por trade
+
+    # Global exit settings (engine-owned) - SISTEMA PNL_PCT
+    exit_type: str = "pnl_trailing"  # "pnl_fixed", "pnl_trailing", or "all"
+    exit_sl_pct: float = 1.0             # Stop Loss: 1% del precio
+    exit_tp_pct: float = 3.0             # Take Profit: 3% del precio
+    exit_trail_act_pct: float = 1.0      # Activar trailing cuando ROI >= 1%
+    exit_trail_dist_pct: float = 0.5     # Distancia del trailing: 0.5%
 
     # Optuna: allow optimizing global exits from configuration
     optimize_exits: bool = True
-    # Ranges are inclusive; tuples support optional step: (min, max) or (min, max, step)
-    exit_atr_period_range: tuple[int, int, int] = (7, 30, 1)
-    exit_sl_atr_range: tuple[float, float, float] = (0.5, 3.0, 0.1)
-    exit_tp_atr_range: tuple[float, float, float] = (1.0, 8.0, 0.1)
-    exit_time_stop_bars_range: tuple[int, int, int] = (250, 800, 10)
-    exit_trailing_atr_mult_range: tuple[float, float, float] = (1.0, 4.0, 0.1)
-    exit_emergency_sl_atr_mult_range: tuple[float, float, float] = (2.0, 6.0, 0.1)
+    # Ranges are inclusive; tuples: (min, max, step)
+    exit_sl_pct_range: tuple[float, float, float] = (0.5, 5.0, 0.1)
+    exit_tp_pct_range: tuple[float, float, float] = (1.0, 10.0, 0.1)
+    exit_trail_act_pct_range: tuple[float, float, float] = (0.5, 3.0, 0.1)
+    exit_trail_dist_pct_range: tuple[float, float, float] = (0.2, 2.0, 0.1)
 
     # Optuna: allow optimizing qty cap per asset
     optimize_qty_max_activo: bool = False

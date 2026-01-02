@@ -55,7 +55,7 @@ def run_single_exit_type(
     Ejecuta optimización para un tipo de salida específico.
     
     Args:
-        exit_type: Tipo de salida ("atr_fixed" o "trailing")
+        exit_type: Tipo de salida ("pnl_fixed" o "pnl_trailing")
         strategy: Instancia de la estrategia
         strategy_name: Nombre de la estrategia
         strategy_safe: Nombre seguro para carpetas

@@ -1,5 +1,17 @@
+"""
+modelox/core/engine.py
+
+Motor de Ejecución con Position Sizing Institucional (Fixed Fractional).
+
+Cambios clave:
+- Sin ATR: todas las distancias son porcentuales
+- Sizing por riesgo fijo: qty = risk_amount / sl_distance
+- sl_distance se calcula en generate_trades y se pasa a simulate_trades
+"""
+
 from __future__ import annotations
 
+import os
 from typing import Any, Dict, List, Tuple
 
 import numpy as np
@@ -8,10 +20,13 @@ import polars as pl
 
 from modelox.core.types import BacktestConfig, Strategy
 from modelox.core.exits import (
-    compute_atr_wilder,
     decide_exit_for_trade,
     exit_settings_from_params,
+    trace_exit_pnl_trailing,
 )
+
+
+_TRAILING_TRACE_DUMPED = False
 
 
 def generate_trades(
@@ -23,7 +38,11 @@ def generate_trades(
 ) -> pd.DataFrame:
     """
     Genera un DataFrame base de trades usando arrays de Polars/Numpy.
+    
+    Ahora incluye `sl_distance` para cada trade (usado para sizing).
     """
+    global _TRAILING_TRACE_DUMPED
+
     close = df["close"].to_numpy()
     open_ = df["open"].to_numpy() if "open" in df.columns else None
     high = df["high"].to_numpy() if "high" in df.columns else None
@@ -38,6 +57,7 @@ def generate_trades(
         if "signal_short" in df.columns
         else np.zeros(len(df), dtype=bool)
     )
+    
     # Handle both 'timestamp' and 'datetime' column names
     if "timestamp" in df.columns:
         timestamps = df["timestamp"].to_numpy()
@@ -48,13 +68,19 @@ def generate_trades(
 
     block_velas_after_exit = int(params.get("block_velas_after_exit", 0))
 
-    # Exit settings (global) are centralized in modelox/core/exits.py
+    # Exit settings (sistema porcentual)
     exit_settings = exit_settings_from_params(params)
 
-    if open_ is None or high is None or low is None:
-        raise ValueError("Para SL/TP intra-vela por ATR se requieren columnas open/high/low")
+    # Sizing base para exits basados en STAKE
+    STAKE_MIN = 60.0
+    qty_target = float(params.get("__qty_max_activo", params.get("qty_max_activo", 0.0)))
+    max_leverage = float(params.get("__apalancamiento", 1.0))
+    if max_leverage <= 0:
+        max_leverage = 1.0
 
-    atr = compute_atr_wilder(high, low, close, exit_settings.atr_period)
+    if open_ is None or high is None or low is None:
+        raise ValueError("Se requieren columnas open/high/low para lógica intra-vela")
+
     operaciones: List[Dict[str, Any]] = []
     last_exit_idx = -1
 
@@ -67,7 +93,7 @@ def generate_trades(
     while idx_pos < len(all_indices):
         i = all_indices[idx_pos]
 
-        # No abrir trades en la última vela: no hay barra siguiente para evaluar salidas.
+        # No abrir trades en la última vela
         if i >= (len(close) - 1):
             idx_pos += 1
             continue
@@ -81,6 +107,13 @@ def generate_trades(
             entry_idx = i
             entry_price = float(close[entry_idx])
 
+            # stake/qty para este trade (se usan para SL/TP/Trailing sobre stake)
+            q = float(qty_target) if qty_target > 0 else 0.0001
+            notional = float(q * entry_price)
+            lev_needed_for_stake_min = (notional / STAKE_MIN) if STAKE_MIN > 0 else max_leverage
+            leverage_eff = min(max_leverage, max(1.0, lev_needed_for_stake_min))
+            stake = (notional / leverage_eff) if leverage_eff > 0 else notional
+
             exit_result = decide_exit_for_trade(
                 strategy=strategy,
                 df=df,
@@ -89,25 +122,71 @@ def generate_trades(
                 side="LONG",
                 entry_idx=int(entry_idx),
                 entry_price=float(entry_price),
+                qty=float(q),
+                stake=float(stake),
                 close=close,
                 open_=open_,
                 high=high,
                 low=low,
-                atr=atr,
                 settings=exit_settings,
             )
             exit_idx = int(exit_result.exit_idx)
             exit_price = float(exit_result.exit_price)
             tipo_salida = str(exit_result.tipo_salida)
+            sl_distance = float(exit_result.sl_distance)
+
+            # Optional: dump a bar-by-bar trace for the first TRAILING_STOP trade.
+            # Enable with: MODELOX_TRACE_TRAILING=1
+            if (
+                (not _TRAILING_TRACE_DUMPED)
+                and (os.environ.get("MODELOX_TRACE_TRAILING", "0") in {"1", "true", "True", "YES", "yes"})
+                and (tipo_salida == "TRAILING_STOP")
+                and (str(exit_settings.exit_type).strip().lower() == "pnl_trailing")
+            ):
+                try:
+                    activo_name = str(params.get("__activo", "")) or "DEFAULT"
+                    strat_name = getattr(strategy, "name", "strategy")
+                    out_dir = os.path.join("resultados", "_debug")
+                    os.makedirs(out_dir, exist_ok=True)
+                    out_path = os.path.join(
+                        out_dir,
+                        f"trailing_trace_{strat_name}_{activo_name}_entry{entry_idx}_exit{exit_idx}.csv".replace(" ", "_"),
+                    )
+                    rows = trace_exit_pnl_trailing(
+                        side="LONG",
+                        entry_idx=int(entry_idx),
+                        entry_price=float(entry_price),
+                        qty=float(q),
+                        stake=float(stake),
+                        timestamps=timestamps,
+                        close=close,
+                        open_=open_,
+                        high=high,
+                        low=low,
+                        settings=exit_settings,
+                    )
+                    import pandas as _pd
+
+                    _pd.DataFrame(rows).to_csv(out_path, index=False)
+                    _TRAILING_TRACE_DUMPED = True
+                except Exception:
+                    # Never break backtests due to optional debug tracing.
+                    _TRAILING_TRACE_DUMPED = True
 
             operaciones.append(
                 {
                     "type": "long",
+                    "entry_idx": int(entry_idx),
+                    "exit_idx": int(exit_idx),
                     "entry_time": timestamps[entry_idx],
                     "exit_time": timestamps[exit_idx],
                     "entry_price": entry_price,
                     "exit_price": float(exit_price),
                     "tipo_salida": tipo_salida,
+                    "sl_distance": sl_distance,
+                    "qty": float(q),
+                    "stake": float(stake),
+                    "leverage_eff": float(leverage_eff),
                 }
             )
             last_exit_idx = int(exit_idx)
@@ -119,6 +198,12 @@ def generate_trades(
             entry_idx = i
             entry_price = float(close[entry_idx])
 
+            q = float(qty_target) if qty_target > 0 else 0.0001
+            notional = float(q * entry_price)
+            lev_needed_for_stake_min = (notional / STAKE_MIN) if STAKE_MIN > 0 else max_leverage
+            leverage_eff = min(max_leverage, max(1.0, lev_needed_for_stake_min))
+            stake = (notional / leverage_eff) if leverage_eff > 0 else notional
+
             exit_result = decide_exit_for_trade(
                 strategy=strategy,
                 df=df,
@@ -127,25 +212,68 @@ def generate_trades(
                 side="SHORT",
                 entry_idx=int(entry_idx),
                 entry_price=float(entry_price),
+                qty=float(q),
+                stake=float(stake),
                 close=close,
                 open_=open_,
                 high=high,
                 low=low,
-                atr=atr,
                 settings=exit_settings,
             )
             exit_idx = int(exit_result.exit_idx)
             exit_price = float(exit_result.exit_price)
             tipo_salida = str(exit_result.tipo_salida)
+            sl_distance = float(exit_result.sl_distance)
+
+            if (
+                (not _TRAILING_TRACE_DUMPED)
+                and (os.environ.get("MODELOX_TRACE_TRAILING", "0") in {"1", "true", "True", "YES", "yes"})
+                and (tipo_salida == "TRAILING_STOP")
+                and (str(exit_settings.exit_type).strip().lower() == "pnl_trailing")
+            ):
+                try:
+                    activo_name = str(params.get("__activo", "")) or "DEFAULT"
+                    strat_name = getattr(strategy, "name", "strategy")
+                    out_dir = os.path.join("resultados", "_debug")
+                    os.makedirs(out_dir, exist_ok=True)
+                    out_path = os.path.join(
+                        out_dir,
+                        f"trailing_trace_{strat_name}_{activo_name}_entry{entry_idx}_exit{exit_idx}.csv".replace(" ", "_"),
+                    )
+                    rows = trace_exit_pnl_trailing(
+                        side="SHORT",
+                        entry_idx=int(entry_idx),
+                        entry_price=float(entry_price),
+                        qty=float(q),
+                        stake=float(stake),
+                        timestamps=timestamps,
+                        close=close,
+                        open_=open_,
+                        high=high,
+                        low=low,
+                        settings=exit_settings,
+                    )
+                    import pandas as _pd
+
+                    _pd.DataFrame(rows).to_csv(out_path, index=False)
+                    _TRAILING_TRACE_DUMPED = True
+                except Exception:
+                    _TRAILING_TRACE_DUMPED = True
 
             operaciones.append(
                 {
                     "type": "short",
+                    "entry_idx": int(entry_idx),
+                    "exit_idx": int(exit_idx),
                     "entry_time": timestamps[entry_idx],
                     "exit_time": timestamps[exit_idx],
                     "entry_price": entry_price,
                     "exit_price": float(exit_price),
                     "tipo_salida": tipo_salida,
+                    "sl_distance": sl_distance,
+                    "qty": float(q),
+                    "stake": float(stake),
+                    "leverage_eff": float(leverage_eff),
                 }
             )
             last_exit_idx = int(exit_idx)
@@ -169,11 +297,15 @@ def simulate_trades(
     trades_base: pd.DataFrame,
     config: BacktestConfig,
 ) -> Tuple[pd.DataFrame, List[float]]:
-    """
-    Simulación financiera completa con EARLY EXIT para cuentas quebradas.
-    
-    Performance: Si saldo cae por debajo de saldo_minimo_operativo, 
-    el bucle hace break instantáneo para ahorrar tiempo de procesamiento.
+    """Simulación financiera.
+
+    Sizing por trade (modo actual):
+    - `qty` objetivo = `qty_max_activo` (fijo por trial/config)
+    - Si no es posible por saldo/stake_max/apalancamiento, se reduce `qty` al máximo factible.
+    - Si el stake resultante es < 60, se fuerza stake=60 reduciendo el apalancamiento efectivo
+      (manteniendo la qty objetivo) siempre que el stake máximo posible lo permita.
+
+    EARLY EXIT si el saldo cae por debajo del mínimo operativo.
     """
     saldo = float(config.saldo_inicial)
     stake_max = float(config.saldo_operativo_max)
@@ -195,8 +327,12 @@ def simulate_trades(
     exit_p = trades_base["exit_price"].values
     sides = trades_base["type"].values
 
+    # qty/stake vienen de generate_trades (si no existen, fallback a qty_max_activo y stake mínimo)
+    qty_arr = trades_base["qty"].values if "qty" in trades_base.columns else None
+    stake_arr = trades_base["stake"].values if "stake" in trades_base.columns else None
+
     # Inicialización de arrays para métricas
-    pnl_bruto = np.zeros(n)  # Esto será la columna 'pnl' esperada
+    pnl_bruto = np.zeros(n)
     pnl_neto = np.zeros(n)
     pnl_pct = np.zeros(n)
     saldo_despues = np.zeros(n)
@@ -208,31 +344,31 @@ def simulate_trades(
     equity_curve = [saldo]
     last_idx = 0
 
-    # (diagnostic prints disabled)
-
     for i in range(n):
-        # === EARLY EXIT: Cuenta quebrada - stop inmediato ===
+        # === EARLY EXIT: Cuenta quebrada ===
         if saldo <= saldo_min:
-            # No procesar más trades, la cuenta está en bancarrota
             break
 
         saldo_antes[i] = saldo
-        # 1. Calcula el stake máximo permitido por saldo/configuración
-        stake_max_posible = min(saldo, stake_max)
-        # 2. ¿Cuánta cantidad se podría abrir con ese stake?
-        qty_con_stake_max = (stake_max_posible * apalancamiento) / entry_p[i]
-        initial_q = float(qty_con_stake_max)
-        # 3. Si el stake máximo permite abrir más que qty_max_activo, ajusta el stake justo al necesario para abrir qty_max_activo
-        if qty_con_stake_max > qty_max_limit:
-            q = float(qty_max_limit)
-            stk = (q * entry_p[i]) / apalancamiento
-            q_clamped_by_qty = True
-        else:
-            stk = stake_max_posible
-            q = (stk * apalancamiento) / entry_p[i]
-            q_clamped_by_qty = False
+        
+        # =====================================================
+        # QTY/STAKE: coherente con exits (basado en stake)
+        # =====================================================
+        q = float(qty_arr[i]) if qty_arr is not None else float(qty_max_limit)
+        if q <= 0:
+            q = 0.0001
 
-        # Cálculo de PnL
+        stk = float(stake_arr[i]) if stake_arr is not None else 60.0
+        if stk <= 0:
+            stk = 60.0
+
+        # Nota: por diseño, el stake usado en exits es el stake del trade.
+        # Si quieres impedir abrir trades cuando stk > saldo/stake_max, eso requiere
+        # mover la lógica de apertura/validación a un motor secuencial (saldo-aware).
+
+        # =====================================================
+        # CÁLCULO DE PnL
+        # =====================================================
         is_long = sides[i].lower() == "long"
         bruto = (
             (exit_p[i] - entry_p[i]) * q if is_long else (entry_p[i] - exit_p[i]) * q
@@ -244,31 +380,24 @@ def simulate_trades(
 
         neto = bruto - c_tot
         nuevo_saldo = saldo + neto
-        # El saldo no puede ser negativo (liquidación/margin call implícita)
+        
+        # Liquidación implícita: saldo no puede ser negativo
         if nuevo_saldo < 0:
             nuevo_saldo = 0.0
 
-        # (diagnostic print removed)
-
-        # === EARLY EXIT: Si el nuevo saldo cae por debajo o igual al mínimo ===
+        # === EARLY EXIT: Cuenta quebrada después del trade ===
         if nuevo_saldo <= saldo_min:
-            # Registrar este último trade antes de salir
             pnl_bruto[i] = bruto
             pnl_neto[i] = neto
             pnl_pct[i] = (neto / stk) * 100 if stk > 0 else 0
-
-            # Registrar contexto financiero del último trade
             comisiones[i] = c_tot
             stake_aplicado[i] = stk
             qty_aplicada[i] = q
-
-            # Importante: dejar el saldo final real para métricas/reporting
             saldo = float(nuevo_saldo)
             saldo_despues[i] = saldo
             equity_curve.append(saldo)
-
             last_idx = i + 1
-            break  # STOP INMEDIATO - Cuenta quebrada
+            break
 
         # Asignación de valores
         pnl_bruto[i] = bruto
@@ -283,11 +412,11 @@ def simulate_trades(
         equity_curve.append(saldo)
         last_idx = i + 1
 
-    # Construcción del DataFrame final con mapeo exacto para metrics.py
+    # Construcción del DataFrame final
     df_exec = trades_base.iloc[:last_idx].copy()
-    df_exec["pnl"] = pnl_bruto[:last_idx]  # Requerido para 'saldo_sin_comisiones'
-    df_exec["pnl_neto"] = pnl_neto[:last_idx]  # Requerido para winrate/expectativa
-    df_exec["pnl_pct"] = pnl_pct[:last_idx]  # Requerido para Sharpe/Sortino
+    df_exec["pnl"] = pnl_bruto[:last_idx]
+    df_exec["pnl_neto"] = pnl_neto[:last_idx]
+    df_exec["pnl_pct"] = pnl_pct[:last_idx]
     df_exec["saldo_despues"] = saldo_despues[:last_idx]
     df_exec["saldo_antes"] = saldo_antes[:last_idx]
     df_exec["stake"] = stake_aplicado[:last_idx]

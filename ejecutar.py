@@ -292,22 +292,25 @@ def main() -> None:
                 saldo_minimo_operativo=float(CONFIG.get("SALDO_MINIMO_OPERATIVO", 5.0)),
                 qty_max_activo=float(qty_max_activo),
 
+                # Fixed Fractional Sizing
+                riesgo_por_trade_pct=float(CONFIG.get("RIESGO_POR_TRADE_PCT", 0.10)),
+
                 # Optuna qty cap (per asset)
                 optimize_qty_max_activo=bool(CONFIG.get("OPTIMIZAR_QTY_ACTIVO", False)),
                 qty_max_activo_range=tuple(qty_max_range),
 
-                # Global exits (engine-owned)
-                exit_atr_period=int(CONFIG.get("EXIT_ATR_PERIOD", 14)),
-                exit_sl_atr=float(CONFIG.get("EXIT_SL_ATR", 1.0)),
-                exit_tp_atr=float(CONFIG.get("EXIT_TP_ATR", 1.0)),
-                exit_time_stop_bars=int(CONFIG.get("EXIT_TIME_STOP_BARS", 260)),
+                # Sistema de Salidas Porcentual
+                exit_sl_pct=float(CONFIG.get("EXIT_SL_PCT", 1.0)),
+                exit_tp_pct=float(CONFIG.get("EXIT_TP_PCT", 3.0)),
+                exit_trail_act_pct=float(CONFIG.get("EXIT_TRAIL_ACT_PCT", 1.0)),
+                exit_trail_dist_pct=float(CONFIG.get("EXIT_TRAIL_DIST_PCT", 0.5)),
 
                 # Optuna exits
-                optimize_exits=bool(CONFIG.get("OPTIMIZAR_SALIDAS", False)),
-                exit_atr_period_range=tuple(CONFIG.get("EXIT_ATR_PERIOD_RANGE", (7, 30, 1))),
-                exit_sl_atr_range=tuple(CONFIG.get("EXIT_SL_ATR_RANGE", (0.5, 5.0, 0.1))),
-                exit_tp_atr_range=tuple(CONFIG.get("EXIT_TP_ATR_RANGE", (0.5, 8.0, 0.1))),
-                exit_time_stop_bars_range=tuple(CONFIG.get("EXIT_TIME_STOP_BARS_RANGE", (50, 800, 10))),
+                optimize_exits=bool(CONFIG.get("OPTIMIZAR_SALIDAS", True)),
+                exit_sl_pct_range=tuple(CONFIG.get("EXIT_SL_PCT_RANGE", (0.5, 5.0, 0.1))),
+                exit_tp_pct_range=tuple(CONFIG.get("EXIT_TP_PCT_RANGE", (1.0, 10.0, 0.1))),
+                exit_trail_act_pct_range=tuple(CONFIG.get("EXIT_TRAIL_ACT_PCT_RANGE", (0.5, 3.0, 0.1))),
+                exit_trail_dist_pct_range=tuple(CONFIG.get("EXIT_TRAIL_DIST_PCT_RANGE", (0.2, 2.0, 0.1))),
             )
 
             for strat_id in lista_ids:
@@ -338,12 +341,12 @@ def main() -> None:
                         tf_display = f"BASE {base_tf} · ENTRY {entry_tf} · EXIT {exit_tf}"
 
                     # Get exit type from config
-                    exit_type = str(CONFIG.get("EXIT_TYPE", "atr_fixed"))
+                    exit_type = str(CONFIG.get("EXIT_TYPE", "pnl_trailing"))
                     
                     # Determine if we need to run multiple exit types
                     exit_types_to_run = []
                     if exit_type.lower() == "all":
-                        exit_types_to_run = ["atr_fixed", "trailing"]
+                        exit_types_to_run = ["pnl_fixed", "pnl_trailing"]
                     else:
                         exit_types_to_run = [exit_type]
 

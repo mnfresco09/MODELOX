@@ -20,20 +20,16 @@ from __future__ import annotations
 from typing import Iterable
 
 from modelox.core.exits import (
-    DEFAULT_EXIT_ATR_PERIOD,
-    DEFAULT_EXIT_ATR_PERIOD_RANGE,
-    DEFAULT_EXIT_EMERGENCY_SL_ATR_MULT,
-    DEFAULT_EXIT_EMERGENCY_SL_ATR_MULT_RANGE,
-    DEFAULT_EXIT_SL_ATR,
-    DEFAULT_EXIT_SL_ATR_RANGE,
-    DEFAULT_EXIT_TIME_STOP_BARS,
-    DEFAULT_EXIT_TIME_STOP_BARS_RANGE,
-    DEFAULT_EXIT_TP_ATR,
-    DEFAULT_EXIT_TP_ATR_RANGE,
-    DEFAULT_EXIT_TRAILING_ATR_MULT,
-    DEFAULT_EXIT_TRAILING_ATR_MULT_RANGE,
     DEFAULT_EXIT_TYPE,
+    DEFAULT_EXIT_SL_PCT,
+    DEFAULT_EXIT_TP_PCT,
+    DEFAULT_EXIT_TRAIL_ACT_PCT,
+    DEFAULT_EXIT_TRAIL_DIST_PCT,
     DEFAULT_OPTIMIZE_EXITS,
+    DEFAULT_EXIT_SL_PCT_RANGE,
+    DEFAULT_EXIT_TP_PCT_RANGE,
+    DEFAULT_EXIT_TRAIL_ACT_PCT_RANGE,
+    DEFAULT_EXIT_TRAIL_DIST_PCT_RANGE,
 )
 from modelox.core.timeframes import normalize_timeframe_to_suffix
 
@@ -72,7 +68,7 @@ FECHA_FIN_PLOT = "2021-08-15"
 # ----------------------------------------------------------------------------
 # OPTUNA
 # ----------------------------------------------------------------------------
-N_TRIALS = 20
+N_TRIALS = 500
 OPTUNA_N_JOBS = 1      # 1 recomendado en macOS (más estable)
 OPTUNA_SEED = None     # None = seed aleatoria
 OPTUNA_STORAGE = None  # None = in-memory (o ruta SQLite)
@@ -110,66 +106,68 @@ QTY_MAX_MAP = {
 }
 
 # Permitir que Optuna optimice qty_max_activo dentro de un rango por activo.
-OPTIMIZAR_QTY_ACTIVO = False
+OPTIMIZAR_QTY_ACTIVO = True
 QTY_MAX_RANGE_MAP = {
-    "BTC": (0.01, 0.1, 0.01),
-    "GOLD": (0.75, 3.5, 0.25),
-    "SP500": (0.5, 4.0, 0.25),
-    "NASDAQ": (0.025, 0.75, 0.01),
+    "BTC": (0.005, 0.075, 0.005),
+    "GOLD": (0.25, 2.0, 0.25),
+    "SP500": (0.25, 2.5, 0.25),
+    "NASDAQ": (0.025, 0.5, 0.01),
 }
 
 
 # ----------------------------------------------------------------------------
-# SALIDAS (GLOBAL, ENGINE-OWNED)
+# SALIDAS (GLOBAL, ENGINE-OWNED) - SISTEMA PNL_PCT
 # ----------------------------------------------------------------------------
-# Tipo de salida: "atr_fixed", "trailing" o "all"
+# Tipo de salida: "pnl_fixed", "pnl_trailing" o "all"
+#
+# Los parámetros son DIRECTAMENTE el PNL_PCT (ROI %) objetivo:
+# - SL_PCT: Salir si PNL_PCT <= -sl_pct (pérdida máxima)
+# - TP_PCT: Salir si PNL_PCT >= +tp_pct (ganancia objetivo)
+# - TRAIL_ACT_PCT: Activar trailing cuando PNL_PCT >= trail_act_pct
+# - TRAIL_DIST_PCT: Trailing retrocede trail_dist_pct desde máximo PNL
 #
 # OPCIONES:
-#   1. "atr_fixed": SL/TP por ATR fijo al inicio + TIME EXIT
-#      - Los niveles de SL y TP se calculan una vez al abrir el trade
-#      - No se modifican durante la vida del trade
-#      - Optimiza: exit_sl_atr, exit_tp_atr
+#   1. "pnl_fixed": SL/TP fijos por PNL_PCT
+#      - Ejemplo: sl_pct=2, tp_pct=5 → salir si pierde 2% o gana 5%
 #
-#   2. "trailing": Trailing stop + SL emergencia + TIME EXIT
-#      - SL emergencia fijo (protección máxima)
-#      - Trailing stop que se actualiza siguiendo el precio favorable
-#      - Optimiza: exit_trailing_atr_mult, exit_emergency_sl_atr_mult
+#   2. "pnl_trailing": SL inicial + trailing por PNL_PCT
+#      - SL fijo hasta que PNL_PCT >= trail_act_pct
+#      - Luego trailing protege (max_pnl - trail_dist_pct)
 #
 #   3. "all": Ejecuta AMBOS tipos secuencialmente
-#      - Primero ejecuta N trials con "atr_fixed"
-#      - Luego ejecuta N trials con "trailing"
-#      - Los resultados se guardan en carpetas separadas:
-#          * resultados/<ESTRATEGIA>_ATR_FIXED/
-#          * resultados/<ESTRATEGIA>_TRAILING/
 #
-EXIT_TYPE = DEFAULT_EXIT_TYPE
+EXIT_TYPE = DEFAULT_EXIT_TYPE  # "pnl_trailing" por defecto
 
-# Parámetros comunes
-EXIT_ATR_PERIOD = DEFAULT_EXIT_ATR_PERIOD
-EXIT_TIME_STOP_BARS = DEFAULT_EXIT_TIME_STOP_BARS
+# ----------------------------------------------------------------------------
+# POSITION SIZING: Fixed Fractional (Riesgo % por Trade)
+# ----------------------------------------------------------------------------
+# Fórmula: qty = (saldo * riesgo_pct) / sl_distance
+# Esto asegura que cada trade arriesga exactamente el % configurado del saldo.
+RIESGO_POR_TRADE_PCT = 0.10  # 10% del saldo por trade
 
-# Parámetros para EXIT_TYPE = "atr_fixed"
-EXIT_SL_ATR = DEFAULT_EXIT_SL_ATR
-EXIT_TP_ATR = DEFAULT_EXIT_TP_ATR
+# ----------------------------------------------------------------------------
+# Parámetros de Salida PNL_PCT (ROI % del Trade)
+# ----------------------------------------------------------------------------
+# Stop Loss: Salir si PNL_PCT <= -sl_pct
+EXIT_SL_PCT = DEFAULT_EXIT_SL_PCT  # 2.0% (pérdida máxima)
 
-# Parámetros para EXIT_TYPE = "trailing"
-EXIT_TRAILING_ATR_MULT = DEFAULT_EXIT_TRAILING_ATR_MULT
-EXIT_EMERGENCY_SL_ATR_MULT = DEFAULT_EXIT_EMERGENCY_SL_ATR_MULT
+# Take Profit: Salir si PNL_PCT >= +tp_pct
+EXIT_TP_PCT = DEFAULT_EXIT_TP_PCT  # 5.0% (ganancia objetivo)
+
+# Trailing: Activar cuando PNL_PCT >= trail_act_pct
+EXIT_TRAIL_ACT_PCT = DEFAULT_EXIT_TRAIL_ACT_PCT  # 1.0%
+
+# Trailing: Retroceso desde máximo PNL alcanzado
+EXIT_TRAIL_DIST_PCT = DEFAULT_EXIT_TRAIL_DIST_PCT  # 0.5%
 
 # Optimización con Optuna
 OPTIMIZAR_SALIDAS = DEFAULT_OPTIMIZE_EXITS
 
-# Rangos comunes
-EXIT_ATR_PERIOD_RANGE = DEFAULT_EXIT_ATR_PERIOD_RANGE
-EXIT_TIME_STOP_BARS_RANGE = DEFAULT_EXIT_TIME_STOP_BARS_RANGE
-
-# Rangos para "atr_fixed"
-EXIT_SL_ATR_RANGE = DEFAULT_EXIT_SL_ATR_RANGE
-EXIT_TP_ATR_RANGE = DEFAULT_EXIT_TP_ATR_RANGE
-
-# Rangos para "trailing"
-EXIT_TRAILING_ATR_MULT_RANGE = DEFAULT_EXIT_TRAILING_ATR_MULT_RANGE
-EXIT_EMERGENCY_SL_ATR_MULT_RANGE = DEFAULT_EXIT_EMERGENCY_SL_ATR_MULT_RANGE
+# Rangos para Optuna (min, max, step)
+EXIT_SL_PCT_RANGE = DEFAULT_EXIT_SL_PCT_RANGE      # (0.5, 5.0, 0.1)
+EXIT_TP_PCT_RANGE = DEFAULT_EXIT_TP_PCT_RANGE      # (1.0, 10.0, 0.1)
+EXIT_TRAIL_ACT_PCT_RANGE = DEFAULT_EXIT_TRAIL_ACT_PCT_RANGE  # (0.5, 3.0, 0.1)
+EXIT_TRAIL_DIST_PCT_RANGE = DEFAULT_EXIT_TRAIL_DIST_PCT_RANGE  # (0.2, 2.0, 0.1)
 
 
 # ----------------------------------------------------------------------------
@@ -281,20 +279,18 @@ CONFIG = {
 
     "COMBINACION_A_EJECUTAR": COMBINACION_A_EJECUTAR,
 
+    # Sistema de Salidas Porcentual
     "EXIT_TYPE": EXIT_TYPE,
-    "EXIT_ATR_PERIOD": EXIT_ATR_PERIOD,
-    "EXIT_SL_ATR": EXIT_SL_ATR,
-    "EXIT_TP_ATR": EXIT_TP_ATR,
-    "EXIT_TIME_STOP_BARS": EXIT_TIME_STOP_BARS,
-    "EXIT_TRAILING_ATR_MULT": EXIT_TRAILING_ATR_MULT,
-    "EXIT_EMERGENCY_SL_ATR_MULT": EXIT_EMERGENCY_SL_ATR_MULT,
+    "RIESGO_POR_TRADE_PCT": RIESGO_POR_TRADE_PCT,
+    "EXIT_SL_PCT": EXIT_SL_PCT,
+    "EXIT_TP_PCT": EXIT_TP_PCT,
+    "EXIT_TRAIL_ACT_PCT": EXIT_TRAIL_ACT_PCT,
+    "EXIT_TRAIL_DIST_PCT": EXIT_TRAIL_DIST_PCT,
     "OPTIMIZAR_SALIDAS": OPTIMIZAR_SALIDAS,
-    "EXIT_ATR_PERIOD_RANGE": EXIT_ATR_PERIOD_RANGE,
-    "EXIT_SL_ATR_RANGE": EXIT_SL_ATR_RANGE,
-    "EXIT_TP_ATR_RANGE": EXIT_TP_ATR_RANGE,
-    "EXIT_TIME_STOP_BARS_RANGE": EXIT_TIME_STOP_BARS_RANGE,
-    "EXIT_TRAILING_ATR_MULT_RANGE": EXIT_TRAILING_ATR_MULT_RANGE,
-    "EXIT_EMERGENCY_SL_ATR_MULT_RANGE": EXIT_EMERGENCY_SL_ATR_MULT_RANGE,
+    "EXIT_SL_PCT_RANGE": EXIT_SL_PCT_RANGE,
+    "EXIT_TP_PCT_RANGE": EXIT_TP_PCT_RANGE,
+    "EXIT_TRAIL_ACT_PCT_RANGE": EXIT_TRAIL_ACT_PCT_RANGE,
+    "EXIT_TRAIL_DIST_PCT_RANGE": EXIT_TRAIL_DIST_PCT_RANGE,
 
     "MAX_ARCHIVOS_GUARDAR": MAX_ARCHIVOS_GUARDAR,
     "GENERAR_PLOTS": GENERAR_PLOTS,
