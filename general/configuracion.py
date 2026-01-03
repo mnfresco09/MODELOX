@@ -51,23 +51,30 @@ ACTIVO = " BTC"
 # ----------------------------------------------------------------------------
 # TIMEFRAME BASE (EJECUCIÓN)
 # ----------------------------------------------------------------------------
-# Timeframe base del backtest (minutos): 5 / 15 / 60
-TIMEFRAME = 15
+# Puedes usar:
+#   - TIMEFRAME = 15               (modo legacy: uno solo)
+#   - TIMEFRAMES = [5, 15, 60]     (modo nuevo: varios, se ejecutan secuencialmente)
+#
+# Timeframes soportados (minutos): 5 / 15 / 60
+TIMEFRAME = [15,60]
+
+# Si no quieres multi-timeframe, déjalo como [TIMEFRAME].
+TIMEFRAMES = [TIMEFRAME]
 
 
 # ----------------------------------------------------------------------------
 # FECHAS (BACKTEST Y PLOT)
 # ----------------------------------------------------------------------------
-FECHA_INICIO = "2022-01-10"
-FECHA_FIN = "2024-08-15"
+FECHA_INICIO = "2021-01-01"
+FECHA_FIN = "2025-12-01"
 
-FECHA_INICIO_PLOT = "2022-01-10"
-FECHA_FIN_PLOT = "2022-08-15"
+FECHA_INICIO_PLOT = "2022-01-01"
+FECHA_FIN_PLOT = "2022-12-01"
 
 # ----------------------------------------------------------------------------
 # OPTUNA
 # ----------------------------------------------------------------------------
-N_TRIALS = 1500
+N_TRIALS = 4000
 OPTUNA_N_JOBS = 1      # 1 recomendado en macOS (más estable)
 OPTUNA_SEED = None     # None = seed aleatoria
 OPTUNA_STORAGE = None  # None = in-memory (o ruta SQLite)
@@ -79,7 +86,7 @@ OPTUNA_STORAGE = None  # None = in-memory (o ruta SQLite)
 # Single:    COMBINACION_A_EJECUTAR = 7
 # Multiple:  COMBINACION_A_EJECUTAR = [3, 4, 7]
 # All:       COMBINACION_A_EJECUTAR = "all"
-COMBINACION_A_EJECUTAR = [11,10]
+COMBINACION_A_EJECUTAR = [10]
 
 
 # ----------------------------------------------------------------------------
@@ -126,12 +133,12 @@ QTY_MAX_MAP = {
 }
 
 # Permitir que Optuna optimice qty_max_activo dentro de un rango por activo.
-OPTIMIZAR_QTY_ACTIVO = False
+OPTIMIZAR_QTY_ACTIVO = True
 QTY_MAX_RANGE_MAP = {
-    "BTC": (0.005, 0.03, 0.005),
-    "GOLD": (0.25, 2.0, 0.25),
-    "SP500": (0.25, 2.5, 0.25),
-    "NASDAQ": (0.025, 0.5, 0.01),
+    "BTC": (0.01, 0.05, 0.005),
+    "GOLD": (0.5, 1.5, 0.5),
+    "SP500": (0.5, 2.0, 0.5),
+    "NASDAQ": (0.05, 0.5, 0.05),
 }
 
 
@@ -238,6 +245,56 @@ ACTIVOS = _normalize_activos(ACTIVO)
 ACTIVO_PRIMARIO = ACTIVOS[0]
 
 
+def _normalize_timeframes(v: object) -> list[int]:
+    """Normaliza TIMEFRAMES a una lista de ints (minutos) sin duplicados."""
+    def _coerce_minutes(x: object) -> int | None:
+        if x is None:
+            return None
+        if isinstance(x, (list, tuple)):
+            if not x:
+                return None
+            x = x[0]
+        s = str(x).strip().lower()
+        if not s:
+            return None
+        if s in {"5m", "5"}:
+            return 5
+        if s in {"15m", "15"}:
+            return 15
+        if s in {"60", "60m", "1h"}:
+            return 60
+        try:
+            return int(float(s))
+        except Exception:
+            return None
+
+    fallback_tf = _coerce_minutes(TIMEFRAME) or 15
+
+    if v is None:
+        return [int(fallback_tf)]
+
+    if isinstance(v, (list, tuple)):
+        raw = [x for x in v]
+    else:
+        raw = str(v).split(",")
+
+    out: list[int] = []
+    for x in raw:
+        tf = _coerce_minutes(x)
+        if tf is None:
+            continue
+        if int(tf) not in {5, 15, 60}:
+            continue
+        if int(tf) not in out:
+            out.append(int(tf))
+
+    return out or [int(fallback_tf)]
+
+
+# Multi-timeframe support: ejecutar.py iterará esta lista.
+TIMEFRAMES_NORM = _normalize_timeframes(TIMEFRAMES)
+
+
 def resolve_archivo_data_tf(activo: str, timeframe: object = None, *, formato: str = "parquet") -> str:
     """Resuelve archivo de datos por activo + timeframe.
 
@@ -257,7 +314,7 @@ def resolve_archivo_data(activo: str) -> str:
 
 
 # Compat (algunos outputs/prints lo usan)
-ARCHIVO_DATA = resolve_archivo_data_tf(ACTIVO_PRIMARIO, TIMEFRAME, formato="parquet")
+ARCHIVO_DATA = resolve_archivo_data_tf(ACTIVO_PRIMARIO, TIMEFRAMES_NORM[0] if TIMEFRAMES_NORM else TIMEFRAME, formato="parquet")
 
 
 def resolve_qty_max_activo(activo: str) -> float:
@@ -279,6 +336,7 @@ CONFIG = {
     "ACTIVO": ACTIVO_PRIMARIO,
     "ACTIVOS": ACTIVOS,
     "TIMEFRAME": TIMEFRAME,
+    "TIMEFRAMES": TIMEFRAMES_NORM,
 
     "SALDO_INICIAL": SALDO_INICIAL,
     "SALDO_OPERATIVO_MAX": SALDO_OPERATIVO_MAX,

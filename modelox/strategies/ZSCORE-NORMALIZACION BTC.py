@@ -81,7 +81,7 @@ class StrategyZScoreNormalizacion:
     - Se garantiza simetría de rangos en cada trial usando un solo parámetro por umbral.
     """
 
-    combinacion_id = 10
+    combinacion_id = 11
     name = "Z_SCORE + NORMALIZACION"
 
     parametros_optuna: Dict[str, Any] = {

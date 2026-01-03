@@ -5,6 +5,7 @@ from typing import Any, Dict, Optional, Sequence
 
 import os
 import time
+import gc
 
 import optuna
 import pandas as pd
@@ -332,11 +333,62 @@ class OptimizationRunner:
         study = create_study_for_strategy(
             cfg=self.optuna, strategy_name=strategy.name, activo=self.activo
         )
+
+        # -------------------------------------------------------------
+        # Periodic cleanup (RAM/CPU) during long runs
+        #
+        # - Optuna already supports `gc_after_trial=True`, but on long runs
+        #   it can help to do a deeper collection + tiny cooldown every N trials.
+        # - Configurable from ejecutar.py via env var.
+        #
+        # Usage:
+        #   MODELOX_CLEANUP_EVERY_N_TRIALS=200
+        #   MODELOX_CLEANUP_COOLDOWN_S=0.25   (optional)
+        # -------------------------------------------------------------
+        try:
+            cleanup_every = int(os.environ.get("MODELOX_CLEANUP_EVERY_N_TRIALS", "0") or 0)
+        except Exception:
+            cleanup_every = 0
+        try:
+            cleanup_cooldown_s = float(os.environ.get("MODELOX_CLEANUP_COOLDOWN_S", "0") or 0.0)
+        except Exception:
+            cleanup_cooldown_s = 0.0
+
+        def _cleanup_callback(study: optuna.Study, frozen_trial: optuna.trial.FrozenTrial) -> None:
+            if cleanup_every <= 0:
+                return
+            # trial.number is 0-based
+            if ((int(frozen_trial.number) + 1) % int(cleanup_every)) != 0:
+                return
+
+            # Deep GC to reduce Python heap pressure.
+            try:
+                gc.collect(2)
+                gc.collect(1)
+                gc.collect(0)
+            except Exception:
+                pass
+
+            # Optional: system health check + short cooldown to avoid CPU saturation.
+            try:
+                from modelox.core.health_monitor import get_health_monitor
+
+                get_health_monitor().check_system_health()
+            except Exception:
+                pass
+
+            if cleanup_cooldown_s and cleanup_cooldown_s > 0:
+                try:
+                    time.sleep(float(cleanup_cooldown_s))
+                except Exception:
+                    pass
+
         study.optimize(
             objetivo,
             n_trials=int(self.n_trials),
             n_jobs=max(1, int(self.optuna.n_jobs)),
             gc_after_trial=True,
+            callbacks=[_cleanup_callback] if cleanup_every > 0 else None,
         )
 
         if timings_enabled:

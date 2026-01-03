@@ -30,11 +30,11 @@ from modelox.core.types import ExitDecision
 # =============================================================================
 
 # Tipo de salida: "pnl_fixed", "pnl_trailing", o "all"
-DEFAULT_EXIT_TYPE = "pnl_fixed"
+DEFAULT_EXIT_TYPE = "all"
 
 # Parámetros en términos de PNL_PCT (ROI % del trade)
-DEFAULT_EXIT_SL_PCT = 10.0       # Salir si PNL_PCT <= -10% (pérdida)
-DEFAULT_EXIT_TP_PCT = 10.0       # Salir si PNL_PCT >= +10% (ganancia)
+DEFAULT_EXIT_SL_PCT = 20.0       # Salir si PNL_PCT <= -20% (pérdida)
+DEFAULT_EXIT_TP_PCT = 20.0       # Salir si PNL_PCT >= +20% (ganancia)
 
 # Parámetros exclusivos para pnl_trailing
 DEFAULT_EXIT_TRAIL_ACT_PCT = 10.0   # Activar trailing cuando PNL_PCT >= +20%
@@ -44,10 +44,10 @@ DEFAULT_EXIT_TRAIL_DIST_PCT = 5.0  # Trailing retrocede 5% desde máximo PNL
 DEFAULT_OPTIMIZE_EXITS = True
 
 # Rangos de optimización Optuna (min, max, step) - en PNL_PCT
-DEFAULT_EXIT_SL_PCT_RANGE = (5.0, 40.0, 2.5)      # SL: 5% a 30%
-DEFAULT_EXIT_TP_PCT_RANGE = (5.0, 50.0, 2.5)     # TP: 5% a 100%
-DEFAULT_EXIT_TRAIL_ACT_PCT_RANGE = (5.0, 20.0, 5.0)   # Activación: 5% a 100%
-DEFAULT_EXIT_TRAIL_DIST_PCT_RANGE = (2.5, 15.0, 2.5)  # Distancia: 2.5% a 50%
+DEFAULT_EXIT_SL_PCT_RANGE = (15.0, 30.0, 2.5)      # SL: 5% a 30%
+DEFAULT_EXIT_TP_PCT_RANGE = (15.0, 80.0, 2.5)     # TP: 5% a 100%
+DEFAULT_EXIT_TRAIL_ACT_PCT_RANGE = (10.0, 65.0, 2.5)   # Activación: 5% a 100%
+DEFAULT_EXIT_TRAIL_DIST_PCT_RANGE = (2.5, 25.0, 2.5)  # Distancia: 2.5% a 50%
 
 # =============================================================================
 # DATACLASSES
@@ -130,6 +130,13 @@ def resolve_exit_settings_for_trial(*, trial: Any, config: Any) -> ExitSettings:
     trail_act_pct = abs(trail_act_pct) if trail_act_pct != 0 else 0.5
     trail_dist_pct = abs(trail_dist_pct) if trail_dist_pct != 0 else 0.25
 
+    # Regla: la distancia del trailing NO puede ser superior a la mitad del activador.
+    # Ejemplo: activador 10% -> distancia máxima 5%.
+    # Esto se aplica tanto a valores fijos como a Optuna (clamp defensivo).
+    max_trail_dist_pct = max(0.0, float(trail_act_pct) / 2.0)
+    if max_trail_dist_pct > 0:
+        trail_dist_pct = min(float(trail_dist_pct), float(max_trail_dist_pct))
+
     return ExitSettings(
         exit_type=str(exit_type),
         sl_pct=float(sl_pct),
@@ -158,6 +165,11 @@ def exit_settings_from_params(params: Dict[str, Any]) -> ExitSettings:
     tp_pct = abs(tp_pct) if tp_pct != 0 else 1.0
     trail_act_pct = abs(trail_act_pct) if trail_act_pct != 0 else 0.5
     trail_dist_pct = abs(trail_dist_pct) if trail_dist_pct != 0 else 0.25
+
+    # Regla: la distancia del trailing NO puede ser superior a la mitad del activador.
+    max_trail_dist_pct = max(0.0, float(trail_act_pct) / 2.0)
+    if max_trail_dist_pct > 0:
+        trail_dist_pct = min(float(trail_dist_pct), float(max_trail_dist_pct))
 
     return ExitSettings(
         exit_type=str(exit_type),

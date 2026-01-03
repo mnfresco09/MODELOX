@@ -89,12 +89,11 @@ def run_single_exit_type(
     
     # 3. Setup de carpetas y reporters
     activo_safe = str(activo).upper()
-    
-    # Añadir sufijo de exit_type si estamos en modo "all"
-    if is_all_mode:
-        strategy_root_dir = os.path.join("resultados", f"{strategy_safe}_{exit_type.upper()}")
-    else:
-        strategy_root_dir = os.path.join("resultados", strategy_safe)
+    tf_suffix = normalize_timeframe_to_suffix(timeframe_base)
+
+    # Siempre separar por tipo de salida para evitar mezclar excels/trades
+    # entre ejecuciones pnl_fixed vs pnl_trailing.
+    strategy_root_dir = os.path.join("resultados", f"{strategy_safe}_{exit_type.upper()}", str(tf_suffix))
     
     excel_dir = os.path.join(strategy_root_dir, "excel")
     graficos_dir = os.path.join(strategy_root_dir, "graficos", activo_safe)

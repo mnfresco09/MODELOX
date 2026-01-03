@@ -88,26 +88,27 @@ class Strategy10MomentumFusion:
     - SHORT: Señal cruza 0 hacia ABAJO + ADX fuerte.
     """
     
-    combinacion_id = 11
+    combinacion_id = 10
     name = "MOMENTUM_FUSION_ADX_ALMA"
     
     # Configuración por defecto para Optuna
     parametros_optuna: Dict[str, Any] = {
-        "len_price": (20, 100, 5),
-        "len_vol": (20, 100, 5),
-        "alma_len": (5, 30, 1),
+        "len_price": (40, 120, 2),
+        "len_vol": (10, 50, 2),
+        "alma_len": (7, 16, 1),
         "adx_len": (7, 21, 1),
-        "adx_thr": (15, 30, 1),
+        "adx_smooth": (7, 14, 1),
+        "adx_thr": (16, 30, 2),
     }
 
     def suggest_params(self, trial: Any) -> Dict[str, Any]:
         return {
-            "len_price": trial.suggest_int("len_price", 20, 80, step=5),
-            "len_vol": trial.suggest_int("len_vol", 20, 80, step=5),
-            "alma_len": trial.suggest_int("alma_len", 8, 25),
-            "adx_len": trial.suggest_int("adx_len", 7, 21),
-            "adx_smooth": trial.suggest_int("adx_smooth", 7, 14),
-            "adx_thr": trial.suggest_int("adx_thr", 15, 35),
+            "len_price": trial.suggest_int("len_price", 40, 120, step=2),
+            "len_vol": trial.suggest_int("len_vol", 10, 50, step=2),
+            "alma_len": trial.suggest_int("alma_len", 8, 25, step=1),
+            "adx_len": trial.suggest_int("adx_len", 7, 21, step=1),
+            "adx_smooth": trial.suggest_int("adx_smooth", 7, 14, step=1),
+            "adx_thr": trial.suggest_int("adx_thr", 16, 30, step=2),
         }
 
     def generate_signals(self, df: pl.DataFrame, params: Dict[str, Any]) -> pl.DataFrame:

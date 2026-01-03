@@ -222,6 +222,15 @@ def main() -> None:
     # 0. LIMPIEZA INICIAL
     HealthGuard.force_cleanup(deep=True)
 
+    # Cadencia de limpieza durante Optuna (por defecto: cada 200 trials)
+    # Esto lo consume `modelox/core/runner.py` vía env var.
+    try:
+        cleanup_every = int(CONFIG.get("CLEANUP_EVERY_N_TRIALS", 200))
+    except Exception:
+        cleanup_every = 200
+    if cleanup_every and cleanup_every > 0:
+        os.environ["MODELOX_CLEANUP_EVERY_N_TRIALS"] = str(int(cleanup_every))
+
     # 2. PARSE STRATEGY IDS
     if COMBINACION_A_EJECUTAR == "all":
         strategy_ids = None 
@@ -234,6 +243,15 @@ def main() -> None:
     activos = list(ACTIVOS) if ACTIVOS else [ACTIVO_PRIMARIO]
     if not activos:
         activos = [ACTIVO_PRIMARIO]
+
+    # 3b. Resolve base timeframes to run sequentially
+    # - New: CONFIG["TIMEFRAMES"] can be a list like [5, 15, 60]
+    # - Fallback: CONFIG["TIMEFRAME"]
+    raw_timeframes = CONFIG.get("TIMEFRAMES", None)
+    if isinstance(raw_timeframes, (list, tuple)) and raw_timeframes:
+        timeframes_to_run = list(raw_timeframes)
+    else:
+        timeframes_to_run = [CONFIG.get("TIMEFRAME", None)]
     
     # 4. ITERATE OVER STRATEGIES
     # Convertimos a lista segura para evitar errores de iterador
@@ -241,121 +259,122 @@ def main() -> None:
 
     try:
         for activo in activos:
-            # --- MANTENIMIENTO ANTES DE CADA ACTIVO ---
-            HealthGuard.check_system_health()
-
-            # Timeframe base configurable (minutos): CONFIG["TIMEFRAME"]
-            timeframe_base = CONFIG.get("TIMEFRAME", None)
-            try:
-                archivo_data = resolve_archivo_data_tf(activo, timeframe_base, formato="parquet")
-            except Exception:
-                # Fallback legacy
-                archivo_data = resolve_archivo_data(activo)
-            qty_max_activo = resolve_qty_max_activo(activo)
-            qty_max_range = resolve_qty_max_activo_range(activo)
-
-        # 1. DATA PIPELINE (por activo)
-            df = load_data(archivo_data)
-            df_filtrado = filter_by_date(df, FECHA_INICIO, FECHA_FIN)
-            if df is not df_filtrado:
-                del df
-                HealthGuard.force_cleanup()
-
-            # Periodo real de datos usado (para mostrar en Rich)
-            periodo_datos = ""
-            try:
-                import polars as pl
-
-                ts_col = "timestamp" if "timestamp" in df_filtrado.columns else (
-                    "datetime" if "datetime" in df_filtrado.columns else None
-                )
-                if ts_col:
-                    ts_min = df_filtrado.select(pl.col(ts_col).min()).item()
-                    ts_max = df_filtrado.select(pl.col(ts_col).max()).item()
-                    if ts_min is not None and ts_max is not None:
-                        # dt puede venir como datetime python (tz-aware) -> strftime OK
-                        periodo_datos = f"{ts_min:%Y-%m-%d %H:%M} → {ts_max:%Y-%m-%d %H:%M} UTC"
-            except Exception:
-                periodo_datos = ""
-
-            # Cache por activo: evita re-leer parquet de timeframes en cada estrategia.
-            base_tf_suffix = normalize_timeframe_to_suffix(timeframe_base)
-            tf_cache: dict[str, object] = {base_tf_suffix: df_filtrado}
-
-        # 2. BACKTEST CONFIGURATION (por activo)
-            cfg = BacktestConfig(
-                saldo_inicial=float(CONFIG.get("SALDO_INICIAL", 300)),
-                saldo_operativo_max=float(CONFIG.get("SALDO_OPERATIVO_MAX", 100000)),
-                comision_pct=float(CONFIG.get("COMISION_PCT", 0.0001)),
-                comision_sides=int(CONFIG.get("COMISION_SIDES", 2)),
-                saldo_minimo_operativo=float(CONFIG.get("SALDO_MINIMO_OPERATIVO", 5.0)),
-                qty_max_activo=float(qty_max_activo),
-
-                # Position Sizing: SALDO_USADO fijo, QTY fija, APALANCAMIENTO variable
-                saldo_usado=float(CONFIG.get("SALDO_USADO", 75.0)),
-                apalancamiento_max=float(CONFIG.get("APALANCAMIENTO_MAX", 60.0)),
-
-                # Fixed Fractional Sizing (legacy)
-                riesgo_por_trade_pct=float(CONFIG.get("RIESGO_POR_TRADE_PCT", 0.10)),
-
-                # Optuna qty cap (per asset)
-                optimize_qty_max_activo=bool(CONFIG.get("OPTIMIZAR_QTY_ACTIVO", False)),
-                qty_max_activo_range=tuple(qty_max_range),
-
-                # Sistema de Salidas Porcentual
-                exit_sl_pct=float(CONFIG.get("EXIT_SL_PCT", 1.0)),
-                exit_tp_pct=float(CONFIG.get("EXIT_TP_PCT", 3.0)),
-                exit_trail_act_pct=float(CONFIG.get("EXIT_TRAIL_ACT_PCT", 1.0)),
-                exit_trail_dist_pct=float(CONFIG.get("EXIT_TRAIL_DIST_PCT", 0.5)),
-
-                # Optuna exits
-                optimize_exits=bool(CONFIG.get("OPTIMIZAR_SALIDAS", True)),
-                exit_sl_pct_range=tuple(CONFIG.get("EXIT_SL_PCT_RANGE", (0.5, 5.0, 0.1))),
-                exit_tp_pct_range=tuple(CONFIG.get("EXIT_TP_PCT_RANGE", (1.0, 10.0, 0.1))),
-                exit_trail_act_pct_range=tuple(CONFIG.get("EXIT_TRAIL_ACT_PCT_RANGE", (0.5, 3.0, 0.1))),
-                exit_trail_dist_pct_range=tuple(CONFIG.get("EXIT_TRAIL_DIST_PCT_RANGE", (0.2, 2.0, 0.1))),
-            )
-
-            for strat_id in lista_ids:
-                # --- MANTENIMIENTO ANTES DE CADA ESTRATEGIA ---
+            for timeframe_base in timeframes_to_run:
+                # --- MANTENIMIENTO ANTES DE CADA ACTIVO/TIMEFRAME ---
                 HealthGuard.check_system_health()
 
-                if strat_id is None:
-                    strategies = instantiate_strategies(only_id=None)
-                else:
-                    strategies = instantiate_strategies(only_id=int(strat_id))
+                # Timeframe base configurable (minutos)
+                try:
+                    archivo_data = resolve_archivo_data_tf(activo, timeframe_base, formato="parquet")
+                except Exception:
+                    # Fallback legacy
+                    archivo_data = resolve_archivo_data(activo)
 
-                if not strategies:
-                    continue
+                qty_max_activo = resolve_qty_max_activo(activo)
+                qty_max_range = resolve_qty_max_activo_range(activo)
 
-                for strategy in strategies:
-                    strategy_name = strategy.name if hasattr(strategy, 'name') else "MODELOX_STRAT"
+                # 1. DATA PIPELINE (por activo/timeframe)
+                df = load_data(archivo_data)
+                df_filtrado = filter_by_date(df, FECHA_INICIO, FECHA_FIN)
+                if df is not df_filtrado:
+                    del df
+                    HealthGuard.force_cleanup()
 
-                    # Normaliza nombre para carpeta (evita espacios y caracteres raros)
-                    strategy_safe = re.sub(r"[^A-Za-z0-9_\-]+", "_", str(strategy_name).strip()).upper() or "MODELOX_STRAT"
+                # Periodo real de datos usado (para mostrar en Rich)
+                periodo_datos = ""
+                try:
+                    import polars as pl
 
-                    # Timeframes usados (base/entry/exit) en formato legible
-                    base_tf = normalize_timeframe_to_suffix(timeframe_base)
-                    entry_tf = normalize_timeframe_to_suffix(getattr(strategy, "timeframe_entry", None) or base_tf)
-                    exit_tf = normalize_timeframe_to_suffix(getattr(strategy, "timeframe_exit", None) or base_tf)
-                    if entry_tf == base_tf and exit_tf == base_tf:
-                        tf_display = str(base_tf)
+                    ts_col = "timestamp" if "timestamp" in df_filtrado.columns else (
+                        "datetime" if "datetime" in df_filtrado.columns else None
+                    )
+                    if ts_col:
+                        ts_min = df_filtrado.select(pl.col(ts_col).min()).item()
+                        ts_max = df_filtrado.select(pl.col(ts_col).max()).item()
+                        if ts_min is not None and ts_max is not None:
+                            # dt puede venir como datetime python (tz-aware) -> strftime OK
+                            periodo_datos = f"{ts_min:%Y-%m-%d %H:%M} → {ts_max:%Y-%m-%d %H:%M} UTC"
+                except Exception:
+                    periodo_datos = ""
+
+                # Cache por activo/timeframe: evita re-leer parquet de timeframes en cada estrategia.
+                base_tf_suffix = normalize_timeframe_to_suffix(timeframe_base)
+                tf_cache: dict[str, object] = {base_tf_suffix: df_filtrado}
+
+                # 2. BACKTEST CONFIGURATION (por activo/timeframe)
+                cfg = BacktestConfig(
+                    saldo_inicial=float(CONFIG.get("SALDO_INICIAL", 300)),
+                    saldo_operativo_max=float(CONFIG.get("SALDO_OPERATIVO_MAX", 100000)),
+                    comision_pct=float(CONFIG.get("COMISION_PCT", 0.0001)),
+                    comision_sides=int(CONFIG.get("COMISION_SIDES", 2)),
+                    saldo_minimo_operativo=float(CONFIG.get("SALDO_MINIMO_OPERATIVO", 5.0)),
+                    qty_max_activo=float(qty_max_activo),
+
+                    # Position Sizing: SALDO_USADO fijo, QTY fija, APALANCAMIENTO variable
+                    saldo_usado=float(CONFIG.get("SALDO_USADO", 75.0)),
+                    apalancamiento_max=float(CONFIG.get("APALANCAMIENTO_MAX", 60.0)),
+
+                    # Fixed Fractional Sizing (legacy)
+                    riesgo_por_trade_pct=float(CONFIG.get("RIESGO_POR_TRADE_PCT", 0.10)),
+
+                    # Optuna qty cap (per asset)
+                    optimize_qty_max_activo=bool(CONFIG.get("OPTIMIZAR_QTY_ACTIVO", False)),
+                    qty_max_activo_range=tuple(qty_max_range),
+
+                    # Sistema de Salidas Porcentual
+                    exit_sl_pct=float(CONFIG.get("EXIT_SL_PCT", 1.0)),
+                    exit_tp_pct=float(CONFIG.get("EXIT_TP_PCT", 3.0)),
+                    exit_trail_act_pct=float(CONFIG.get("EXIT_TRAIL_ACT_PCT", 1.0)),
+                    exit_trail_dist_pct=float(CONFIG.get("EXIT_TRAIL_DIST_PCT", 0.5)),
+
+                    # Optuna exits
+                    optimize_exits=bool(CONFIG.get("OPTIMIZAR_SALIDAS", True)),
+                    exit_sl_pct_range=tuple(CONFIG.get("EXIT_SL_PCT_RANGE", (0.5, 5.0, 0.1))),
+                    exit_tp_pct_range=tuple(CONFIG.get("EXIT_TP_PCT_RANGE", (1.0, 10.0, 0.1))),
+                    exit_trail_act_pct_range=tuple(CONFIG.get("EXIT_TRAIL_ACT_PCT_RANGE", (0.5, 3.0, 0.1))),
+                    exit_trail_dist_pct_range=tuple(CONFIG.get("EXIT_TRAIL_DIST_PCT_RANGE", (0.2, 2.0, 0.1))),
+                )
+
+                for strat_id in lista_ids:
+                    # --- MANTENIMIENTO ANTES DE CADA ESTRATEGIA ---
+                    HealthGuard.check_system_health()
+
+                    if strat_id is None:
+                        strategies = instantiate_strategies(only_id=None)
                     else:
-                        tf_display = f"BASE {base_tf} · ENTRY {entry_tf} · EXIT {exit_tf}"
+                        strategies = instantiate_strategies(only_id=int(strat_id))
 
-                    # Get exit type from config
-                    exit_type = str(CONFIG.get("EXIT_TYPE", "pnl_trailing"))
-                    
-                    # Determine if we need to run multiple exit types
-                    exit_types_to_run = []
-                    if exit_type.lower() == "all":
-                        exit_types_to_run = ["pnl_fixed", "pnl_trailing"]
-                    else:
-                        exit_types_to_run = [exit_type]
+                    if not strategies:
+                        continue
 
-                    # Iterate over exit types (one or multiple)
-                    for current_exit_type in exit_types_to_run:
-                        run_single_exit_type(
+                    for strategy in strategies:
+                        strategy_name = strategy.name if hasattr(strategy, 'name') else "MODELOX_STRAT"
+
+                        # Normaliza nombre para carpeta (evita espacios y caracteres raros)
+                        strategy_safe = re.sub(r"[^A-Za-z0-9_\-]+", "_", str(strategy_name).strip()).upper() or "MODELOX_STRAT"
+
+                        # Timeframes usados (base/entry/exit) en formato legible
+                        base_tf = normalize_timeframe_to_suffix(timeframe_base)
+                        entry_tf = normalize_timeframe_to_suffix(getattr(strategy, "timeframe_entry", None) or base_tf)
+                        exit_tf = normalize_timeframe_to_suffix(getattr(strategy, "timeframe_exit", None) or base_tf)
+                        if entry_tf == base_tf and exit_tf == base_tf:
+                            tf_display = str(base_tf)
+                        else:
+                            tf_display = f"BASE {base_tf} · ENTRY {entry_tf} · EXIT {exit_tf}"
+
+                        # Get exit type from config
+                        exit_type = str(CONFIG.get("EXIT_TYPE", "pnl_trailing"))
+                        
+                        # Determine if we need to run multiple exit types
+                        exit_types_to_run = []
+                        if exit_type.lower() == "all":
+                            exit_types_to_run = ["pnl_fixed", "pnl_trailing"]
+                        else:
+                            exit_types_to_run = [exit_type]
+
+                        # Iterate over exit types (one or multiple)
+                        for current_exit_type in exit_types_to_run:
+                            run_single_exit_type(
                             exit_type=current_exit_type,
                             strategy=strategy,
                             strategy_name=strategy_name,
@@ -374,9 +393,9 @@ def main() -> None:
                             fecha_fin=FECHA_FIN,
                         )
 
-            # Limpieza por activo
-            del df_filtrado
-            HealthGuard.force_cleanup(deep=True)
+                # Limpieza por activo/timeframe
+                del df_filtrado
+                HealthGuard.force_cleanup(deep=True)
 
     except KeyboardInterrupt:
         # No spamear tracebacks al usuario; el atexit/signal ya dispara cleanup.
