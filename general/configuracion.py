@@ -67,7 +67,7 @@ FECHA_FIN_PLOT = "2021-03-15"
 # ----------------------------------------------------------------------------
 # 1.4 MOTOR DE OPTIMIZACIÓN (OPTUNA - MÁXIMA POTENCIA VM)
 # ----------------------------------------------------------------------------
-N_TRIALS = 5       # NÚMERO DE PRUEBAS (AUMENTAR SI TIENES BUENA CPU)
+N_TRIALS = 50      # NÚMERO DE PRUEBAS (AUMENTAR SI TIENES BUENA CPU)
 OPTUNA_N_JOBS = 1      # -1 = USAR TODOS LOS NÚCLEOS DISPONIBLES
 OPTUNA_SEED = None      # SEMILLA ALEATORIA (NONE PARA VARIEDAD)
 OPTUNA_STORAGE = None   # NONE = EJECUCIÓN EN RAM (MÁS RÁPIDO)
@@ -76,7 +76,7 @@ OPTUNA_STORAGE = None   # NONE = EJECUCIÓN EN RAM (MÁS RÁPIDO)
 # 1.5 ESTRATEGIAS A EJECUTAR
 # ----------------------------------------------------------------------------
 # LISTA DE IDs DE LAS ESTRATEGIAS QUE SE VAN A PROBAR.
-COMBINACION_A_EJECUTAR = [17]
+COMBINACION_A_EJECUTAR = [16]
 
 # ----------------------------------------------------------------------------
 # 1.6 GESTIÓN DE CAPITAL Y COSTES
