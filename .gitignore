@@ -1,0 +1,96 @@
+# ============================================================================
+# MODELOX - Git Ignore Configuration
+# ============================================================================
+
+# ==== ENTORNOS VIRTUALES (PESADOS - NO SUBIR) ====
+.venv/
+.venv*/
+venv/
+env/
+.env/
+__pypackages__/
+
+# ==== DATOS (PESADOS - NO SUBIR) ====
+data/
+*.csv
+*.xlsx
+*.xls
+*.feather
+*.parquet
+*.h5
+*.hdf5
+*.pkl
+*.pickle
+
+# ==== RESULTADOS (GENERADOS LOCALMENTE) ====
+resultados/
+
+# ==== CACHE Y COMPILADOS ====
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+*.egg-info/
+.eggs/
+dist/
+build/
+*.egg
+
+# ==== NODE MODULES (FRONTEND) ====
+node_modules/
+.pnpm-store/
+
+# ==== BUILD OUTPUTS ====
+*.html
+app/frontend/dist/
+app/frontend/build/
+
+# ==== SISTEMA ====
+.DS_Store
+.DS_Store?
+._*
+.Spotlight-V100
+.Trashes
+Thumbs.db
+ehthumbs.db
+Desktop.ini
+
+# ==== IDE Y EDITOR ====
+.idea/
+.vscode/
+*.swp
+*.swo
+*~
+.project
+.pydevproject
+.settings/
+
+# ==== DOCKER (LOCAL VOLUMES) ====
+docker-data/
+
+# ==== LOGS Y TEMPORALES ====
+*.log
+logs/
+tmp/
+temp/
+.cache/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.coverage
+htmlcov/
+
+# ==== JUPYTER ====
+.ipynb_checkpoints/
+*.ipynb
+
+# ==== CREDENTIALS (NUNCA SUBIR) ====
+*.env
+.env.*
+secrets/
+credentials/
+*.pem
+*.key
+.venv311/
+.pytest_cache/
