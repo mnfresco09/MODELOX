@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """
-Script para actualizar cambios en GitHub automáticamente.
-Incluye TODOS los archivos y carpetas del repositorio.
+MODELOX Git Push - Script robusto para subir cambios a GitHub.
+Con timeout, debug y manejo de errores mejorado.
 """
 
 import subprocess
@@ -9,12 +9,18 @@ from datetime import datetime
 from pathlib import Path
 import sys
 import argparse
-from typing import Optional, List  # <--- CORRECCIÓN 1: Importamos herramientas de compatibilidad
+from typing import Optional, List
 
-def run_command(cmd: List[str], check: bool = True) -> tuple:
+# Timeout en segundos para comandos git
+GIT_TIMEOUT = 30
+
+
+def run_command(cmd: List[str], check: bool = True, timeout: int = GIT_TIMEOUT) -> tuple:
     """Ejecuta un comando y retorna (éxito, output)."""
+    cmd_str = ' '.join(cmd)
+    print(f"   → {cmd_str}")
+    
     try:
-        # CORRECCIÓN: Apunta a la carpeta actual donde está este script (root del repo)
         repo_root = Path(__file__).resolve().parent
         
         result = subprocess.run(
@@ -23,87 +29,100 @@ def run_command(cmd: List[str], check: bool = True) -> tuple:
             text=True,
             check=check,
             cwd=str(repo_root),
+            timeout=timeout,
         )
-        return True, result.stdout + result.stderr
+        output = result.stdout + result.stderr
+        if output.strip():
+            # Mostrar solo primeras líneas si es muy largo
+            lines = output.strip().split('\n')
+            if len(lines) > 5:
+                print(f"     [{len(lines)} líneas de output]")
+            else:
+                for line in lines:
+                    print(f"     {line}")
+        return True, output
+        
+    except subprocess.TimeoutExpired:
+        print(f"   ⏱️  TIMEOUT después de {timeout}s - comando cancelado")
+        return False, f"Timeout después de {timeout} segundos"
+        
     except subprocess.CalledProcessError as e:
-        return False, e.stdout + e.stderr
+        output = (e.stdout or '') + (e.stderr or '')
+        print(f"   ✗ Error: {output[:200]}")
+        return False, output
 
 def _default_commit_message() -> str:
     timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
     return f"Full update: {timestamp}"
 
 def _parse_args(argv: List[str]) -> argparse.Namespace:
-    parser = argparse.ArgumentParser(add_help=True)
+    parser = argparse.ArgumentParser(
+        description="Subir cambios a GitHub de forma segura",
+        add_help=True
+    )
     parser.add_argument("message", nargs="*", help="Mensaje de commit (opcional)")
-    parser.add_argument("--force", action="store_true", help="Force push a origin/main")
-    parser.add_argument("--no-pull", action="store_true", help="No hacer pull antes de push")
-    parser.add_argument("--amend", action="store_true", help="Enmienda el último commit")
+    parser.add_argument("--force", "-f", action="store_true", help="Force push")
+    parser.add_argument("--no-pull", action="store_true", help="No hacer pull antes")
+    parser.add_argument("--amend", action="store_true", help="Enmendar último commit")
     return parser.parse_args(argv)
 
-# CORRECCIÓN 2: Cambiamos "list[str] | None" por "Optional[List[str]]"
+
 def main(argv: Optional[List[str]] = None) -> int:
     args = _parse_args(sys.argv[1:] if argv is None else argv)
 
-    print("🚀 Iniciando actualización total del sistema...\n")
+    print("\n" + "=" * 50)
+    print("🚀 MODELOX GIT PUSH")
+    print("=" * 50 + "\n")
 
-    # 0) Sincronización previa
+    # 0) Sincronización previa (sin rebase para evitar problemas)
     if not args.no_pull:
-        print("🔄 Sincronizando con GitHub...")
-        success, output = run_command(["git", "pull", "--rebase", "--autostash", "origin", "main"], check=False)
-        if "CONFLICT" in output:
-            print("❌ Conflictos detectados. Resuélvelos manualmente.")
-            return 1
-        print("✅ Sincronización completada")
+        print("📥 Paso 1: Fetch desde origin...")
+        success, output = run_command(["git", "fetch", "origin"], check=False)
+        if not success:
+            print("⚠️  No se pudo hacer fetch (continuando...)")
 
     # 1. Verificar estado
-    print("📊 Verificando cambios...")
+    print("\n📊 Paso 2: Verificando estado local...")
     success, output = run_command(["git", "status", "--short"])
-    
-    if not output.strip():
-        print("✅ No hay cambios nuevos detectados por git status.")
-        # Quitamos el return para forzar el intento de subida por si acaso
-        # return 0 
 
-    # 2. Agregar TODOS los cambios
-    print("\n➕ Agregando absolutamente todos los archivos y carpetas...")
-    run_command(["git", "reset"], check=False) # Limpia el stage actual
-    success, output = run_command(["git", "add", "-A"], check=False) 
-    
-    if not success:
-        print(f"❌ Error al agregar cambios:\n{output}")
-        return 1
-    print("✅ Todos los archivos agregados al stage")
+    # 2. Agregar cambios
+    print("\n➕ Paso 3: Agregando archivos...")
+    run_command(["git", "add", "-A"], check=False)
 
     # 3. Commit
     commit_msg = " ".join(args.message).strip() if args.message else _default_commit_message()
-
+    
+    print(f"\n💬 Paso 4: Commit...")
     if args.amend:
-        print(f"\n💬 Haciendo Amend: '{commit_msg}'")
         success, output = run_command(["git", "commit", "--amend", "-m", commit_msg], check=False)
     else:
-        print(f"\n💬 Creando Commit: '{commit_msg}'")
         success, output = run_command(["git", "commit", "-m", commit_msg], check=False)
     
-    if not success:
-        if "nothing to commit" in output.lower():
-            print("✅ Nada nuevo que commitear.")
-        else:
-            print(f"❌ Error en commit:\n{output}")
-            return 1
-
-    # 4. Push
-    print("\n⬆️  Subiendo a GitHub...")
-    push_cmd = ["git", "push", "origin", "main"]
-    if args.force:
-        push_cmd.insert(2, "-f")
-
-    success, output = run_command(push_cmd, check=False)
-    if not success:
-        print(f"❌ Error al subir:\n{output}")
+    if not success and "nothing to commit" not in output.lower():
+        print(f"❌ Error en commit")
         return 1
 
-    print("✅ ¡Push completado con éxito!")
-    print("🎉 El repositorio está totalmente actualizado.")
+    # 4. Push (con timeout más largo)
+    print("\n⬆️  Paso 5: Push a GitHub...")
+    push_cmd = ["git", "push", "origin", "main"]
+    if args.force:
+        push_cmd.insert(2, "--force")
+
+    success, output = run_command(push_cmd, check=False, timeout=120)
+    
+    if not success:
+        if "large file" in output.lower() or "exceeds" in output.lower():
+            print("\n❌ ERROR: Archivos demasiado grandes detectados!")
+            print("   Revisa que .gitignore excluya: .venv/, data/, *.csv, *.parquet")
+            print("   Puede que necesites limpiar el historial de git.")
+        else:
+            print(f"❌ Error al subir")
+        return 1
+
+    print("\n" + "=" * 50)
+    print("✅ ¡PUSH COMPLETADO CON ÉXITO!")
+    print("=" * 50 + "\n")
+    return 0
     return 0
 
 if __name__ == "__main__":
