@@ -5,6 +5,7 @@ Con timeout, debug y manejo de errores mejorado.
 """
 
 import subprocess
+import os
 from datetime import datetime
 from pathlib import Path
 import sys
@@ -20,6 +21,11 @@ def run_command(cmd: List[str], check: bool = True, timeout: int = GIT_TIMEOUT) 
     cmd_str = ' '.join(cmd)
     print(f"   → {cmd_str}")
     
+    # Create a clean environment for git commands to avoid LD_LIBRARY_PATH conflicts with Node/Git helpers
+    clean_env = os.environ.copy()
+    if "LD_LIBRARY_PATH" in clean_env:
+        del clean_env["LD_LIBRARY_PATH"]
+    
     try:
         repo_root = Path(__file__).resolve().parent
         
@@ -30,6 +36,7 @@ def run_command(cmd: List[str], check: bool = True, timeout: int = GIT_TIMEOUT) 
             check=check,
             cwd=str(repo_root),
             timeout=timeout,
+            env=clean_env
         )
         output = result.stdout + result.stderr
         if output.strip():
@@ -122,7 +129,6 @@ def main(argv: Optional[List[str]] = None) -> int:
     print("\n" + "=" * 50)
     print("✅ ¡PUSH COMPLETADO CON ÉXITO!")
     print("=" * 50 + "\n")
-    return 0
     return 0
 
 if __name__ == "__main__":
