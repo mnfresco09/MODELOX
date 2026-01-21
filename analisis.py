@@ -1,253 +1,366 @@
 #!/usr/bin/env python3
 """
-╔══════════════════════════════════════════════════════════════════════════════════════════════════════╗
-║                       MODELOX PARAMETER ANALYZER v9.0 - INSTITUTIONAL                                ║
-║                    Análisis Individual por Parámetro con Reducción de Ruido                          ║
-╠══════════════════════════════════════════════════════════════════════════════════════════════════════╣
-║  📊 UNA PÁGINA POR PARÁMETRO: Análisis completo y dedicado                                           ║
-║  🎯 4 MÉTRICAS CLAVE: ROI, SQN, PROFIT_FACTOR, DRAWDOWN                                              ║
-║  🧹 REDUCCIÓN DE RUIDO: ML para aislar efecto real de cada parámetro                                 ║
-║  📈 CURVAS SUAVIZADAS: Spline + Gaussian smoothing profesional                                       ║
-║  🖥️  USO: python analisis.py <archivo.csv>  o  python analisis.py (busca automático)                 ║
-╚══════════════════════════════════════════════════════════════════════════════════════════════════════╝
+╔═══════════════════════════════════════════════════════════════════════════════════════╗
+║                    MODELOX INSTITUTIONAL ANALYZER v19.0                               ║
+║                        Ultra-Minimalist Dark Edition                                   ║
+╠═══════════════════════════════════════════════════════════════════════════════════════╣
+║  🎯 ADVANCED OPTIMAL DETECTION (7 técnicas combinadas):                               ║
+║     • Regional Growth Algorithm (Plateau Detection)                                   ║
+║     • Bootstrap Confidence Intervals (100 remuestreos)                                ║
+║     • Cross-Validated Optimal (K-Fold Stability)                                      ║
+║     • Derivative Analysis (Gradient + Curvature)                                      ║
+║     • Bayesian Surrogate Model (Ensemble GBM)                                         ║
+║     • RANSAC-like Robust Regression                                                   ║
+║     • KDE Mode Detection (High-Performance Regions)                                   ║
+║  📐 ADVANCED RANGE DETECTION:                                                         ║
+║     • Sensitivity Analysis (Local Stability)                                          ║
+║     • Changepoint Detection (Inflection Points)                                       ║
+║     • Performance Threshold + Cluster Analysis                                        ║
+║  🔗 Parameter Correlation Analysis (Pearson, Spearman, Joint Importance)              ║
+║  📊 3D Surface Optimization (SL/TP + Correlated Pairs vs ROI/SQN)                     ║
+║  🧪 Statistical Validation (White's Reality Check + Deflated Sharpe)                  ║
+╚═══════════════════════════════════════════════════════════════════════════════════════╝
 """
-
-from __future__ import annotations
 
 import os
 import sys
-import re
 import glob
 import warnings
-from pathlib import Path
-from typing import Dict, List, Optional, Tuple, Any
 from dataclasses import dataclass, field
 from datetime import datetime
+from typing import Dict, List, Optional, Tuple, Any
+from itertools import combinations
 
 import numpy as np
 import pandas as pd
 import matplotlib.pyplot as plt
 import matplotlib.gridspec as gridspec
 from matplotlib.backends.backend_pdf import PdfPages
-from matplotlib.patches import Rectangle, FancyBboxPatch
 from matplotlib.colors import LinearSegmentedColormap, Normalize
-from matplotlib.lines import Line2D
-import matplotlib.ticker as mticker
-
-# ML y estadísticas
-from sklearn.ensemble import RandomForestRegressor, GradientBoostingRegressor
-from sklearn.preprocessing import StandardScaler, RobustScaler
-from sklearn.linear_model import Ridge, Lasso
+from matplotlib.patches import FancyBboxPatch, Rectangle
+from matplotlib.ticker import MaxNLocator, ScalarFormatter, FuncFormatter
+from mpl_toolkits.mplot3d import Axes3D
 from scipy import stats
-from scipy.ndimage import gaussian_filter1d
-from scipy.interpolate import UnivariateSpline, interp1d
+from scipy.ndimage import gaussian_filter1d, gaussian_filter
+from scipy.interpolate import UnivariateSpline, griddata
+from scipy.signal import find_peaks, savgol_filter
+from scipy.optimize import minimize_scalar
+from sklearn.ensemble import GradientBoostingRegressor, RandomForestRegressor
+from sklearn.preprocessing import RobustScaler
+from sklearn.neighbors import KernelDensity
+from sklearn.cluster import KMeans
+
+try:
+    import xgboost as xgb
+    HAS_XGBOOST = True
+except ImportError:
+    HAS_XGBOOST = False
 
 warnings.filterwarnings('ignore')
 
+# ══════════════════════════════════════════════════════════════════════════════
+# 🎨 ULTRA-MINIMALIST DARK THEME
+# ══════════════════════════════════════════════════════════════════════════════
 
-# ==============================================================================
-# 🎨 TEMA VISUAL PROFESIONAL (Estilo Bloomberg Terminal)
-# ==============================================================================
+class Theme:
+    """Tema visual ultra-minimalista oscuro."""
+    
+    # Fondos - muy oscuros
+    BG_PRIMARY = '#08090c'
+    BG_SECONDARY = '#0d1014'
+    BG_TERTIARY = '#12161c'
+    BG_CARD = '#171c24'
+    BG_HIGHLIGHT = '#1c222c'
+    BG_ELEVATED = '#212836'
+    
+    # Textos - claros y suaves
+    TEXT_PRIMARY = '#f0f4f8'
+    TEXT_SECONDARY = '#a0aec0'
+    TEXT_MUTED = '#718096'
+    TEXT_DARK = '#4a5568'
+    
+    # Colores de acento - tonos suaves
+    ACCENT = '#64b5f6'
+    ACCENT_LIGHT = '#90caf9'
+    ACCENT_DIM = '#42a5f5'
+    
+    # Estados
+    GREEN = '#4caf50'
+    GREEN_BRIGHT = '#81c784'
+    GREEN_LIGHT = '#a5d6a7'
+    RED = '#ef5350'
+    RED_BRIGHT = '#e57373'
+    ORANGE = '#ffb74d'
+    ORANGE_BRIGHT = '#ffd54f'
+    GOLD = '#ffd54f'
+    PURPLE = '#9575cd'
+    PURPLE_BRIGHT = '#b39ddb'
+    CYAN = '#4dd0e1'
+    BLUE = '#42a5f5'
+    BLUE_BRIGHT = '#64b5f6'
+    BLUE_LIGHT = '#90caf9'
+    PINK = '#f48fb1'
+    
+    # Grid y bordes - muy sutiles
+    GRID = '#1a2030'
+    BORDER = '#2a3444'
+    DIVIDER = '#1a2030'
+    
+    @classmethod
+    def get_surface_cmap(cls):
+        """
+        Colormap para superficies 3D: SOLO tonos de AZUL.
+        Azul oscuro (abajo/bajo) → Azul claro brillante (arriba/alto).
+        """
+        colors = [
+            '#000814',  # Azul casi negro
+            '#001d3d',  # Azul muy oscuro
+            '#002855',  # Azul marino profundo
+            '#003566',  # Azul marino
+            '#004080',  # Azul oscuro
+            '#0056a3',  # Azul medio-oscuro
+            '#0066cc',  # Azul medio
+            '#0077e6',  # Azul
+            '#1a8cff',  # Azul brillante
+            '#4da6ff',  # Azul claro brillante
+            '#80bfff',  # Azul claro
+            '#99ccff',  # Azul muy claro
+            '#b3d9ff',  # Azul pálido brillante
+        ]
+        return LinearSegmentedColormap.from_list('surface_blue_tones', colors, N=512)
+    
+    @classmethod
+    def get_chart_cmap(cls):
+        """Colormap suave para gráficos."""
+        colors = ['#0d1014', '#1a3a5c', '#42a5f5', '#64b5f6', '#90caf9']
+        return LinearSegmentedColormap.from_list('chart', colors, N=256)
+    
+    @classmethod
+    def get_correlation_cmap(cls):
+        """Colormap para matriz de correlación: rojo negativo, azul positivo."""
+        colors = ['#e53935', '#ef5350', '#1a1a1a', '#42a5f5', '#1565c0']
+        return LinearSegmentedColormap.from_list('correlation', colors, N=256)
 
-COLORS = {
-    'bg_dark': '#0a0e14',
-    'bg_panel': '#0d1117', 
-    'bg_card': '#161b22',
-    'bg_highlight': '#1f2937',
-    'text_white': '#ffffff',
-    'text_primary': '#e6edf3',
-    'text_gray': '#8b949e',
-    'text_muted': '#484f58',
-    'green': '#3fb950',
-    'green_dark': '#238636',
-    'red': '#f85149',
-    'red_dark': '#da3633',
-    'blue': '#58a6ff',
-    'blue_dark': '#1f6feb',
-    'purple': '#a371f7',
-    'orange': '#f0883e',
-    'cyan': '#39d353',
-    'yellow': '#f0c14b',
-    'gold': '#e3b341',
-    'grid': '#21262d',
-    'border': '#30363d',
-}
 
-# Colores específicos para las 4 métricas clave
-METRIC_STYLE = {
-    'ROI': {'color': '#3fb950', 'name': 'ROI %', 'higher_better': True},
-    'SQN': {'color': '#58a6ff', 'name': 'SQN', 'higher_better': True},
-    'PROFIT_FACTOR': {'color': '#a371f7', 'name': 'Profit Factor', 'higher_better': True},
-    'DRAWDOWN': {'color': '#f85149', 'name': 'Drawdown %', 'higher_better': False},
-}
+def format_number(x, pos=None):
+    """Formatea números evitando notación científica."""
+    if x == 0:
+        return '0'
+    abs_x = abs(x)
+    if abs_x >= 1000000:
+        return f'{x/1000000:.1f}M'
+    elif abs_x >= 1000:
+        return f'{x/1000:.1f}K'
+    elif abs_x >= 1:
+        return f'{x:.0f}' if x == int(x) else f'{x:.1f}'
+    elif abs_x >= 0.01:
+        return f'{x:.2f}'
+    elif abs_x >= 0.001:
+        return f'{x:.3f}'
+    else:
+        return f'{x:.4f}'
 
+
+def format_axis_number(x, pos=None):
+    """Formatea números para ejes - más compacto."""
+    if x == 0:
+        return '0'
+    abs_x = abs(x)
+    if abs_x >= 1000000:
+        return f'{x/1000000:.0f}M'
+    elif abs_x >= 10000:
+        return f'{x/1000:.0f}K'
+    elif abs_x >= 1000:
+        return f'{x/1000:.1f}K'
+    elif abs_x >= 100:
+        return f'{x:.0f}'
+    elif abs_x >= 10:
+        return f'{x:.0f}' if x == int(x) else f'{x:.1f}'
+    elif abs_x >= 1:
+        return f'{x:.1f}'
+    elif abs_x >= 0.1:
+        return f'{x:.2f}'
+    else:
+        return f'{x:.3f}'
+
+
+# Configurar matplotlib
 plt.style.use('dark_background')
 plt.rcParams.update({
-    'figure.facecolor': COLORS['bg_dark'],
-    'axes.facecolor': COLORS['bg_panel'],
-    'axes.edgecolor': COLORS['border'],
-    'axes.linewidth': 0.5,
-    'axes.labelcolor': COLORS['text_gray'],
-    'axes.titlecolor': COLORS['text_white'],
-    'axes.titlesize': 11,
-    'axes.titleweight': 'bold',
-    'axes.grid': True,
-    'grid.color': COLORS['grid'],
+    'figure.facecolor': Theme.BG_PRIMARY,
+    'axes.facecolor': Theme.BG_SECONDARY,
+    'axes.edgecolor': Theme.BORDER,
+    'axes.labelcolor': Theme.TEXT_SECONDARY,
+    'axes.titlecolor': Theme.TEXT_PRIMARY,
+    'text.color': Theme.TEXT_PRIMARY,
+    'xtick.color': Theme.TEXT_MUTED,
+    'ytick.color': Theme.TEXT_MUTED,
+    'grid.color': Theme.GRID,
     'grid.alpha': 0.3,
-    'grid.linewidth': 0.4,
-    'text.color': COLORS['text_white'],
-    'xtick.color': COLORS['text_muted'],
-    'ytick.color': COLORS['text_muted'],
-    'xtick.labelsize': 8,
-    'ytick.labelsize': 8,
-    'legend.facecolor': COLORS['bg_card'],
-    'legend.edgecolor': COLORS['border'],
-    'legend.fontsize': 8,
+    'grid.linewidth': 0.5,
+    'axes.grid': True,
+    'axes.linewidth': 0.8,
     'font.family': 'DejaVu Sans',
     'font.size': 9,
+    'axes.titlesize': 11,
+    'axes.labelsize': 9,
+    'xtick.labelsize': 8,
+    'ytick.labelsize': 8,
+    'legend.fontsize': 8,
+    'legend.facecolor': Theme.BG_CARD,
+    'legend.edgecolor': Theme.BORDER,
 })
 
 
-# ==============================================================================
-# 🔬 DETECTOR DE COLUMNAS (Métricas vs Parámetros)
-# ==============================================================================
+# ══════════════════════════════════════════════════════════════════════════════
+# 📊 SISTEMA DE DETECCIÓN DE COLUMNAS INTELIGENTE
+# ══════════════════════════════════════════════════════════════════════════════
 
 @dataclass
-class ColumnInfo:
-    """Clasificación de columnas del dataset."""
+class DataSchema:
+    """Esquema de datos detectado."""
     metrics: List[str] = field(default_factory=list)
-    parameters: List[str] = field(default_factory=list)
+    params: List[str] = field(default_factory=list)
+    exit_params: List[str] = field(default_factory=list)
     identifiers: List[str] = field(default_factory=list)
-    system: List[str] = field(default_factory=list)
+    ignored: List[str] = field(default_factory=list)
 
 
-class ColumnDetector:
-    """Detecta y clasifica columnas automáticamente."""
+class SmartColumnDetector:
+    """Detector inteligente de columnas con reglas precisas."""
     
-    # Métricas conocidas de MODELOX (invariantes)
-    KNOWN_METRICS = {
-        'ROI', 'ROI_PCT', 'SCORE', 'SHARPE', 'SORTINO', 'CALMAR', 'SQN',
-        'PROFIT_FACTOR', 'PF', 'PAYOFF', 'PAYOFF_RATIO',
-        'DRAWDOWN', 'MAX_DD', 'DD', 'MDD', 'MAX_DRAWDOWN',
-        'WINRATE', 'WIN_RATE', 'PORC_GANADORAS', 'PORC_PERDEDORAS',
-        'N_TRADES', 'TOTAL_TRADES', 'NUM_TRADES', 'TRADES', 'TRADES_POR_DIA',
+    # Métricas de rendimiento (RESULTADOS - nunca son parámetros)
+    METRICS = {
+        'SCORE', 'ROI', 'ROI_PCT', 'RETURN', 'PNL', 'PNL_NETO',
+        'SHARPE', 'SORTINO', 'CALMAR', 'SQN', 'MAR',
+        'PROFIT_FACTOR', 'PAYOFF', 'PAYOFF_RATIO',
+        'DRAWDOWN', 'MAX_DD', 'MAX_DD_PCT', 'DD',
+        'WINRATE', 'WINRATE_PCT', 'WIN_RATE', 'PORC_GANADORAS', 'PORC_PERDEDORAS',
+        'ESTABILIDAD', 'STABILITY', 'CONSISTENCY',
         'EXPECTATIVA', 'EXPECTANCY', 'RETORNO_PROMEDIO',
-        'RACHA_GANADORA', 'RACHA_PERDEDORA',
-        'ESTABILIDAD', 'STABILITY',
-        'SALDO_ACTUAL', 'SALDO_MIN', 'SALDO_MAX', 'SALDO_MEAN',
-        'PNL', 'PNL_NETO', 'NET_PNL',
-        'AVG_WIN', 'AVG_LOSS', 'MAX_GANANCIA', 'MAX_PERDIDA',
-        'N_TRADES_LONG', 'N_TRADES_SHORT', 'NUM_LONGS', 'NUM_SHORTS',
-        'COUNT_LONGS', 'COUNT_SHORTS',
-        'COMISIONES_TOTAL', 'SALDO_SIN_COMISIONES',
-        'DURATION_MEAN_MIN', 'RIESGO_BENEFICIO',
-        'PNL_NETO_POR_DIA_OPERADO',
+        'SALDO_ACTUAL', 'SALDO_MIN', 'SALDO_MAX', 'SALDO_MEAN', 'BALANCE',
+        'TOTAL_TRADES', 'N_TRADES', 'NUM_TRADES', 'TRADES_DIA', 'TRADES_POR_DIA',
+        'NUM_LONGS', 'NUM_SHORTS', 'COUNT_LONGS', 'COUNT_SHORTS',
+        'N_TRADES_LONG', 'N_TRADES_SHORT', 'LONGS', 'SHORTS',
+        'RACHA_GANADORA', 'RACHA_PERDEDORA', 'MAX_CONSECUTIVE',
+        'MAX_GANANCIA', 'MAX_PERDIDA', 'AVG_WIN', 'AVG_LOSS',
+        'RIESGO_BENEFICIO', 'RISK_REWARD', 'DURATION_MEAN', 'DURATION_MEAN_MIN',
+        'COMISIONES', 'COMISIONES_TOTAL', 'FEES', 'SLIPPAGE',
+        'KELLY', 'KELLY_PCT', 'OPTIMAL_F', 'VAR', 'CVAR',
     }
     
-    KNOWN_IDENTIFIERS = {
+    # Identificadores (no son ni parámetros ni métricas)
+    IDENTIFIERS = {
         'TRIAL', 'INDEX', 'ID', 'ESTRATEGIA', 'STRATEGY', 'NOMBRE', 'NAME',
-        'COMBO', 'NOMBRE_COMBO', 'PERTURBADO', 'SEED', 'CONFIG',
+        'NOMBRE_COMBO', 'COMBO', 'CONFIG', 'RUN_ID', 'SEED',
+        'FECHA', 'DATE', 'TIMESTAMP', 'ACTIVO', 'SYMBOL', 'ASSET',
     }
     
-    # Patrones de EXIT que SÍ son parámetros analizables
-    EXIT_PATTERNS = [
-        r'EXIT_SL', r'EXIT_TP', r'EXIT_TRAIL', r'SL_PCT', r'TP_PCT',
-        r'STOP_LOSS', r'TAKE_PROFIT', r'TRAILING', r'^SL$', r'^TP$',
-        r'SL_ACTIVATION', r'TP_ACTIVATION', r'TRAIL_ACT', r'TRAIL_DIST',
-    ]
+    # Columnas de sistema (prefijo __)
+    SYSTEM_PREFIXES = ('__', 'UNNAMED', 'INDEX')
+    
+    # Patrones de exit params
+    EXIT_PATTERNS = ['EXIT_SL', 'EXIT_TP', 'SL_PCT', 'TP_PCT', 'SL%', 'TP%', 
+                     'STOP_LOSS', 'TAKE_PROFIT', 'TRAIL']
     
     @classmethod
-    def classify(cls, df: pd.DataFrame) -> ColumnInfo:
-        """Clasifica todas las columnas."""
-        result = ColumnInfo()
+    def detect(cls, df: pd.DataFrame) -> DataSchema:
+        """Detecta y clasifica todas las columnas."""
+        schema = DataSchema()
         
         for col in df.columns:
-            col_str = str(col).strip()
-            col_upper = col_str.upper().replace(' ', '_')
+            col_clean = str(col).strip()
+            col_upper = col_clean.upper().replace(' ', '_').replace('%', '_PCT')
             
-            if not col_upper or col_upper.startswith('UNNAMED'):
-                continue
-            
-            # Sistema interno (__ prefix)
-            if col_str.startswith('__'):
-                result.system.append(col_str)
+            # Ignorar columnas de sistema
+            if any(col_upper.startswith(p) for p in cls.SYSTEM_PREFIXES):
+                schema.ignored.append(col_clean)
                 continue
             
             # Identificadores
-            if col_upper in cls.KNOWN_IDENTIFIERS:
-                result.identifiers.append(col_str)
+            if col_upper in cls.IDENTIFIERS:
+                schema.identifiers.append(col_clean)
                 continue
             
-            # Métricas conocidas
+            # Métricas (verificar exacto y parcial)
             if cls._is_metric(col_upper):
-                result.metrics.append(col_str)
+                schema.metrics.append(col_clean)
                 continue
             
-            # Parámetros EXIT (SL/TP) - son analizables si tienen variación
+            # Exit params (TP/SL)
             if cls._is_exit_param(col_upper):
-                if cls._is_numeric_variable(df[col]):
-                    result.parameters.append(col_str)
+                if cls._has_variation(df[col]):
+                    schema.exit_params.append(col_clean)
                 else:
-                    result.system.append(col_str)
+                    schema.ignored.append(col_clean)
                 continue
             
-            # Todo lo demás numérico con variación = parámetro
-            if cls._is_numeric_variable(df[col]):
-                result.parameters.append(col_str)
+            # Parámetros (numéricos con variación)
+            if cls._has_variation(df[col]):
+                schema.params.append(col_clean)
             else:
-                result.system.append(col_str)
+                schema.ignored.append(col_clean)
         
-        return result
+        return schema
     
     @classmethod
     def _is_metric(cls, col: str) -> bool:
-        if col in cls.KNOWN_METRICS:
+        """Verifica si es métrica."""
+        # Exacto
+        if col in cls.METRICS:
             return True
-        for m in cls.KNOWN_METRICS:
+        # Sin sufijos
+        for suffix in ['_PCT', 'PCT', '_RATIO', '_MEAN', '_MIN', '_MAX']:
+            if col.endswith(suffix) and col[:-len(suffix)] in cls.METRICS:
+                return True
+        # Parcial
+        for m in cls.METRICS:
             if col.startswith(m + '_') or col.endswith('_' + m):
                 return True
         return False
     
     @classmethod
     def _is_exit_param(cls, col: str) -> bool:
-        for pattern in cls.EXIT_PATTERNS:
-            if re.search(pattern, col, re.IGNORECASE):
-                return True
-        return False
+        """Verifica si es exit param."""
+        return any(p in col for p in cls.EXIT_PATTERNS)
     
     @classmethod
-    def _is_numeric_variable(cls, series: pd.Series) -> bool:
+    def _has_variation(cls, series: pd.Series) -> bool:
+        """Verifica si tiene variación (es parámetro válido)."""
         try:
-            numeric = pd.to_numeric(series, errors='coerce')
-            valid = numeric.dropna()
-            return len(valid) >= 5 and valid.nunique() >= 2
+            numeric = pd.to_numeric(series, errors='coerce').dropna()
+            if len(numeric) < 5:
+                return False
+            # Debe tener al menos 2 valores únicos y no ser constante
+            unique_vals = numeric.nunique()
+            return unique_vals >= 2 and numeric.std() > 1e-10
         except:
             return False
 
 
-# ==============================================================================
-# 📊 CARGADOR DE DATOS (CSV + EXCEL)
-# ==============================================================================
+# ══════════════════════════════════════════════════════════════════════════════
+# 📂 CARGADOR DE DATOS
+# ══════════════════════════════════════════════════════════════════════════════
 
 class DataLoader:
-    """Carga CSV y Excel con detección automática."""
-    
-    HEADER_KEYWORDS = {'ROI', 'SCORE', 'TRIAL', 'DRAWDOWN', 'SQN', 'SHARPE', 'ESTRATEGIA'}
+    """Cargador robusto de datos CSV/Excel."""
     
     def __init__(self):
         self.df: Optional[pd.DataFrame] = None
-        self.columns: Optional[ColumnInfo] = None
+        self.df_raw: Optional[pd.DataFrame] = None  # Sin filtrar
+        self.schema: Optional[DataSchema] = None
+        self.strategy_name: str = "STRATEGY"
         self.file_path: str = ""
-        self.strategy_name: str = "unknown"
+        self.outliers_removed: int = 0
     
     def load(self, path: str) -> bool:
-        """Carga archivo y clasifica columnas."""
+        """Carga archivo y detecta esquema."""
         self.file_path = path
         ext = os.path.splitext(path)[1].lower()
         
-        print(f"\n{'═'*70}")
-        print(f"📂 CARGANDO: {os.path.basename(path)}")
-        print('═'*70)
+        print(f"\n{'━'*70}")
+        print(f"  📂 {os.path.basename(path)}")
+        print('━'*70)
         
         try:
             if ext in ['.xlsx', '.xls']:
@@ -256,339 +369,988 @@ class DataLoader:
                 self.df = self._load_csv(path)
             
             if self.df is None or len(self.df) == 0:
-                print("❌ Error: No se pudieron cargar datos")
+                print("  ✗ No data loaded")
                 return False
             
             self._clean()
-            self.columns = ColumnDetector.classify(self.df)
-            
-            # Extraer nombre de estrategia
-            for col in ['ESTRATEGIA', 'STRATEGY', 'NOMBRE']:
-                if col in self.df.columns:
-                    vals = self.df[col].dropna().unique()
-                    if len(vals) > 0:
-                        self.strategy_name = str(vals[0])
-                        break
-            
+            self.df_raw = self.df.copy()
+            self.schema = SmartColumnDetector.detect(self.df)
+            self._extract_strategy()
             self._print_summary()
             return True
             
         except Exception as e:
-            print(f"❌ Error: {e}")
-            import traceback
-            traceback.print_exc()
+            print(f"  ✗ Error: {e}")
             return False
     
     def _load_excel(self, path: str) -> pd.DataFrame:
-        """Carga Excel con detección inteligente de header."""
-        print("   📊 Formato: Excel")
-        
+        """Carga Excel con detección de header."""
         xlsx = pd.ExcelFile(path)
-        sheet = xlsx.sheet_names[0]
+        preview = pd.read_excel(path, sheet_name=0, header=None, nrows=10)
         
-        # Detectar fila de header
-        preview = pd.read_excel(path, sheet_name=sheet, header=None, nrows=15)
+        # Buscar fila de header
+        keywords = {'ROI', 'SCORE', 'TRIAL', 'SHARPE', 'DRAWDOWN', 'SQN'}
         header_row = 0
         best_score = 0
         
-        for idx in range(min(10, len(preview))):
+        for idx in range(min(5, len(preview))):
             row_vals = [str(v).upper() for v in preview.iloc[idx] if pd.notna(v)]
-            score = sum(1 for v in row_vals for kw in self.HEADER_KEYWORDS if kw in v)
+            score = sum(1 for v in row_vals for kw in keywords if kw in v)
             if score > best_score:
                 best_score = score
                 header_row = idx
         
-        print(f"   🔍 Header detectado en fila: {header_row}")
-        return pd.read_excel(path, sheet_name=sheet, header=header_row)
+        return pd.read_excel(path, sheet_name=0, header=header_row)
     
     def _load_csv(self, path: str) -> pd.DataFrame:
-        """Carga CSV con detección de delimitador."""
-        print("   📋 Formato: CSV")
+        """Carga CSV con detección de delimitador y encoding."""
+        # Detectar encoding
+        encodings = ['utf-8', 'latin-1', 'cp1252', 'iso-8859-1']
+        content = None
+        used_encoding = 'utf-8'
         
-        with open(path, 'r', encoding='utf-8', errors='ignore') as f:
-            sample = f.read(2048)
+        for enc in encodings:
+            try:
+                with open(path, 'r', encoding=enc) as f:
+                    content = f.read(8192)
+                used_encoding = enc
+                break
+            except:
+                continue
         
-        delims = {',': sample.count(','), ';': sample.count(';'), '\t': sample.count('\t')}
-        best = max(delims, key=delims.get)
+        if content is None:
+            with open(path, 'r', encoding='utf-8', errors='ignore') as f:
+                content = f.read(8192)
         
-        return pd.read_csv(path, sep=best)
+        # Detectar delimitador
+        delims = {',': content.count(','), ';': content.count(';'), '\t': content.count('\t')}
+        best_delim = max(delims, key=delims.get)
+        
+        # Cargar con opciones robustas
+        return pd.read_csv(path, sep=best_delim, encoding=used_encoding, 
+                          on_bad_lines='skip', engine='python')
     
     def _clean(self):
-        """Limpia el DataFrame."""
-        self.df = self.df.dropna(how='all')
-        self.df = self.df.dropna(axis=1, how='all')
+        """Limpia DataFrame."""
+        self.df = self.df.dropna(how='all').dropna(axis=1, how='all')
         self.df.columns = [str(c).strip() for c in self.df.columns]
         
-        cols_drop = [c for c in self.df.columns if str(c).lower().startswith('unnamed')]
+        # Eliminar columnas unnamed
+        cols_drop = [c for c in self.df.columns if 'unnamed' in c.lower()]
         self.df = self.df.drop(columns=cols_drop, errors='ignore')
         
+        # Convertir numéricas
         for col in self.df.columns:
             if self.df[col].dtype == 'object':
                 numeric = pd.to_numeric(self.df[col], errors='coerce')
                 if numeric.notna().sum() > len(self.df) * 0.5:
                     self.df[col] = numeric
     
+    def _extract_strategy(self):
+        """Extrae nombre de estrategia."""
+        for col in ['ESTRATEGIA', 'STRATEGY', 'NOMBRE', 'NAME']:
+            if col in self.df.columns:
+                vals = self.df[col].dropna().unique()
+                if len(vals) > 0:
+                    self.strategy_name = str(vals[0]).replace(' ', '_')[:25]
+                    break
+    
     def _print_summary(self):
         """Imprime resumen."""
-        print(f"\n   ✅ {len(self.df):,} trials cargados")
-        print(f"   📋 Estrategia: {self.strategy_name}")
-        print(f"\n   📊 COLUMNAS:")
-        print(f"      Métricas:    {len(self.columns.metrics)}")
-        print(f"      Parámetros:  {len(self.columns.parameters)}")
-        print(f"      Sistema:     {len(self.columns.system)}")
-        
-        if self.columns.parameters:
-            print(f"\n   ⚙️  PARÁMETROS A ANALIZAR:")
-            for p in self.columns.parameters:
-                try:
-                    vals = pd.to_numeric(self.df[p], errors='coerce').dropna()
-                    print(f"      • {p:<28} [{vals.min():.4g} → {vals.max():.4g}]")
-                except:
-                    print(f"      • {p}")
-
-
-# ==============================================================================
-# 🧹 MOTOR DE REDUCCIÓN DE RUIDO (ML-Based)
-# ==============================================================================
-
-class NoiseReducer:
-    """
-    Reduce el ruido causado por otros parámetros usando Machine Learning.
+        all_params = self.schema.params + self.schema.exit_params
+        print(f"  ✓ {len(self.df):,} trials | {self.strategy_name}")
+        print(f"  ✓ Params: {len(self.schema.params)} | Exit: {len(self.schema.exit_params)} | Metrics: {len(self.schema.metrics)}")
     
-    El problema: Cuando analizamos el efecto de un parámetro (ej: RSI_PERIOD)
-    sobre una métrica (ej: ROI), los otros parámetros (ATR_MULT, etc.) causan
-    variación que oscurece la relación real.
-    
-    Solución: Usar ML para predecir la métrica basándose en OTROS parámetros,
-    luego calcular residuos. Estos residuos son el efecto "limpio" del parámetro target.
-    """
-    
-    @staticmethod
-    def isolate_effect(df: pd.DataFrame, 
-                       target_param: str, 
-                       metric: str,
-                       other_params: List[str],
-                       method: str = 'residual') -> Tuple[np.ndarray, np.ndarray, Dict]:
-        """
-        Aísla el efecto de un parámetro sobre una métrica.
+    def apply_filters(self, min_score: float = 0.2, min_tpd: float = 0.15) -> int:
+        """Aplica filtros de calidad."""
+        initial = len(self.df)
         
-        Args:
-            df: DataFrame con todos los datos
-            target_param: Parámetro a analizar
-            metric: Métrica objetivo
-            other_params: Lista de otros parámetros (causan ruido)
-            method: 'residual' (ML), 'binning' (estratificación), 'raw' (sin filtrar)
+        # Filtro SCORE
+        score_col = self._find_col(['SCORE', 'Score'])
+        if score_col:
+            self.df = self.df[pd.to_numeric(self.df[score_col], errors='coerce') >= min_score]
         
-        Returns:
-            (x_values, y_values, stats_dict)
-        """
-        # Extraer datos válidos
-        cols_needed = [target_param, metric] + [p for p in other_params if p in df.columns and p != target_param]
-        df_work = df[cols_needed].copy()
+        # Filtro trades por día
+        tpd_col = self._find_col(['TRADES_DIA', 'TRADES_POR_DIA', 'TPD', 'TRADES_DIA'])
+        if tpd_col:
+            self.df = self.df[pd.to_numeric(self.df[tpd_col], errors='coerce') >= min_tpd]
         
-        for col in cols_needed:
-            df_work[col] = pd.to_numeric(df_work[col], errors='coerce')
+        self.df = self.df.reset_index(drop=True)
+        removed = initial - len(self.df)
         
-        df_work = df_work.dropna()
-        
-        if len(df_work) < 30:
-            # Datos insuficientes - devolver raw
-            x = df_work[target_param].values
-            y = df_work[metric].values
-            return x, y, {'method': 'raw', 'noise_reduction': 0}
-        
-        x = df_work[target_param].values
-        y = df_work[metric].values
-        
-        if method == 'raw' or len(other_params) == 0:
-            return x, y, {'method': 'raw', 'noise_reduction': 0}
-        
-        # ═══════════════════════════════════════════════════════════════════
-        # MÉTODO RESIDUAL (ML-based noise reduction)
-        # ═══════════════════════════════════════════════════════════════════
-        if method == 'residual':
-            # Obtener otros parámetros como features
-            other_cols = [p for p in other_params if p in df_work.columns and p != target_param]
-            
-            if len(other_cols) == 0:
-                return x, y, {'method': 'raw', 'noise_reduction': 0}
-            
-            X_other = df_work[other_cols].values
-            
-            # Normalizar features
-            scaler = RobustScaler()
-            X_scaled = scaler.fit_transform(X_other)
-            
-            # Entrenar modelo para predecir métrica desde OTROS parámetros
-            model = GradientBoostingRegressor(
-                n_estimators=50,
-                max_depth=3,
-                learning_rate=0.1,
-                random_state=42
-            )
-            model.fit(X_scaled, y)
-            
-            # Predecir y calcular residuos
-            y_pred = model.predict(X_scaled)
-            residuals = y - y_pred
-            
-            # El efecto "limpio" es: media de y + residuos
-            y_clean = np.mean(y) + residuals
-            
-            # Calcular reducción de ruido
-            original_var = np.var(y)
-            residual_var = np.var(residuals)
-            noise_reduction = 1 - (residual_var / original_var) if original_var > 0 else 0
-            
-            return x, y_clean, {
-                'method': 'residual',
-                'noise_reduction': max(0, noise_reduction),
-                'r2_other_params': model.score(X_scaled, y),
-                'n_other_params': len(other_cols)
-            }
-        
-        # ═══════════════════════════════════════════════════════════════════
-        # MÉTODO BINNING (estratificación por grupos)
-        # ═══════════════════════════════════════════════════════════════════
-        elif method == 'binning':
-            other_cols = [p for p in other_params if p in df_work.columns and p != target_param]
-            
-            if len(other_cols) == 0:
-                return x, y, {'method': 'raw', 'noise_reduction': 0}
-            
-            # Crear bins para otros parámetros
-            df_temp = df_work.copy()
-            for col in other_cols[:3]:  # Max 3 para evitar explosión combinatoria
-                try:
-                    df_temp[f'_bin_{col}'] = pd.qcut(df_temp[col], q=3, labels=False, duplicates='drop')
-                except:
-                    df_temp[f'_bin_{col}'] = 0
-            
-            bin_cols = [c for c in df_temp.columns if c.startswith('_bin_')]
-            
-            if len(bin_cols) == 0:
-                return x, y, {'method': 'raw', 'noise_reduction': 0}
-            
-            # Agrupar por target_param y bins, calcular media
-            grouped = df_temp.groupby([target_param] + bin_cols)[metric].mean().reset_index()
-            final = grouped.groupby(target_param)[metric].mean().reset_index()
-            
-            return final[target_param].values, final[metric].values, {
-                'method': 'binning',
-                'noise_reduction': 0.3,  # Estimación conservadora
-                'n_bins': len(bin_cols)
-            }
-        
-        return x, y, {'method': 'raw', 'noise_reduction': 0}
-    
-    @staticmethod
-    def smooth_curve(x: np.ndarray, y: np.ndarray, 
-                     smoothing: float = 0.3,
-                     n_points: int = 100) -> Tuple[np.ndarray, np.ndarray]:
-        """
-        Suaviza la curva usando spline + gaussian.
-        
-        Args:
-            x, y: Datos originales
-            smoothing: Factor de suavizado (0=ninguno, 1=máximo)
-            n_points: Número de puntos para la curva suavizada
-        
-        Returns:
-            (x_smooth, y_smooth)
-        """
-        if len(x) < 5:
-            return x, y
-        
-        # Ordenar por x
-        sort_idx = np.argsort(x)
-        x_sorted = x[sort_idx]
-        y_sorted = y[sort_idx]
-        
-        # Agrupar valores repetidos de x (promediar y)
-        df_temp = pd.DataFrame({'x': x_sorted, 'y': y_sorted})
-        grouped = df_temp.groupby('x')['y'].agg(['mean', 'std', 'count']).reset_index()
-        x_unique = grouped['x'].values
-        y_mean = grouped['mean'].values
-        
-        if len(x_unique) < 4:
-            return x_unique, y_mean
-        
-        # Crear puntos para interpolación
-        x_smooth = np.linspace(x_unique.min(), x_unique.max(), n_points)
-        
-        try:
-            # Spline suavizado
-            # s = smoothing factor (más alto = más suave)
-            s_factor = len(x_unique) * smoothing * 0.5
-            spline = UnivariateSpline(x_unique, y_mean, s=s_factor)
-            y_smooth = spline(x_smooth)
-            
-            # Aplicar filtro gaussiano adicional
-            sigma = max(1, int(n_points * smoothing * 0.1))
-            y_smooth = gaussian_filter1d(y_smooth, sigma=sigma)
-            
-        except Exception:
-            # Fallback: interpolación lineal + gaussian
-            f = interp1d(x_unique, y_mean, kind='linear', fill_value='extrapolate')
-            y_smooth = f(x_smooth)
-            sigma = max(1, int(n_points * smoothing * 0.1))
-            y_smooth = gaussian_filter1d(y_smooth, sigma=sigma)
-        
-        return x_smooth, y_smooth
-
-
-# ==============================================================================
-# 📈 ANALIZADOR ESTADÍSTICO
-# ==============================================================================
-
-class StatsAnalyzer:
-    """Calcula estadísticas avanzadas para el análisis."""
-    
-    @staticmethod
-    def correlation_analysis(x: np.ndarray, y: np.ndarray) -> Dict[str, Any]:
-        """Análisis de correlación completo."""
-        mask = ~(np.isnan(x) | np.isnan(y))
-        x, y = x[mask], y[mask]
-        
-        if len(x) < 10:
-            return {'pearson': 0, 'spearman': 0, 'strength': 'N/A', 'p_value': 1}
-        
-        pearson, p_pearson = stats.pearsonr(x, y)
-        spearman, p_spearman = stats.spearmanr(x, y)
-        
-        # Clasificar fuerza
-        r = abs(spearman)
-        if r >= 0.7:
-            strength = 'FUERTE'
-        elif r >= 0.4:
-            strength = 'MODERADA'
-        elif r >= 0.2:
-            strength = 'DÉBIL'
+        if removed > 0:
+            print(f"  ⚡ Filtrado: {removed} trials eliminados (SCORE<{min_score} o TPD<{min_tpd})")
         else:
-            strength = 'NINGUNA'
+            print(f"  ✓ Sin filtrado necesario (todos cumplen SCORE>={min_score} y TPD>={min_tpd})")
+        
+        return removed
+    
+    def _find_col(self, candidates: List[str]) -> Optional[str]:
+        """Busca columna por nombre."""
+        for c in candidates:
+            if c in self.df.columns:
+                return c
+            for col in self.df.columns:
+                if col.upper() == c.upper():
+                    return col
+        return None
+    
+    def remove_outliers(self, percentile: float = 95.0, metric_col: str = None) -> int:
+        """Elimina outliers fuera del percentil especificado (P5-P95)."""
+        if metric_col is None:
+            metric_col = self._find_col(['SCORE', 'ROI', 'ROI_PCT'])
+        
+        if metric_col is None:
+            return 0
+        
+        initial = len(self.df)
+        values = pd.to_numeric(self.df[metric_col], errors='coerce')
+        
+        # Calcular percentiles P5 y P95
+        lower = values.quantile((100 - percentile) / 100)
+        upper = values.quantile(percentile / 100)
+        
+        # Filtrar outliers
+        mask = (values >= lower) & (values <= upper)
+        self.df = self.df[mask].reset_index(drop=True)
+        
+        self.outliers_removed = initial - len(self.df)
+        
+        if self.outliers_removed > 0:
+            print(f"  🎯 Outlier filter: {self.outliers_removed} removed (P{100-percentile:.0f}-P{percentile:.0f} on {metric_col})")
+        
+        return self.outliers_removed
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# 🧪 STATISTICAL VALIDATION (White's Reality Check + Deflated Sharpe)
+# ══════════════════════════════════════════════════════════════════════════════
+
+@dataclass
+class StatisticalValidation:
+    """Resultado de validación estadística."""
+    # White's Reality Check
+    wrc_p_value: float = 0.0
+    wrc_is_significant: bool = False
+    wrc_bootstrap_mean: float = 0.0
+    wrc_bootstrap_std: float = 0.0
+    
+    # Deflated Sharpe Ratio
+    original_sharpe: float = 0.0
+    deflated_sharpe: float = 0.0
+    sharpe_haircut: float = 0.0
+    dsr_is_significant: bool = False
+    
+    # Additional Statistics
+    skewness: float = 0.0
+    kurtosis: float = 0.0
+    jarque_bera_stat: float = 0.0
+    jarque_bera_pvalue: float = 0.0
+
+    # Left Tail Risk (cross-sectional trials)
+    var_95: float = 0.0   # Historical VaR at 95% confidence (5% left tail)
+    cvar_95: float = 0.0  # Expected Shortfall (CVaR) at 95% confidence
+    prob_loss: float = 0.0
+
+    # Store raw trial results for visualization
+    trial_returns: np.ndarray = field(default_factory=lambda: np.array([]))
+
+
+class StatisticalValidator:
+    """Validador estadístico con múltiples tests."""
+    
+    def __init__(self, returns: np.ndarray, n_trials: int):
+        self.returns = returns
+        self.n_trials = n_trials
+    
+    def validate(self) -> StatisticalValidation:
+        """Ejecuta todos los tests de validación."""
+        result = StatisticalValidation()
+        
+        if len(self.returns) < 20:
+            return result
+
+        # Guardar valores originales (trials cross-sectional)
+        result.trial_returns = np.asarray(self.returns, dtype=float)
+        
+        # Normalizar retornos
+        returns_norm = (self.returns - np.mean(self.returns)) / (np.std(self.returns) + 1e-10)
+        
+        # 1. White's Reality Check
+        wrc = self._white_reality_check(returns_norm, n_simulations=200)
+        result.wrc_p_value = wrc['p_value']
+        result.wrc_is_significant = wrc['is_significant']
+        result.wrc_bootstrap_mean = wrc['bootstrap_mean']
+        result.wrc_bootstrap_std = wrc['bootstrap_std']
+        
+        # 2. Deflated Sharpe Ratio
+        dsr = self._deflated_sharpe(returns_norm)
+        result.original_sharpe = dsr['original']
+        result.deflated_sharpe = dsr['deflated']
+        result.sharpe_haircut = dsr['haircut']
+        result.dsr_is_significant = dsr['is_significant']
+        
+        # 3. Distribution Statistics
+        result.skewness = stats.skew(self.returns)
+        result.kurtosis = stats.kurtosis(self.returns)
+        
+        jb_stat, jb_pvalue = stats.jarque_bera(self.returns)
+        result.jarque_bera_stat = jb_stat
+        result.jarque_bera_pvalue = jb_pvalue
+        
+        # 4. Left Tail Risk (cross-sectional, not time series)
+        var_95, cvar_95 = self._historical_var_cvar(self.returns, alpha=0.05)
+        result.var_95 = var_95
+        result.cvar_95 = cvar_95
+        result.prob_loss = float(np.mean(self.returns < 0))
+        
+        return result
+    
+    def _white_reality_check(self, returns: np.ndarray, n_simulations: int = 200) -> Dict:
+        """White's Reality Check con bootstrap.
+
+        Nota: aquí trabajamos con una distribución de resultados de optimización (trials).
+        Por tanto usamos bootstrap i.i.d. (no block-bootstrap), ya que no hay orden temporal.
+        """
+        original_stat = np.mean(returns)
+        n = len(returns)
+        bootstrap_stats = np.zeros(n_simulations)
+        n_strategies_sample = min(50, self.n_trials)
+        
+        for i in range(n_simulations):
+            # Bootstrap i.i.d. (cross-sectional)
+            indices = np.random.randint(0, n, size=n)
+            bootstrap_sample = returns[indices]
+            
+            # Simular estrategias
+            if n_strategies_sample > 1:
+                random_means = np.array([
+                    np.mean(returns[np.random.randint(0, n, size=n)])
+                    for _ in range(min(20, n_strategies_sample - 1))
+                ])
+                max_stat = max(original_stat, np.max(random_means))
+            else:
+                max_stat = original_stat
+            
+            bootstrap_stats[i] = np.mean(bootstrap_sample) - max_stat
+        
+        p_value = np.mean(bootstrap_stats >= 0)
         
         return {
-            'pearson': pearson,
-            'spearman': spearman,
-            'p_value': min(p_pearson, p_spearman),
-            'strength': strength,
-            'significant': min(p_pearson, p_spearman) < 0.05
+            'p_value': p_value,
+            'is_significant': p_value <= 0.05,
+            'bootstrap_mean': np.mean(bootstrap_stats),
+            'bootstrap_std': np.std(bootstrap_stats)
         }
     
-    @staticmethod
-    def optimal_zone(x: np.ndarray, y: np.ndarray, 
-                     higher_better: bool = True,
-                     top_pct: float = 0.2) -> Dict[str, Any]:
-        """Encuentra la zona óptima del parámetro."""
-        mask = ~(np.isnan(x) | np.isnan(y))
-        x, y = x[mask], y[mask]
+    def _deflated_sharpe(self, returns: np.ndarray) -> Dict:
+        """Deflated Sharpe Ratio (Bailey & López de Prado)."""
+        # Para resultados de optimización (cross-sectional), no se anualiza.
+        annual_factor = 1.0
         
-        if len(x) < 10:
-            return {'optimal_min': np.nan, 'optimal_max': np.nan, 'optimal_mean': np.nan}
+        mean_ret = np.mean(returns)
+        std_ret = np.std(returns, ddof=1)
         
-        # Encontrar top performers
-        n_top = max(5, int(len(y) * top_pct))
+        if std_ret == 0:
+            return {'original': 0, 'deflated': 0, 'haircut': 1, 'is_significant': False}
         
+        sharpe = mean_ret / std_ret * np.sqrt(annual_factor)
+        skew = stats.skew(returns)
+        kurt = stats.kurtosis(returns)
+        
+        # Expected max Sharpe
+        if self.n_trials > 1:
+            euler = 0.5772156649
+            e_max_sharpe = (1 - euler) * stats.norm.ppf(1 - 1/self.n_trials) + \
+                          euler * stats.norm.ppf(1 - 1/(self.n_trials * np.e))
+            e_max_sharpe *= np.sqrt(annual_factor / len(returns))
+        else:
+            e_max_sharpe = 0
+        
+        # Variance del Sharpe
+        var_sharpe = (1 + 0.5 * sharpe**2 - skew * sharpe + (kurt - 3) / 4 * sharpe**2) / len(returns)
+        std_sharpe = np.sqrt(var_sharpe) * np.sqrt(annual_factor)
+        
+        deflated = max(0, sharpe - e_max_sharpe)
+        haircut = min(1, e_max_sharpe / (abs(sharpe) + 1e-10)) if sharpe > 0 else 1
+        
+        # PSR
+        psr = stats.norm.cdf((sharpe - e_max_sharpe) / (std_sharpe + 1e-10)) if std_sharpe > 0 else 0.5
+        
+        return {
+            'original': sharpe,
+            'deflated': deflated,
+            'haircut': haircut,
+            'is_significant': psr >= 0.95
+        }
+
+    def _historical_var_cvar(self, returns: np.ndarray, alpha: float = 0.05) -> Tuple[float, float]:
+        """VaR/CVaR histórico sobre una distribución cross-sectional.
+
+        alpha=0.05 => VaR al 95% (percentil 5) y CVaR como media condicional de la cola.
+        """
+        r = np.asarray(returns, dtype=float)
+        if r.size == 0:
+            return 0.0, 0.0
+
+        var = float(np.quantile(r, alpha))
+        tail = r[r <= var]
+        cvar = float(np.mean(tail)) if tail.size > 0 else var
+        return var, cvar
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# 🔬 MOTOR DE ANÁLISIS CUANTITATIVO AVANZADO
+# ══════════════════════════════════════════════════════════════════════════════
+
+@dataclass
+class ParameterAnalysis:
+    """Resultado completo del análisis de un parámetro."""
+    param_name: str
+    optimal_value: float
+    optimal_range: Tuple[float, float]
+    confidence: float
+    robustness: float
+    stability: float
+    sensitivity: float
+    monotonicity: float
+    
+    # Análisis por métrica
+    metric_analysis: Dict[str, Dict] = field(default_factory=dict)
+    
+    # Datos para visualización
+    x_values: np.ndarray = field(default_factory=lambda: np.array([]))
+    y_smooth: Dict[str, np.ndarray] = field(default_factory=dict)
+    kde_x: np.ndarray = field(default_factory=lambda: np.array([]))
+    kde_y: np.ndarray = field(default_factory=lambda: np.array([]))
+
+
+class QuantEngine:
+    """Motor de análisis cuantitativo con múltiples técnicas."""
+    
+    def __init__(self, df: pd.DataFrame, all_params: List[str]):
+        self.df = df
+        self.all_params = all_params
+    
+    def analyze_parameter(self, param: str, metrics: List[str]) -> ParameterAnalysis:
+        """Análisis completo de un parámetro."""
+        
+        # Obtener datos limpios
+        x = pd.to_numeric(self.df[param], errors='coerce').values
+        valid_mask = ~np.isnan(x)
+        x = x[valid_mask]
+        
+        if len(x) < 20:
+            return self._empty_analysis(param)
+        
+        # Análisis por cada métrica
+        metric_results = {}
+        optimal_estimates = []
+        
+        for metric in metrics:
+            if metric not in self.df.columns:
+                continue
+            
+            y = pd.to_numeric(self.df[metric], errors='coerce').values[valid_mask]
+            y_mask = ~np.isnan(y)
+            
+            if y_mask.sum() < 20:
+                continue
+            
+            x_clean = x[y_mask]
+            y_clean = y[y_mask]
+            
+            # Determinar dirección
+            higher_better = not any(kw in metric.upper() for kw in ['DRAWDOWN', 'DD', 'LOSS', 'PERDIDA'])
+            
+            # Múltiples análisis
+            result = self._multi_analysis(x_clean, y_clean, higher_better)
+            metric_results[metric] = result
+            
+            if not np.isnan(result['optimal']):
+                weight = self._get_metric_weight(metric)
+                optimal_estimates.append((result['optimal'], weight * result['confidence']))
+        
+        if not optimal_estimates:
+            return self._empty_analysis(param)
+        
+        # Combinar óptimos
+        global_optimal = self._weighted_optimal(optimal_estimates)
+        optimal_range = self._calculate_range(x, metric_results)
+        
+        # Métricas de calidad
+        robustness = self._calculate_robustness(x, metric_results, global_optimal)
+        stability = self._calculate_stability(metric_results)
+        sensitivity = self._calculate_sensitivity(metric_results)
+        monotonicity = self._calculate_monotonicity(metric_results)
+        confidence = self._calculate_confidence(optimal_estimates, robustness, stability)
+        
+        # Preparar datos para visualización
+        x_unique = np.sort(np.unique(x))
+        kde_x, kde_y = self._compute_kde(x)
+        
+        y_smooth = {}
+        for metric, result in metric_results.items():
+            if 'curve_x' in result and 'curve_y' in result:
+                y_smooth[metric] = (result['curve_x'], result['curve_y'])
+        
+        return ParameterAnalysis(
+            param_name=param,
+            optimal_value=global_optimal,
+            optimal_range=optimal_range,
+            confidence=confidence,
+            robustness=robustness,
+            stability=stability,
+            sensitivity=sensitivity,
+            monotonicity=monotonicity,
+            metric_analysis=metric_results,
+            x_values=x_unique,
+            y_smooth=y_smooth,
+            kde_x=kde_x,
+            kde_y=kde_y
+        )
+    
+    def _multi_analysis(self, x: np.ndarray, y: np.ndarray, higher_better: bool) -> Dict:
+        """
+        Análisis multi-técnica AVANZADO para encontrar óptimo.
+        
+        Técnicas implementadas:
+        1. Regional Growth Algorithm - Detecta mesetas estables vs picos aislados
+        2. Bootstrap Confidence Intervals - Intervalos robustos
+        3. Bayesian Optimization Surrogate - Modelo probabilístico
+        4. Plateau Detection - Zonas de rendimiento estable
+        5. Cross-Validated Optimal - Validación de estabilidad
+        6. Derivative Analysis - Análisis de gradiente y curvatura
+        7. RANSAC Robust Regression - Ignorar outliers
+        """
+        results = []
+        
+        # Pre-procesamiento: eliminar outliers extremos
+        y_p5, y_p95 = np.percentile(y, [5, 95])
+        inlier_mask = (y >= y_p5) & (y <= y_p95)
+        if inlier_mask.sum() >= 20:
+            x_clean = x[inlier_mask]
+            y_clean = y[inlier_mask]
+        else:
+            x_clean, y_clean = x.copy(), y.copy()
+        
+        # ═══════════════════════════════════════════════════════════════════
+        # 1. REGIONAL GROWTH ALGORITHM (Plateau Detection)
+        # ═══════════════════════════════════════════════════════════════════
+        try:
+            opt_plateau, conf_plateau, plateau_range = self._regional_growth_analysis(
+                x_clean, y_clean, higher_better
+            )
+            if not np.isnan(opt_plateau):
+                results.append(('plateau', opt_plateau, conf_plateau, plateau_range))
+        except:
+            pass
+        
+        # ═══════════════════════════════════════════════════════════════════
+        # 2. BOOTSTRAP CONFIDENCE INTERVALS
+        # ═══════════════════════════════════════════════════════════════════
+        try:
+            opt_boot, conf_boot, boot_range = self._bootstrap_optimal(
+                x_clean, y_clean, higher_better, n_bootstrap=100
+            )
+            if not np.isnan(opt_boot):
+                results.append(('bootstrap', opt_boot, conf_boot, boot_range))
+        except:
+            pass
+        
+        # ═══════════════════════════════════════════════════════════════════
+        # 3. CROSS-VALIDATED OPTIMAL (K-Fold Stability)
+        # ═══════════════════════════════════════════════════════════════════
+        try:
+            opt_cv, conf_cv, cv_range = self._cross_validated_optimal(
+                x_clean, y_clean, higher_better, n_folds=5
+            )
+            if not np.isnan(opt_cv):
+                results.append(('cross_val', opt_cv, conf_cv, cv_range))
+        except:
+            pass
+        
+        # ═══════════════════════════════════════════════════════════════════
+        # 4. DERIVATIVE ANALYSIS (Gradient + Curvature)
+        # ═══════════════════════════════════════════════════════════════════
+        try:
+            opt_deriv, conf_deriv = self._derivative_analysis(
+                x_clean, y_clean, higher_better
+            )
+            if not np.isnan(opt_deriv):
+                results.append(('derivative', opt_deriv, conf_deriv, None))
+        except:
+            pass
+        
+        # ═══════════════════════════════════════════════════════════════════
+        # 5. BAYESIAN SURROGATE MODEL (Gaussian Process-like)
+        # ═══════════════════════════════════════════════════════════════════
+        try:
+            opt_bayes, conf_bayes = self._bayesian_surrogate(
+                x_clean, y_clean, higher_better
+            )
+            if not np.isnan(opt_bayes):
+                results.append(('bayesian', opt_bayes, conf_bayes, None))
+        except:
+            pass
+        
+        # ═══════════════════════════════════════════════════════════════════
+        # 6. ROBUST REGRESSION (RANSAC-like)
+        # ═══════════════════════════════════════════════════════════════════
+        try:
+            opt_robust, conf_robust = self._robust_regression_optimal(
+                x_clean, y_clean, higher_better
+            )
+            if not np.isnan(opt_robust):
+                results.append(('robust_reg', opt_robust, conf_robust, None))
+        except:
+            pass
+        
+        # ═══════════════════════════════════════════════════════════════════
+        # 7. KDE MODE DETECTION (High-performance regions)
+        # ═══════════════════════════════════════════════════════════════════
+        try:
+            opt_kde, conf_kde = self._kde_mode_optimal(x_clean, y_clean, higher_better)
+            if not np.isnan(opt_kde):
+                results.append(('kde_mode', opt_kde, conf_kde, None))
+        except:
+            pass
+        
+        # ═══════════════════════════════════════════════════════════════════
+        # COMBINAR RESULTADOS CON CONSENSO ROBUSTO
+        # ═══════════════════════════════════════════════════════════════════
+        if not results:
+            return {'optimal': np.nan, 'confidence': 0, 'methods': [], 
+                    'optimal_range': (np.nan, np.nan)}
+        
+        # Obtener óptimo por consenso (mediana ponderada)
+        optimal, confidence, optimal_range = self._consensus_optimal(results, x_clean)
+        
+        # Generar curva suavizada de alta calidad
+        curve_x, curve_y = self._high_quality_smooth_curve(x_clean, y_clean)
+        
+        return {
+            'optimal': optimal,
+            'confidence': confidence,
+            'methods': [(m, v, c) for m, v, c, _ in results],
+            'higher_better': higher_better,
+            'curve_x': curve_x,
+            'curve_y': curve_y,
+            'optimal_range': optimal_range
+        }
+    
+    def _regional_growth_analysis(self, x: np.ndarray, y: np.ndarray, 
+                                   higher_better: bool) -> Tuple[float, float, Tuple[float, float]]:
+        """
+        Regional Growth Algorithm: Detecta mesetas estables de alto rendimiento.
+        
+        Busca regiones donde el rendimiento es consistentemente bueno,
+        no solo picos aislados que podrían ser ruido.
+        """
+        # Crear bins adaptivos
+        n_bins = min(30, max(10, len(x) // 10))
+        
+        # Agrupar por bins
+        x_min, x_max = x.min(), x.max()
+        bin_edges = np.linspace(x_min, x_max, n_bins + 1)
+        bin_centers = (bin_edges[:-1] + bin_edges[1:]) / 2
+        
+        # Calcular estadísticas por bin
+        bin_means = np.zeros(n_bins)
+        bin_stds = np.zeros(n_bins)
+        bin_counts = np.zeros(n_bins)
+        
+        for i in range(n_bins):
+            mask = (x >= bin_edges[i]) & (x < bin_edges[i+1])
+            if i == n_bins - 1:  # Incluir el último punto
+                mask = (x >= bin_edges[i]) & (x <= bin_edges[i+1])
+            
+            if mask.sum() > 0:
+                bin_means[i] = np.mean(y[mask])
+                bin_stds[i] = np.std(y[mask]) if mask.sum() > 1 else np.std(y) * 0.5
+                bin_counts[i] = mask.sum()
+            else:
+                bin_means[i] = np.nan
+                bin_stds[i] = np.nan
+                bin_counts[i] = 0
+        
+        # Rellenar NaN con interpolación
+        valid_bins = ~np.isnan(bin_means)
+        if valid_bins.sum() < 3:
+            return np.nan, 0, (np.nan, np.nan)
+        
+        # Suavizar las medias
+        bin_means_smooth = gaussian_filter1d(
+            np.nan_to_num(bin_means, nan=np.nanmean(bin_means)), 
+            sigma=1.5
+        )
+        
+        # REGIONAL GROWTH: Encontrar región con mejor rendimiento promedio
+        # considerando también la estabilidad (baja varianza)
+        
+        # Score combinado: rendimiento + estabilidad
+        stability_score = 1 / (bin_stds + np.nanmean(bin_stds) * 0.1)
+        stability_score = np.nan_to_num(stability_score, nan=0)
+        
+        if higher_better:
+            performance_score = (bin_means_smooth - np.nanmin(bin_means_smooth)) / \
+                               (np.nanmax(bin_means_smooth) - np.nanmin(bin_means_smooth) + 1e-10)
+        else:
+            performance_score = (np.nanmax(bin_means_smooth) - bin_means_smooth) / \
+                               (np.nanmax(bin_means_smooth) - np.nanmin(bin_means_smooth) + 1e-10)
+        
+        # Normalizar stability score
+        stability_score = stability_score / (np.max(stability_score) + 1e-10)
+        
+        # Score combinado (rendimiento 60%, estabilidad 40%)
+        combined_score = performance_score * 0.6 + stability_score * 0.4
+        
+        # Encontrar la región óptima (plateau)
+        # Buscar bins consecutivos con score alto
+        threshold = np.percentile(combined_score, 75)
+        good_bins = combined_score >= threshold
+        
+        # Encontrar la región continua más grande
+        best_region_start = 0
+        best_region_end = 0
+        best_region_score = 0
+        
+        current_start = None
+        for i in range(n_bins):
+            if good_bins[i]:
+                if current_start is None:
+                    current_start = i
+            else:
+                if current_start is not None:
+                    region_score = np.mean(combined_score[current_start:i])
+                    region_length = i - current_start
+                    total_score = region_score * np.sqrt(region_length)  # Premiar regiones más largas
+                    
+                    if total_score > best_region_score:
+                        best_region_score = total_score
+                        best_region_start = current_start
+                        best_region_end = i
+                    current_start = None
+        
+        # Verificar última región
+        if current_start is not None:
+            region_score = np.mean(combined_score[current_start:n_bins])
+            region_length = n_bins - current_start
+            total_score = region_score * np.sqrt(region_length)
+            
+            if total_score > best_region_score:
+                best_region_start = current_start
+                best_region_end = n_bins
+        
+        if best_region_end <= best_region_start:
+            # Fallback: usar el bin con mejor score
+            best_bin = np.argmax(combined_score)
+            optimal = bin_centers[best_bin]
+            confidence = combined_score[best_bin] * 0.7
+            optimal_range = (bin_edges[best_bin], bin_edges[best_bin + 1])
+        else:
+            # Óptimo es el centro de la mejor región
+            region_weights = combined_score[best_region_start:best_region_end]
+            region_centers = bin_centers[best_region_start:best_region_end]
+            
+            optimal = np.average(region_centers, weights=region_weights + 1e-10)
+            confidence = np.mean(region_weights) * 0.9  # Alta confianza para plateaus
+            optimal_range = (bin_edges[best_region_start], bin_edges[best_region_end])
+        
+        return optimal, confidence, optimal_range
+    
+    def _bootstrap_optimal(self, x: np.ndarray, y: np.ndarray, 
+                          higher_better: bool, n_bootstrap: int = 100) -> Tuple[float, float, Tuple[float, float]]:
+        """
+        Bootstrap Confidence Intervals para el óptimo.
+        
+        Remuestrea los datos múltiples veces para obtener
+        una distribución del óptimo y su incertidumbre.
+        """
+        n = len(x)
+        bootstrap_optimals = []
+        
+        for _ in range(n_bootstrap):
+            # Remuestreo con reemplazo
+            idx = np.random.randint(0, n, size=n)
+            x_boot = x[idx]
+            y_boot = y[idx]
+            
+            # Encontrar óptimo simple en este bootstrap
+            opt = self._simple_optimal(x_boot, y_boot, higher_better)
+            if not np.isnan(opt):
+                bootstrap_optimals.append(opt)
+        
+        if len(bootstrap_optimals) < 10:
+            return np.nan, 0, (np.nan, np.nan)
+        
+        bootstrap_optimals = np.array(bootstrap_optimals)
+        
+        # Estadísticas del bootstrap
+        optimal = np.median(bootstrap_optimals)
+        
+        # Intervalo de confianza 90%
+        ci_low, ci_high = np.percentile(bootstrap_optimals, [5, 95])
+        
+        # Confianza basada en la dispersión del bootstrap
+        spread = (ci_high - ci_low) / (x.max() - x.min() + 1e-10)
+        confidence = max(0.3, 1 - spread * 2)
+        
+        return optimal, confidence, (ci_low, ci_high)
+    
+    def _simple_optimal(self, x: np.ndarray, y: np.ndarray, higher_better: bool) -> float:
+        """Encuentra óptimo simple usando top performers."""
+        n_top = max(3, int(len(y) * 0.1))
+        
+        if higher_better:
+            top_idx = np.argsort(y)[-n_top:]
+        else:
+            top_idx = np.argsort(y)[:n_top]
+        
+        return np.median(x[top_idx])
+    
+    def _cross_validated_optimal(self, x: np.ndarray, y: np.ndarray,
+                                  higher_better: bool, n_folds: int = 5) -> Tuple[float, float, Tuple[float, float]]:
+        """
+        Cross-Validated Optimal: Verifica estabilidad del óptimo.
+        
+        Divide los datos en K folds y encuentra el óptimo en cada uno.
+        Un óptimo robusto debería ser similar en todos los folds.
+        """
+        n = len(x)
+        if n < n_folds * 10:
+            n_folds = max(2, n // 10)
+        
+        fold_size = n // n_folds
+        indices = np.random.permutation(n)
+        
+        fold_optimals = []
+        
+        for i in range(n_folds):
+            # Crear fold de test
+            test_start = i * fold_size
+            test_end = (i + 1) * fold_size if i < n_folds - 1 else n
+            
+            # Usar todo excepto el fold de test para encontrar óptimo
+            train_mask = np.ones(n, dtype=bool)
+            train_mask[indices[test_start:test_end]] = False
+            
+            x_train = x[train_mask]
+            y_train = y[train_mask]
+            
+            if len(x_train) >= 10:
+                opt = self._simple_optimal(x_train, y_train, higher_better)
+                if not np.isnan(opt):
+                    fold_optimals.append(opt)
+        
+        if len(fold_optimals) < 2:
+            return np.nan, 0, (np.nan, np.nan)
+        
+        fold_optimals = np.array(fold_optimals)
+        
+        optimal = np.median(fold_optimals)
+        
+        # Confianza basada en consistencia entre folds
+        cv = np.std(fold_optimals) / (np.abs(np.mean(fold_optimals)) + 1e-10)
+        confidence = max(0.3, 1 - cv * 2)
+        
+        # Rango basado en folds
+        cv_range = (np.min(fold_optimals), np.max(fold_optimals))
+        
+        return optimal, confidence, cv_range
+    
+    def _derivative_analysis(self, x: np.ndarray, y: np.ndarray, 
+                             higher_better: bool) -> Tuple[float, float]:
+        """
+        Análisis de derivadas para encontrar el óptimo.
+        
+        Busca donde la primera derivada cruza por cero
+        y la segunda derivada indica un máximo/mínimo.
+        """
+        # Agrupar y suavizar
+        df_temp = pd.DataFrame({'x': x, 'y': y})
+        grouped = df_temp.groupby('x')['y'].mean().reset_index()
+        x_u = grouped['x'].values
+        y_u = grouped['y'].values
+        
+        if len(x_u) < 10:
+            return np.nan, 0
+        
+        # Ordenar
+        sort_idx = np.argsort(x_u)
+        x_u = x_u[sort_idx]
+        y_u = y_u[sort_idx]
+        
+        # Suavizado fuerte
+        window = min(len(y_u) - 2, max(5, len(y_u) // 4))
+        if window % 2 == 0:
+            window += 1
+        
+        y_smooth = savgol_filter(y_u, window, min(3, window - 1))
+        y_smooth = gaussian_filter1d(y_smooth, sigma=2)
+        
+        # Primera derivada (gradiente)
+        dy = np.gradient(y_smooth, x_u)
+        
+        # Segunda derivada (curvatura)
+        d2y = np.gradient(dy, x_u)
+        
+        # Buscar cruces por cero de la primera derivada
+        if higher_better:
+            # Buscar máximos: dy cruza de positivo a negativo, d2y < 0
+            sign_changes = np.where(np.diff(np.sign(dy)) < 0)[0]
+        else:
+            # Buscar mínimos: dy cruza de negativo a positivo, d2y > 0
+            sign_changes = np.where(np.diff(np.sign(dy)) > 0)[0]
+        
+        if len(sign_changes) == 0:
+            # Fallback: usar el extremo
+            if higher_better:
+                optimal = x_u[np.argmax(y_smooth)]
+            else:
+                optimal = x_u[np.argmin(y_smooth)]
+            confidence = 0.5
+        else:
+            # Evaluar cada cruce
+            best_opt = None
+            best_score = -np.inf if higher_better else np.inf
+            
+            for idx in sign_changes:
+                val = y_smooth[idx]
+                curvature = d2y[idx]
+                
+                # Verificar que la curvatura sea del signo correcto
+                if higher_better and curvature < 0:  # Máximo
+                    if val > best_score:
+                        best_score = val
+                        best_opt = x_u[idx]
+                elif not higher_better and curvature > 0:  # Mínimo
+                    if val < best_score:
+                        best_score = val
+                        best_opt = x_u[idx]
+            
+            if best_opt is None:
+                if higher_better:
+                    optimal = x_u[np.argmax(y_smooth)]
+                else:
+                    optimal = x_u[np.argmin(y_smooth)]
+                confidence = 0.5
+            else:
+                optimal = best_opt
+                # Confianza basada en la claridad del extremo
+                y_range = np.max(y_smooth) - np.min(y_smooth)
+                if higher_better:
+                    relative_height = (best_score - np.min(y_smooth)) / (y_range + 1e-10)
+                else:
+                    relative_height = (np.max(y_smooth) - best_score) / (y_range + 1e-10)
+                confidence = min(0.9, relative_height * 0.9)
+        
+        return optimal, confidence
+    
+    def _bayesian_surrogate(self, x: np.ndarray, y: np.ndarray,
+                            higher_better: bool) -> Tuple[float, float]:
+        """
+        Bayesian Surrogate Model usando Gradient Boosting como aproximación.
+        
+        Entrena un modelo probabilístico y busca el óptimo predicho.
+        """
+        X = x.reshape(-1, 1)
+        scaler = RobustScaler()
+        X_scaled = scaler.fit_transform(X)
+        
+        # Modelo ensemble para reducir varianza
+        models = []
+        n_models = 5
+        
+        for i in range(n_models):
+            # Bootstrap para cada modelo
+            idx = np.random.randint(0, len(x), size=len(x))
+            
+            model = GradientBoostingRegressor(
+                n_estimators=30, max_depth=3, learning_rate=0.1,
+                subsample=0.8, random_state=42 + i
+            )
+            model.fit(X_scaled[idx], y[idx])
+            models.append(model)
+        
+        # Predicciones
+        x_test = np.linspace(x.min(), x.max(), 200).reshape(-1, 1)
+        x_test_scaled = scaler.transform(x_test)
+        
+        predictions = np.array([m.predict(x_test_scaled) for m in models])
+        y_mean = predictions.mean(axis=0)
+        y_std = predictions.std(axis=0)
+        
+        # Acquisition function: UCB (Upper Confidence Bound)
+        # Para maximización: mean + kappa * std
+        # Para minimización: mean - kappa * std
+        kappa = 1.5
+        
+        if higher_better:
+            acquisition = y_mean + kappa * y_std
+            best_idx = np.argmax(acquisition)
+        else:
+            acquisition = y_mean - kappa * y_std
+            best_idx = np.argmin(acquisition)
+        
+        optimal = x_test[best_idx, 0]
+        
+        # Confianza basada en la incertidumbre
+        uncertainty = y_std[best_idx] / (np.std(y) + 1e-10)
+        confidence = max(0.4, 1 - uncertainty)
+        
+        return optimal, confidence
+    
+    def _robust_regression_optimal(self, x: np.ndarray, y: np.ndarray,
+                                   higher_better: bool) -> Tuple[float, float]:
+        """
+        RANSAC-like Robust Regression para ignorar outliers.
+        
+        Usa múltiples subconjuntos aleatorios y encuentra
+        el óptimo más consistente.
+        """
+        n = len(x)
+        n_iterations = 50
+        sample_size = max(10, int(n * 0.5))
+        
+        all_optimals = []
+        
+        for _ in range(n_iterations):
+            # Muestra aleatoria
+            idx = np.random.choice(n, size=sample_size, replace=False)
+            x_sample = x[idx]
+            y_sample = y[idx]
+            
+            # Encontrar óptimo en esta muestra
+            n_top = max(3, int(len(y_sample) * 0.15))
+            if higher_better:
+                top_idx = np.argsort(y_sample)[-n_top:]
+            else:
+                top_idx = np.argsort(y_sample)[:n_top]
+            
+            opt = np.median(x_sample[top_idx])
+            all_optimals.append(opt)
+        
+        all_optimals = np.array(all_optimals)
+        
+        # Usar mediana (robusta a outliers)
+        optimal = np.median(all_optimals)
+        
+        # MAD (Median Absolute Deviation) para medir dispersión
+        mad = np.median(np.abs(all_optimals - optimal))
+        normalized_mad = mad / (x.max() - x.min() + 1e-10)
+        
+        confidence = max(0.4, 1 - normalized_mad * 5)
+        
+        return optimal, confidence
+    
+    def _kde_mode_optimal(self, x: np.ndarray, y: np.ndarray,
+                          higher_better: bool) -> Tuple[float, float]:
+        """
+        KDE Mode Detection: Encuentra la moda de los valores X con alto rendimiento.
+        """
+        # Seleccionar top performers
+        n_top = max(10, int(len(y) * 0.2))
         if higher_better:
             top_idx = np.argsort(y)[-n_top:]
         else:
@@ -596,677 +1358,2665 @@ class StatsAnalyzer:
         
         x_top = x[top_idx]
         
-        return {
-            'optimal_min': np.percentile(x_top, 10),
-            'optimal_max': np.percentile(x_top, 90),
-            'optimal_mean': np.mean(x_top),
-            'optimal_median': np.median(x_top),
-            'n_samples': len(x_top)
-        }
-    
-    @staticmethod
-    def sensitivity_score(x: np.ndarray, y: np.ndarray) -> float:
-        """Calcula sensibilidad: cuánto cambia Y por unidad de cambio en X."""
-        mask = ~(np.isnan(x) | np.isnan(y))
-        x, y = x[mask], y[mask]
+        if len(x_top) < 5:
+            return np.nan, 0
         
-        if len(x) < 10:
-            return 0.0
+        # KDE
+        bandwidth = max(np.std(x_top) * 0.3, (x.max() - x.min()) / 20)
+        kde = KernelDensity(kernel='gaussian', bandwidth=bandwidth)
+        kde.fit(x_top.reshape(-1, 1))
         
-        # Normalizar ambos
-        x_norm = (x - x.mean()) / (x.std() + 1e-10)
-        y_norm = (y - y.mean()) / (y.std() + 1e-10)
+        # Evaluar
+        x_eval = np.linspace(x.min(), x.max(), 200).reshape(-1, 1)
+        log_density = kde.score_samples(x_eval)
+        density = np.exp(log_density)
         
-        # Pendiente normalizada
-        try:
-            slope, _, r, _, _ = stats.linregress(x_norm, y_norm)
-            return abs(slope) * (r ** 2)  # Ponderado por R²
-        except:
-            return 0.0
-
-
-# ==============================================================================
-# 📊 GENERADOR DE VISUALIZACIONES
-# ==============================================================================
-
-class ParameterVisualizer:
-    """
-    Genera visualización completa para UN parámetro.
-    
-    Cada parámetro tiene su propia página con:
-    - 4 gráficos (uno por métrica: ROI, SQN, PF, DD)
-    - Curvas suavizadas con banda de confianza
-    - Zona óptima marcada
-    - Estadísticas detalladas
-    """
-    
-    def __init__(self, df: pd.DataFrame, other_params: List[str]):
-        self.df = df
-        self.other_params = other_params
-        self.reducer = NoiseReducer()
-        self.stats = StatsAnalyzer()
-    
-    def find_metric_column(self, metric_key: str) -> Optional[str]:
-        """Encuentra la columna correspondiente a una métrica."""
-        # Mapeo de nombres alternativos
-        aliases = {
-            'ROI': ['ROI', 'ROI_PCT', 'RETURN', 'NET_RETURN'],
-            'SQN': ['SQN', 'SYSTEM_QUALITY_NUMBER'],
-            'PROFIT_FACTOR': ['PROFIT_FACTOR', 'PF', 'PAYOFF_RATIO'],
-            'DRAWDOWN': ['DRAWDOWN', 'MAX_DD', 'DD', 'MDD', 'MAX_DRAWDOWN', 'DD_PCT'],
-        }
+        # Encontrar la moda (máximo de densidad)
+        mode_idx = np.argmax(density)
+        optimal = x_eval[mode_idx, 0]
         
-        for alias in aliases.get(metric_key, [metric_key]):
-            if alias in self.df.columns:
-                return alias
-            # Buscar case-insensitive
-            for col in self.df.columns:
-                if col.upper() == alias.upper():
-                    return col
+        # Confianza basada en qué tan concentrada está la distribución
+        max_density = density[mode_idx]
+        mean_density = np.mean(density)
+        concentration = (max_density / mean_density) - 1
+        confidence = min(0.85, 0.5 + concentration * 0.3)
         
-        return None
+        return optimal, confidence
     
-    def create_parameter_page(self, param: str, ax_array: np.ndarray, 
-                               use_noise_reduction: bool = True):
+    def _consensus_optimal(self, results: List, x: np.ndarray) -> Tuple[float, float, Tuple[float, float]]:
         """
-        Crea la visualización completa para un parámetro.
+        Combina los resultados de múltiples métodos usando consenso robusto.
         
-        Args:
-            param: Nombre del parámetro
-            ax_array: Array 2x2 de axes para los 4 gráficos
-            use_noise_reduction: Si usar ML para reducir ruido
+        Usa mediana ponderada y clustering para encontrar el consenso.
         """
-        metrics_to_plot = ['ROI', 'SQN', 'PROFIT_FACTOR', 'DRAWDOWN']
+        if len(results) == 0:
+            return np.nan, 0, (np.nan, np.nan)
         
-        for idx, metric_key in enumerate(metrics_to_plot):
-            row, col = idx // 2, idx % 2
-            ax = ax_array[row, col]
+        optimals = np.array([r[1] for r in results])
+        confidences = np.array([r[2] for r in results])
+        ranges = [r[3] for r in results if r[3] is not None]
+        
+        # Filtrar NaN
+        valid_mask = ~np.isnan(optimals)
+        if valid_mask.sum() == 0:
+            return np.nan, 0, (np.nan, np.nan)
+        
+        optimals = optimals[valid_mask]
+        confidences = confidences[valid_mask]
+        
+        # Detectar outliers en los óptimos (métodos que dan valores muy diferentes)
+        if len(optimals) >= 3:
+            median_opt = np.median(optimals)
+            mad = np.median(np.abs(optimals - median_opt))
+            threshold = median_opt + 3 * mad * 1.4826  # Factor para convertir MAD a std
+            inlier_mask = np.abs(optimals - median_opt) <= 2.5 * mad * 1.4826
             
-            # Encontrar columna de métrica
-            metric_col = self.find_metric_column(metric_key)
-            
-            if metric_col is None:
-                ax.text(0.5, 0.5, f'{metric_key}\nNo encontrada', 
-                       ha='center', va='center', fontsize=12,
-                       color=COLORS['text_muted'], transform=ax.transAxes)
-                ax.set_facecolor(COLORS['bg_panel'])
-                continue
-            
-            style = METRIC_STYLE[metric_key]
-            
-            # Obtener datos con reducción de ruido
-            if use_noise_reduction:
-                x, y, noise_stats = self.reducer.isolate_effect(
-                    self.df, param, metric_col, self.other_params, method='residual'
-                )
+            if inlier_mask.sum() >= 2:
+                optimals = optimals[inlier_mask]
+                confidences = confidences[inlier_mask]
+        
+        # Mediana ponderada por confianza
+        sorted_idx = np.argsort(optimals)
+        sorted_opts = optimals[sorted_idx]
+        sorted_confs = confidences[sorted_idx]
+        
+        cumsum = np.cumsum(sorted_confs)
+        median_idx = np.searchsorted(cumsum, cumsum[-1] / 2)
+        median_idx = min(median_idx, len(sorted_opts) - 1)
+        
+        consensus_optimal = sorted_opts[median_idx]
+        
+        # Confianza del consenso
+        # Basada en: (1) confianzas individuales, (2) acuerdo entre métodos
+        spread = np.std(optimals) / (x.max() - x.min() + 1e-10)
+        agreement = max(0.3, 1 - spread * 3)
+        avg_confidence = np.mean(confidences)
+        
+        consensus_confidence = (avg_confidence * 0.6 + agreement * 0.4)
+        
+        # Rango óptimo del consenso
+        if ranges:
+            valid_ranges = [(r[0], r[1]) for r in ranges if r is not None and not np.isnan(r[0])]
+            if valid_ranges:
+                range_mins = [r[0] for r in valid_ranges]
+                range_maxs = [r[1] for r in valid_ranges]
+                consensus_range = (np.median(range_mins), np.median(range_maxs))
             else:
-                x = pd.to_numeric(self.df[param], errors='coerce').values
-                y = pd.to_numeric(self.df[metric_col], errors='coerce').values
-                mask = ~(np.isnan(x) | np.isnan(y))
-                x, y = x[mask], y[mask]
-                noise_stats = {'method': 'raw', 'noise_reduction': 0}
+                # Fallback: usar dispersión de óptimos
+                consensus_range = (np.min(optimals), np.max(optimals))
+        else:
+            consensus_range = (np.min(optimals), np.max(optimals))
+        
+        return consensus_optimal, consensus_confidence, consensus_range
+    
+    def _high_quality_smooth_curve(self, x: np.ndarray, y: np.ndarray) -> Tuple[np.ndarray, np.ndarray]:
+        """
+        Genera curva suavizada de alta calidad para visualización.
+        
+        Aplica filtrado robusto de outliers para evitar picos artificiales.
+        """
+        # ═══════════════════════════════════════════════════════════════════
+        # 1. FILTRAR OUTLIERS EXTREMOS (usando IQR robusto)
+        # ═══════════════════════════════════════════════════════════════════
+        y_q1, y_q3 = np.percentile(y, [25, 75])
+        y_iqr = y_q3 - y_q1
+        
+        # Usar factor 2.5 para IQR (más conservador que 1.5 estándar)
+        y_lower = y_q1 - 2.5 * y_iqr
+        y_upper = y_q3 + 2.5 * y_iqr
+        
+        # Crear máscara de inliers
+        inlier_mask = (y >= y_lower) & (y <= y_upper)
+        
+        # Si filtrar deja muy pocos datos, usar percentiles más amplios
+        if inlier_mask.sum() < 20:
+            y_p5, y_p95 = np.percentile(y, [5, 95])
+            inlier_mask = (y >= y_p5) & (y <= y_p95)
+        
+        if inlier_mask.sum() < 10:
+            # Usar todos los datos si aún quedan muy pocos
+            x_clean, y_clean = x.copy(), y.copy()
+        else:
+            x_clean = x[inlier_mask]
+            y_clean = y[inlier_mask]
+        
+        # ═══════════════════════════════════════════════════════════════════
+        # 2. AGRUPAR POR VALORES ÚNICOS CON MEDIANA (más robusta que media)
+        # ═══════════════════════════════════════════════════════════════════
+        df_temp = pd.DataFrame({'x': x_clean, 'y': y_clean})
+        grouped = df_temp.groupby('x')['y'].agg(['median', 'std', 'count']).reset_index()
+        x_u = grouped['x'].values
+        y_u = grouped['median'].values  # Usar MEDIANA en vez de media
+        counts = grouped['count'].values
+        
+        if len(x_u) < 5:
+            return x_u, y_u
+        
+        # Ordenar
+        sort_idx = np.argsort(x_u)
+        x_u = x_u[sort_idx]
+        y_u = y_u[sort_idx]
+        counts = counts[sort_idx]
+        
+        # ═══════════════════════════════════════════════════════════════════
+        # 3. SUAVIZADO ADICIONAL DE LOS PUNTOS AGRUPADOS (eliminar ruido local)
+        # ═══════════════════════════════════════════════════════════════════
+        if len(y_u) > 7:
+            # Media móvil ponderada por counts
+            window = min(5, len(y_u) // 3)
+            if window >= 3:
+                y_u_smooth = np.copy(y_u)
+                for i in range(window // 2, len(y_u) - window // 2):
+                    start = i - window // 2
+                    end = i + window // 2 + 1
+                    local_weights = counts[start:end]
+                    y_u_smooth[i] = np.average(y_u[start:end], weights=local_weights + 1)
+                y_u = y_u_smooth
+        
+        # ═══════════════════════════════════════════════════════════════════
+        # 4. CREAR CURVA INTERPOLADA
+        # ═══════════════════════════════════════════════════════════════════
+        n_points = min(200, len(x_u) * 5)
+        x_smooth = np.linspace(x_u.min(), x_u.max(), n_points)
+        
+        try:
+            # Spline ponderado por counts con factor de suavizado alto
+            weights = np.sqrt(counts)
+            s_factor = len(x_u) * 0.8  # Aumentado de 0.3 a 0.8 para más suavizado
+            spline = UnivariateSpline(x_u, y_u, w=weights, s=s_factor)
+            y_smooth = spline(x_smooth)
             
-            if len(x) < 5:
-                ax.text(0.5, 0.5, f'{metric_key}\nDatos insuficientes', 
-                       ha='center', va='center', fontsize=12,
-                       color=COLORS['text_muted'], transform=ax.transAxes)
+            # Suavizado gaussiano final
+            y_smooth = gaussian_filter1d(y_smooth, sigma=3)  # Aumentado de 2 a 3
+            
+            # ═══════════════════════════════════════════════════════════════════
+            # 5. CLIPPING FINAL para evitar valores fuera del rango de datos limpios
+            # ═══════════════════════════════════════════════════════════════════
+            y_data_min = np.percentile(y_clean, 2)
+            y_data_max = np.percentile(y_clean, 98)
+            y_smooth = np.clip(y_smooth, y_data_min, y_data_max)
+            
+            return x_smooth, y_smooth
+        except:
+            return x_u, y_u
+    
+    def _compute_kde(self, x: np.ndarray, n_points: int = 100) -> Tuple[np.ndarray, np.ndarray]:
+        """Calcula KDE de la distribución del parámetro."""
+        try:
+            kde = KernelDensity(kernel='gaussian', bandwidth=np.std(x) * 0.3)
+            kde.fit(x.reshape(-1, 1))
+            
+            x_plot = np.linspace(x.min(), x.max(), n_points).reshape(-1, 1)
+            log_dens = kde.score_samples(x_plot)
+            
+            return x_plot.flatten(), np.exp(log_dens)
+        except:
+            return np.array([]), np.array([])
+    
+    def _weighted_optimal(self, estimates: List[Tuple[float, float]]) -> float:
+        """Calcula óptimo ponderado."""
+        values, weights = zip(*estimates)
+        values = np.array(values)
+        weights = np.array(weights)
+        
+        mask = ~np.isnan(values)
+        if mask.sum() == 0:
+            return np.nan
+        
+        return np.average(values[mask], weights=weights[mask])
+    
+    def _calculate_range(self, x: np.ndarray, metric_results: Dict) -> Tuple[float, float]:
+        """
+        Calcula rango óptimo usando técnicas avanzadas:
+        1. Changepoint Detection - Detecta dónde cambia el comportamiento
+        2. Confidence Interval Intersection - Intersección de intervalos de confianza
+        3. Plateau Width Analysis - Análisis del ancho de mesetas
+        4. Sensitivity Analysis - Dónde el rendimiento es estable
+        """
+        ranges_from_methods = []
+        
+        # Recopilar rangos de cada método que los provea
+        for metric, result in metric_results.items():
+            if result.get('confidence', 0) < 0.3:
                 continue
             
-            # ═══════════════════════════════════════════════════════════════
-            # DIBUJAR GRÁFICO
-            # ═══════════════════════════════════════════════════════════════
-            
-            # 1. Scatter de puntos originales (semi-transparentes)
-            ax.scatter(x, y, c=style['color'], alpha=0.15, s=15, 
-                      edgecolors='none', rasterized=True)
-            
-            # 2. Curva suavizada
-            x_smooth, y_smooth = self.reducer.smooth_curve(x, y, smoothing=0.4)
-            ax.plot(x_smooth, y_smooth, color=style['color'], linewidth=2.5,
-                   label='Tendencia', zorder=10)
-            
-            # 3. Banda de confianza (bootstrap simplificado)
-            # Calcular percentiles por bins
-            n_bins = min(15, len(np.unique(x)) // 2)
-            if n_bins >= 3:
-                try:
-                    bins = np.linspace(x.min(), x.max(), n_bins + 1)
-                    bin_centers = []
-                    y_lower = []
-                    y_upper = []
-                    
-                    for i in range(len(bins) - 1):
-                        mask = (x >= bins[i]) & (x < bins[i+1])
-                        if mask.sum() >= 3:
-                            y_bin = y[mask]
-                            bin_centers.append((bins[i] + bins[i+1]) / 2)
-                            y_lower.append(np.percentile(y_bin, 20))
-                            y_upper.append(np.percentile(y_bin, 80))
-                    
-                    if len(bin_centers) >= 3:
-                        # Suavizar bandas
-                        bc = np.array(bin_centers)
-                        yl = gaussian_filter1d(np.array(y_lower), sigma=1)
-                        yu = gaussian_filter1d(np.array(y_upper), sigma=1)
-                        
-                        ax.fill_between(bc, yl, yu, color=style['color'], 
-                                        alpha=0.15, zorder=5)
-                except:
-                    pass
-            
-            # 4. Zona óptima
-            opt = self.stats.optimal_zone(x, y, higher_better=style['higher_better'])
-            if not np.isnan(opt['optimal_min']):
-                ax.axvspan(opt['optimal_min'], opt['optimal_max'], 
-                          color=COLORS['green'] if style['higher_better'] else COLORS['red'],
-                          alpha=0.1, zorder=1)
-                ax.axvline(opt['optimal_mean'], color=COLORS['gold'], 
-                          linestyle='--', linewidth=1.5, alpha=0.8,
-                          label=f"Óptimo: {opt['optimal_mean']:.3g}")
-            
-            # 5. Estadísticas
-            corr = self.stats.correlation_analysis(x, y)
-            sens = self.stats.sensitivity_score(x, y)
-            
-            # Título con información
-            title = f"{style['name']}"
-            ax.set_title(title, fontsize=11, fontweight='bold', 
-                        color=style['color'], pad=8)
-            
-            # Texto de estadísticas
-            stats_text = (
-                f"ρ = {corr['spearman']:+.2f} ({corr['strength']})\n"
-                f"Sens: {sens:.2f}"
-            )
-            if noise_stats['noise_reduction'] > 0:
-                stats_text += f"\n🧹 -{noise_stats['noise_reduction']*100:.0f}% ruido"
-            
-            ax.text(0.98, 0.98, stats_text, transform=ax.transAxes,
-                   fontsize=8, va='top', ha='right',
-                   bbox=dict(boxstyle='round,pad=0.3', facecolor=COLORS['bg_card'],
-                            edgecolor=COLORS['border'], alpha=0.9),
-                   color=COLORS['text_gray'])
-            
-            # Zona óptima en texto
-            if not np.isnan(opt['optimal_min']):
-                opt_text = f"Zona óptima: [{opt['optimal_min']:.3g} - {opt['optimal_max']:.3g}]"
-                ax.text(0.02, 0.02, opt_text, transform=ax.transAxes,
-                       fontsize=7, va='bottom', ha='left',
-                       color=COLORS['gold'], alpha=0.9)
-            
-            # Ejes
-            ax.set_xlabel(param, fontsize=9, color=COLORS['text_gray'])
-            ax.set_ylabel(style['name'], fontsize=9, color=COLORS['text_gray'])
-            
-            # Grid
-            ax.grid(True, alpha=0.2, color=COLORS['grid'])
-            ax.set_facecolor(COLORS['bg_panel'])
-            
-            # Leyenda compacta
-            ax.legend(loc='upper left', fontsize=7, framealpha=0.8)
-
-
-# ==============================================================================
-# 📄 GENERADOR DE REPORTE PDF
-# ==============================================================================
-
-class ReportGenerator:
-    """Genera el reporte PDF completo."""
-    
-    def __init__(self, loader: DataLoader):
-        self.loader = loader
-        self.df = loader.df
-        self.params = loader.columns.parameters
-        self.strategy = loader.strategy_name
-    
-    def generate(self, output_path: str):
-        """Genera el reporte PDF."""
-        print(f"\n{'═'*70}")
-        print("📊 GENERANDO REPORTE INSTITUCIONAL")
-        print('═'*70)
+            # Usar rango del consenso si está disponible
+            opt_range = result.get('optimal_range')
+            if opt_range is not None and not np.isnan(opt_range[0]):
+                ranges_from_methods.append(opt_range)
         
-        with PdfPages(output_path) as pdf:
-            # 1. Portada
-            self._create_cover(pdf)
+        # ═══════════════════════════════════════════════════════════════════
+        # 1. SENSITIVITY-BASED RANGE
+        # ═══════════════════════════════════════════════════════════════════
+        sensitivity_ranges = []
+        
+        for metric, result in metric_results.items():
+            curve_x = result.get('curve_x', np.array([]))
+            curve_y = result.get('curve_y', np.array([]))
+            higher_better = result.get('higher_better', True)
             
-            # 2. Resumen ejecutivo
-            self._create_summary(pdf)
+            if len(curve_x) < 20:
+                continue
             
-            # 3. Una página por cada parámetro
-            visualizer = ParameterVisualizer(self.df, self.params)
-            
-            for i, param in enumerate(self.params):
-                print(f"   📈 Analizando: {param} ({i+1}/{len(self.params)})")
-                self._create_parameter_page(pdf, param, visualizer)
-            
-            # 4. Matriz de correlaciones
-            self._create_correlation_matrix(pdf)
-            
-            # 5. Ranking de importancia
-            self._create_importance_ranking(pdf)
-        
-        print(f"\n   ✅ Reporte guardado: {output_path}")
-        print('═'*70)
-    
-    def _create_cover(self, pdf: PdfPages):
-        """Crea la portada."""
-        fig = plt.figure(figsize=(11, 8.5))
-        fig.patch.set_facecolor(COLORS['bg_dark'])
-        
-        # Título principal
-        fig.text(0.5, 0.65, 'MODELOX', fontsize=48, ha='center', va='center',
-                fontweight='bold', color=COLORS['blue'])
-        fig.text(0.5, 0.55, 'PARAMETER ANALYSIS REPORT', fontsize=24, ha='center',
-                color=COLORS['text_white'])
-        
-        # Línea decorativa
-        ax = fig.add_axes([0.2, 0.50, 0.6, 0.002])
-        ax.set_facecolor(COLORS['blue'])
-        ax.set_xticks([])
-        ax.set_yticks([])
-        
-        # Info
-        fig.text(0.5, 0.40, f'Estrategia: {self.strategy}', fontsize=16, ha='center',
-                color=COLORS['text_gray'])
-        fig.text(0.5, 0.35, f'Trials Analizados: {len(self.df):,}', fontsize=14, ha='center',
-                color=COLORS['text_gray'])
-        fig.text(0.5, 0.30, f'Parámetros: {len(self.params)}', fontsize=14, ha='center',
-                color=COLORS['text_gray'])
-        
-        # Fecha
-        fig.text(0.5, 0.15, datetime.now().strftime('%Y-%m-%d %H:%M'), 
-                fontsize=12, ha='center', color=COLORS['text_muted'])
-        
-        # Métricas analizadas
-        metrics_text = "Métricas: ROI • SQN • Profit Factor • Drawdown"
-        fig.text(0.5, 0.22, metrics_text, fontsize=11, ha='center',
-                color=COLORS['gold'])
-        
-        pdf.savefig(fig, facecolor=COLORS['bg_dark'])
-        plt.close(fig)
-    
-    def _create_summary(self, pdf: PdfPages):
-        """Crea página de resumen ejecutivo."""
-        fig = plt.figure(figsize=(11, 8.5))
-        fig.patch.set_facecolor(COLORS['bg_dark'])
-        
-        # Título
-        fig.text(0.5, 0.95, 'RESUMEN EJECUTIVO', fontsize=18, ha='center',
-                fontweight='bold', color=COLORS['text_white'])
-        
-        # Calcular estadísticas globales
-        stats_text = []
-        
-        for metric_key in ['ROI', 'SQN', 'PROFIT_FACTOR', 'DRAWDOWN']:
-            col = None
-            for alias in [metric_key, metric_key.lower(), metric_key.replace('_', '')]:
-                if alias in self.df.columns:
-                    col = alias
-                    break
-                for c in self.df.columns:
-                    if c.upper() == alias.upper():
-                        col = c
-                        break
-            
-            if col:
-                vals = pd.to_numeric(self.df[col], errors='coerce').dropna()
-                style = METRIC_STYLE[metric_key]
-                stats_text.append(
-                    f"{style['name']:20} | Media: {vals.mean():>10.3f} | "
-                    f"Std: {vals.std():>8.3f} | Best: {vals.max() if style['higher_better'] else vals.min():>10.3f}"
-                )
-        
-        # Mostrar estadísticas
-        y_pos = 0.85
-        fig.text(0.1, y_pos, "📊 ESTADÍSTICAS DE MÉTRICAS", fontsize=12, 
-                fontweight='bold', color=COLORS['cyan'])
-        y_pos -= 0.03
-        
-        for line in stats_text:
-            y_pos -= 0.025
-            fig.text(0.1, y_pos, line, fontsize=10, family='monospace',
-                    color=COLORS['text_gray'])
-        
-        # Parámetros con mayor impacto
-        y_pos -= 0.06
-        fig.text(0.1, y_pos, "⚙️ PARÁMETROS DETECTADOS", fontsize=12,
-                fontweight='bold', color=COLORS['cyan'])
-        
-        for param in self.params[:10]:
-            y_pos -= 0.025
             try:
-                vals = pd.to_numeric(self.df[param], errors='coerce').dropna()
-                fig.text(0.1, y_pos, f"  • {param:<30} [{vals.min():.4g} → {vals.max():.4g}]",
-                        fontsize=9, color=COLORS['text_gray'], family='monospace')
+                # Normalizar la curva
+                y_norm = (curve_y - np.min(curve_y)) / (np.max(curve_y) - np.min(curve_y) + 1e-10)
+                if not higher_better:
+                    y_norm = 1 - y_norm
+                
+                # Calcular derivada absoluta (sensibilidad local)
+                dy = np.abs(np.gradient(y_norm, curve_x))
+                
+                # Suavizar la derivada
+                dy_smooth = gaussian_filter1d(dy, sigma=3)
+                
+                # Buscar región de baja sensibilidad (estable) con buen rendimiento
+                # Score = rendimiento * (1 - sensibilidad normalizada)
+                sensitivity_norm = dy_smooth / (np.max(dy_smooth) + 1e-10)
+                stability_score = y_norm * (1 - sensitivity_norm * 0.5)
+                
+                # Umbral adaptivo para "zona buena"
+                threshold = np.percentile(stability_score, 70)
+                good_mask = stability_score >= threshold
+                
+                if good_mask.sum() > 5:
+                    good_x = curve_x[good_mask]
+                    sensitivity_ranges.append((good_x.min(), good_x.max()))
             except:
-                fig.text(0.1, y_pos, f"  • {param}", fontsize=9, color=COLORS['text_gray'])
+                pass
         
-        if len(self.params) > 10:
-            y_pos -= 0.025
-            fig.text(0.1, y_pos, f"  ... y {len(self.params) - 10} más",
-                    fontsize=9, color=COLORS['text_muted'])
+        # ═══════════════════════════════════════════════════════════════════
+        # 2. CHANGEPOINT-BASED RANGE
+        # ═══════════════════════════════════════════════════════════════════
+        changepoint_ranges = []
         
-        # Nota metodológica
-        y_pos = 0.15
-        fig.text(0.1, y_pos, "📋 METODOLOGÍA", fontsize=12,
-                fontweight='bold', color=COLORS['cyan'])
-        y_pos -= 0.03
-        methodology = [
-            "• Reducción de ruido: Gradient Boosting para aislar efecto de cada parámetro",
-            "• Curvas suavizadas: Spline + Gaussian smoothing (σ adaptativo)",
-            "• Zona óptima: Top 20% de trials con mejor rendimiento",
-            "• Correlaciones: Spearman (robusta a outliers) + test de significancia",
-        ]
-        for line in methodology:
-            y_pos -= 0.022
-            fig.text(0.1, y_pos, line, fontsize=9, color=COLORS['text_gray'])
+        for metric, result in metric_results.items():
+            curve_x = result.get('curve_x', np.array([]))
+            curve_y = result.get('curve_y', np.array([]))
+            higher_better = result.get('higher_better', True)
+            
+            if len(curve_x) < 20:
+                continue
+            
+            try:
+                # Normalizar
+                y_norm = (curve_y - np.min(curve_y)) / (np.max(curve_y) - np.min(curve_y) + 1e-10)
+                if not higher_better:
+                    y_norm = 1 - y_norm
+                
+                # Calcular segunda derivada (cambios en la tendencia)
+                dy = np.gradient(y_norm, curve_x)
+                d2y = np.gradient(dy, curve_x)
+                d2y_smooth = gaussian_filter1d(d2y, sigma=3)
+                
+                # Encontrar puntos de inflexión significativos
+                d2y_abs = np.abs(d2y_smooth)
+                threshold = np.percentile(d2y_abs, 80)
+                
+                # Buscar cruces por cero de la segunda derivada
+                sign_changes = np.where(np.diff(np.sign(d2y_smooth)))[0]
+                
+                if len(sign_changes) >= 2:
+                    # Encontrar la zona alta entre cambios
+                    optimal_idx = np.argmax(y_norm)
+                    
+                    # Encontrar changepoints más cercanos al óptimo
+                    left_changes = sign_changes[sign_changes < optimal_idx]
+                    right_changes = sign_changes[sign_changes > optimal_idx]
+                    
+                    left_bound = curve_x[left_changes[-1]] if len(left_changes) > 0 else curve_x[0]
+                    right_bound = curve_x[right_changes[0]] if len(right_changes) > 0 else curve_x[-1]
+                    
+                    changepoint_ranges.append((left_bound, right_bound))
+            except:
+                pass
         
-        pdf.savefig(fig, facecolor=COLORS['bg_dark'])
-        plt.close(fig)
+        # ═══════════════════════════════════════════════════════════════════
+        # 3. PERFORMANCE THRESHOLD RANGE (mejorado)
+        # ═══════════════════════════════════════════════════════════════════
+        threshold_ranges = []
+        
+        for metric, result in metric_results.items():
+            curve_x = result.get('curve_x', np.array([]))
+            curve_y = result.get('curve_y', np.array([]))
+            higher_better = result.get('higher_better', True)
+            
+            if len(curve_x) < 10:
+                continue
+            
+            try:
+                # Umbral del 85% del óptimo (más estricto que antes)
+                if higher_better:
+                    threshold = np.max(curve_y) * 0.85
+                    good_idx = curve_y >= threshold
+                else:
+                    threshold = np.min(curve_y) * 1.15
+                    good_idx = curve_y <= threshold
+                
+                if good_idx.sum() > 3:
+                    good_x = curve_x[good_idx]
+                    
+                    # Buscar el cluster más grande de puntos buenos (evitar regiones dispersas)
+                    diffs = np.diff(np.where(good_idx)[0])
+                    if len(diffs) > 0:
+                        # Encontrar gaps grandes
+                        gap_threshold = len(curve_x) // 10
+                        large_gaps = np.where(diffs > gap_threshold)[0]
+                        
+                        if len(large_gaps) > 0:
+                            # Dividir en segmentos
+                            segments = []
+                            start = 0
+                            for gap_idx in large_gaps:
+                                end = np.where(good_idx)[0][gap_idx]
+                                segments.append(curve_x[good_idx][start:gap_idx+1])
+                                start = gap_idx + 1
+                            segments.append(curve_x[good_idx][start:])
+                            
+                            # Usar el segmento más largo
+                            if segments:
+                                longest_segment = max(segments, key=len)
+                                if len(longest_segment) > 0:
+                                    threshold_ranges.append((longest_segment.min(), longest_segment.max()))
+                        else:
+                            threshold_ranges.append((good_x.min(), good_x.max()))
+                    else:
+                        threshold_ranges.append((good_x.min(), good_x.max()))
+            except:
+                pass
+        
+        # ═══════════════════════════════════════════════════════════════════
+        # COMBINAR TODOS LOS RANGOS
+        # ═══════════════════════════════════════════════════════════════════
+        all_ranges = ranges_from_methods + sensitivity_ranges + changepoint_ranges + threshold_ranges
+        
+        if not all_ranges:
+            # Fallback: usar IQR
+            q25, q75 = np.percentile(x, [25, 75])
+            return (q25, q75)
+        
+        # Encontrar intersección robusta usando mediana
+        all_mins = [r[0] for r in all_ranges]
+        all_maxs = [r[1] for r in all_ranges]
+        
+        # Usar mediana para robustez
+        range_min = np.median(all_mins)
+        range_max = np.median(all_maxs)
+        
+        # Asegurar que el rango tenga sentido
+        if range_min >= range_max:
+            # Usar el rango más frecuente
+            range_min = np.percentile(all_mins, 25)
+            range_max = np.percentile(all_maxs, 75)
+        
+        # Asegurar que está dentro del dominio
+        range_min = max(range_min, x.min())
+        range_max = min(range_max, x.max())
+        
+        return (range_min, range_max)
     
-    def _create_parameter_page(self, pdf: PdfPages, param: str, 
-                                visualizer: ParameterVisualizer):
-        """Crea página completa para un parámetro."""
-        fig = plt.figure(figsize=(11, 8.5))
-        fig.patch.set_facecolor(COLORS['bg_dark'])
+    def _calculate_robustness(self, x: np.ndarray, metric_results: Dict, optimal: float) -> float:
+        """Calcula robustez del óptimo."""
+        if np.isnan(optimal):
+            return 0.0
         
-        # Título del parámetro
-        fig.text(0.5, 0.97, f'ANÁLISIS: {param}', fontsize=16, ha='center',
-                fontweight='bold', color=COLORS['blue'])
+        robustness_scores = []
         
-        # Rango del parámetro
-        try:
-            vals = pd.to_numeric(self.df[param], errors='coerce').dropna()
-            range_text = f"Rango: [{vals.min():.4g} → {vals.max():.4g}] | N={len(vals):,} | Únicos={vals.nunique()}"
-            fig.text(0.5, 0.94, range_text, fontsize=10, ha='center',
-                    color=COLORS['text_gray'])
-        except:
-            pass
+        for metric, result in metric_results.items():
+            curve_x = result.get('curve_x', np.array([]))
+            curve_y = result.get('curve_y', np.array([]))
+            higher_better = result.get('higher_better', True)
+            
+            if len(curve_x) < 10:
+                continue
+            
+            # Encontrar rendimiento en el óptimo
+            opt_idx = np.argmin(np.abs(curve_x - optimal))
+            y_at_opt = curve_y[opt_idx]
+            
+            # Calcular cuánto se degrada al alejarse del óptimo
+            x_range = curve_x.max() - curve_x.min()
+            tolerance = x_range * 0.15  # 15% del rango
+            
+            near_optimal = np.abs(curve_x - optimal) <= tolerance
+            if near_optimal.sum() > 0:
+                y_near = curve_y[near_optimal]
+                
+                if higher_better:
+                    degradation = 1 - (np.std(y_near) / (np.abs(y_at_opt) + 1e-10))
+                else:
+                    degradation = 1 - (np.std(y_near) / (np.abs(y_at_opt) + 1e-10))
+                
+                robustness_scores.append(max(0, min(1, degradation)))
         
-        # Grid 2x2 para las 4 métricas
-        gs = gridspec.GridSpec(2, 2, figure=fig, 
-                               left=0.08, right=0.95, top=0.90, bottom=0.08,
-                               wspace=0.25, hspace=0.30)
-        
-        axes = np.array([[fig.add_subplot(gs[i, j]) for j in range(2)] for i in range(2)])
-        
-        # Crear visualización
-        visualizer.create_parameter_page(param, axes, use_noise_reduction=True)
-        
-        pdf.savefig(fig, facecolor=COLORS['bg_dark'])
-        plt.close(fig)
+        return np.mean(robustness_scores) if robustness_scores else 0.5
     
-    def _create_correlation_matrix(self, pdf: PdfPages):
-        """Crea matriz de correlaciones parámetros vs métricas."""
-        fig = plt.figure(figsize=(11, 8.5))
-        fig.patch.set_facecolor(COLORS['bg_dark'])
+    def _calculate_stability(self, metric_results: Dict) -> float:
+        """Calcula estabilidad (consistencia entre métricas)."""
+        optimals = []
         
-        fig.text(0.5, 0.97, 'MATRIZ DE CORRELACIONES', fontsize=16, ha='center',
-                fontweight='bold', color=COLORS['text_white'])
-        fig.text(0.5, 0.94, 'Parámetros vs Métricas (Spearman)', fontsize=11, ha='center',
-                color=COLORS['text_gray'])
+        for metric, result in metric_results.items():
+            opt = result.get('optimal', np.nan)
+            if not np.isnan(opt):
+                optimals.append(opt)
         
-        # Encontrar métricas disponibles
-        metrics = []
-        metric_cols = []
-        for mk in ['ROI', 'SQN', 'PROFIT_FACTOR', 'DRAWDOWN']:
-            for alias in [mk, mk.lower()]:
-                if alias in self.df.columns:
-                    metrics.append(mk)
-                    metric_cols.append(alias)
-                    break
-                for c in self.df.columns:
-                    if c.upper() == alias.upper():
-                        metrics.append(mk)
-                        metric_cols.append(c)
-                        break
+        if len(optimals) < 2:
+            return 0.5
         
-        if len(metrics) == 0 or len(self.params) == 0:
-            fig.text(0.5, 0.5, 'Datos insuficientes', ha='center', va='center',
-                    fontsize=14, color=COLORS['text_muted'])
-            pdf.savefig(fig, facecolor=COLORS['bg_dark'])
-            plt.close(fig)
-            return
+        # Coeficiente de variación inverso
+        cv = np.std(optimals) / (np.abs(np.mean(optimals)) + 1e-10)
+        stability = max(0, 1 - cv)
         
-        # Calcular correlaciones
-        n_params = min(15, len(self.params))  # Limitar a 15 para legibilidad
-        corr_matrix = np.zeros((n_params, len(metrics)))
+        return stability
+    
+    def _calculate_sensitivity(self, metric_results: Dict) -> float:
+        """Calcula sensibilidad promedio."""
+        sensitivities = []
         
-        for i, param in enumerate(self.params[:n_params]):
-            for j, metric_col in enumerate(metric_cols):
-                try:
-                    x = pd.to_numeric(self.df[param], errors='coerce')
-                    y = pd.to_numeric(self.df[metric_col], errors='coerce')
-                    mask = ~(x.isna() | y.isna())
-                    if mask.sum() > 10:
-                        corr, _ = stats.spearmanr(x[mask], y[mask])
-                        corr_matrix[i, j] = corr
-                except:
-                    pass
+        for metric, result in metric_results.items():
+            curve_x = result.get('curve_x', np.array([]))
+            curve_y = result.get('curve_y', np.array([]))
+            
+            if len(curve_x) < 10:
+                continue
+            
+            # Gradiente normalizado
+            dx = np.diff(curve_x)
+            dy = np.diff(curve_y)
+            
+            if len(dx) > 0 and np.any(dx != 0):
+                gradient = dy / (dx + 1e-10)
+                sensitivity = np.mean(np.abs(gradient)) / (np.std(curve_y) + 1e-10)
+                sensitivities.append(min(1, sensitivity))
         
-        # Crear heatmap
-        ax = fig.add_axes([0.25, 0.15, 0.65, 0.70])
+        return np.mean(sensitivities) if sensitivities else 0.5
+    
+    def _calculate_monotonicity(self, metric_results: Dict) -> float:
+        """Calcula monotonicidad promedio."""
+        monotonicity_scores = []
         
-        cmap = LinearSegmentedColormap.from_list(
-            'corr', [COLORS['red'], COLORS['bg_panel'], COLORS['green']]
+        for metric, result in metric_results.items():
+            curve_x = result.get('curve_x', np.array([]))
+            curve_y = result.get('curve_y', np.array([]))
+            
+            if len(curve_x) < 10:
+                continue
+            
+            # Correlación de Spearman
+            try:
+                corr, _ = stats.spearmanr(curve_x, curve_y)
+                monotonicity_scores.append(abs(corr))
+            except:
+                pass
+        
+        return np.mean(monotonicity_scores) if monotonicity_scores else 0.5
+    
+    def _calculate_confidence(self, estimates: List[Tuple[float, float]], 
+                             robustness: float, stability: float) -> float:
+        """Calcula confianza global."""
+        if not estimates:
+            return 0.0
+        
+        # Base: promedio de confianzas individuales
+        avg_conf = np.mean([w for _, w in estimates])
+        
+        # Ajustar por robustez y estabilidad
+        confidence = avg_conf * 0.5 + robustness * 0.25 + stability * 0.25
+        
+        return min(1, max(0, confidence))
+    
+    def _get_metric_weight(self, metric: str) -> float:
+        """Peso de cada métrica."""
+        weights = {
+            'SCORE': 1.0, 'ROI': 0.95, 'ROI_PCT': 0.95,
+            'SHARPE': 0.85, 'SORTINO': 0.8, 'SQN': 0.9,
+            'PROFIT_FACTOR': 0.85, 'DRAWDOWN': 0.9, 'MAX_DD_PCT': 0.9,
+            'WINRATE': 0.6, 'WINRATE_PCT': 0.6,
+            'ESTABILIDAD': 0.75, 'EXPECTATIVA': 0.7,
+        }
+        
+        metric_upper = metric.upper()
+        for key, weight in weights.items():
+            if key in metric_upper:
+                return weight
+        return 0.5
+    
+    def _empty_analysis(self, param: str) -> ParameterAnalysis:
+        """Retorna análisis vacío."""
+        return ParameterAnalysis(
+            param_name=param,
+            optimal_value=np.nan,
+            optimal_range=(np.nan, np.nan),
+            confidence=0,
+            robustness=0,
+            stability=0,
+            sensitivity=0,
+            monotonicity=0
         )
-        
-        im = ax.imshow(corr_matrix, cmap=cmap, aspect='auto', vmin=-1, vmax=1)
-        
-        # Labels
-        ax.set_xticks(range(len(metrics)))
-        ax.set_xticklabels([METRIC_STYLE[m]['name'] for m in metrics], fontsize=10)
-        ax.set_yticks(range(n_params))
-        ax.set_yticklabels(self.params[:n_params], fontsize=8)
-        
-        # Valores en celdas
-        for i in range(n_params):
-            for j in range(len(metrics)):
-                val = corr_matrix[i, j]
-                color = COLORS['text_white'] if abs(val) > 0.3 else COLORS['text_muted']
-                ax.text(j, i, f'{val:.2f}', ha='center', va='center', 
-                       fontsize=8, color=color, fontweight='bold' if abs(val) > 0.5 else 'normal')
-        
-        # Colorbar
-        cbar = fig.colorbar(im, ax=ax, shrink=0.8)
-        cbar.set_label('Correlación Spearman', color=COLORS['text_gray'])
-        
-        ax.set_facecolor(COLORS['bg_panel'])
-        
-        pdf.savefig(fig, facecolor=COLORS['bg_dark'])
-        plt.close(fig)
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# � ANÁLISIS DE CORRELACIÓN ENTRE PARÁMETROS
+# ══════════════════════════════════════════════════════════════════════════════
+
+@dataclass
+class ParameterCorrelation:
+    """Resultado de análisis de correlación entre dos parámetros."""
+    param1: str
+    param2: str
+    pearson_corr: float
+    spearman_corr: float
+    mutual_info: float
+    joint_importance: float  # Importancia combinada para el target
+    is_strongly_related: bool
     
-    def _create_importance_ranking(self, pdf: PdfPages):
-        """Crea ranking de importancia de parámetros usando Random Forest."""
-        fig = plt.figure(figsize=(11, 8.5))
-        fig.patch.set_facecolor(COLORS['bg_dark'])
+    @property
+    def strength(self) -> str:
+        """Clasificación de fuerza de correlación."""
+        avg = (abs(self.pearson_corr) + abs(self.spearman_corr)) / 2
+        if avg >= 0.7:
+            return 'STRONG'
+        elif avg >= 0.4:
+            return 'MODERATE'
+        elif avg >= 0.2:
+            return 'WEAK'
+        return 'NONE'
+
+
+class CorrelationAnalyzer:
+    """Analiza correlaciones entre parámetros para detectar relaciones."""
+    
+    def __init__(self, df: pd.DataFrame, params: List[str], target_col: str):
+        self.df = df
+        self.params = params
+        self.target_col = target_col
+        self.correlations: List[ParameterCorrelation] = []
+    
+    def analyze_all_pairs(self, min_correlation: float = 0.3) -> List[ParameterCorrelation]:
+        """Analiza todas las combinaciones de pares de parámetros."""
+        self.correlations = []
         
-        fig.text(0.5, 0.97, 'RANKING DE IMPORTANCIA', fontsize=16, ha='center',
-                fontweight='bold', color=COLORS['text_white'])
-        fig.text(0.5, 0.94, 'Feature Importance (Random Forest) para cada métrica', 
-                fontsize=11, ha='center', color=COLORS['text_gray'])
+        if len(self.params) < 2:
+            return []
         
         # Preparar datos
-        params_to_use = self.params[:20]  # Max 20 parámetros
+        X = self.df[self.params].copy()
+        for col in X.columns:
+            X[col] = pd.to_numeric(X[col], errors='coerce')
+        X = X.dropna()
         
-        X = self.df[params_to_use].copy()
+        if len(X) < 20:
+            return []
+        
+        # Obtener target
+        y = pd.to_numeric(self.df.loc[X.index, self.target_col], errors='coerce')
+        
+        # Analizar cada par
+        for param1, param2 in combinations(self.params, 2):
+            corr = self._analyze_pair(X[param1].values, X[param2].values, 
+                                      y.values, param1, param2)
+            if corr and (abs(corr.pearson_corr) >= min_correlation or 
+                        abs(corr.spearman_corr) >= min_correlation or
+                        corr.joint_importance >= 0.15):
+                self.correlations.append(corr)
+        
+        # Ordenar por relevancia
+        self.correlations.sort(key=lambda x: x.joint_importance, reverse=True)
+        
+        return self.correlations
+    
+    def _analyze_pair(self, x1: np.ndarray, x2: np.ndarray, y: np.ndarray,
+                      name1: str, name2: str) -> Optional[ParameterCorrelation]:
+        """Analiza un par de parámetros."""
+        try:
+            # Filtrar NaN
+            mask = ~(np.isnan(x1) | np.isnan(x2) | np.isnan(y))
+            x1, x2, y = x1[mask], x2[mask], y[mask]
+            
+            if len(x1) < 20:
+                return None
+            
+            # Correlación de Pearson (lineal)
+            pearson, _ = stats.pearsonr(x1, x2)
+            
+            # Correlación de Spearman (monótona)
+            spearman, _ = stats.spearmanr(x1, x2)
+            
+            # Información mutua aproximada (discretizada)
+            try:
+                from sklearn.feature_selection import mutual_info_regression
+                X_pair = np.column_stack([x1, x2])
+                mi = mutual_info_regression(X_pair, y, random_state=42)
+                mutual_info = float(np.mean(mi))
+            except:
+                mutual_info = 0.0
+            
+            # Importancia conjunta: entrenar un modelo simple con ambos params
+            try:
+                X_pair = np.column_stack([x1, x2, x1 * x2])  # Incluir interacción
+                rf = RandomForestRegressor(n_estimators=50, max_depth=4, random_state=42)
+                rf.fit(X_pair, y)
+                # La importancia de la interacción indica relación conjunta
+                joint_importance = float(rf.feature_importances_[2])  # Término de interacción
+            except:
+                joint_importance = 0.0
+            
+            # Determinar si están fuertemente relacionados
+            avg_corr = (abs(pearson) + abs(spearman)) / 2
+            is_strong = avg_corr >= 0.35 or joint_importance >= 0.1
+            
+            return ParameterCorrelation(
+                param1=name1,
+                param2=name2,
+                pearson_corr=pearson,
+                spearman_corr=spearman,
+                mutual_info=mutual_info,
+                joint_importance=joint_importance,
+                is_strongly_related=is_strong
+            )
+        except Exception as e:
+            return None
+    
+    def get_strongly_related_pairs(self) -> List[Tuple[str, str]]:
+        """Retorna lista de pares fuertemente relacionados."""
+        return [(c.param1, c.param2) for c in self.correlations if c.is_strongly_related]
+    
+    def get_top_pairs(self, n: int = 5) -> List[ParameterCorrelation]:
+        """Retorna los top N pares más relacionados."""
+        return self.correlations[:n]
+
+
+
+@dataclass
+class StrategyAnalysis:
+    """Análisis global de la estrategia."""
+    name: str
+    n_trials: int
+    
+    # Distribuciones
+    roi_distribution: Dict = field(default_factory=dict)
+    score_distribution: Dict = field(default_factory=dict)
+    sharpe_distribution: Dict = field(default_factory=dict)
+    
+    # Métricas globales
+    best_trial: Dict = field(default_factory=dict)
+    worst_trial: Dict = field(default_factory=dict)
+    median_performance: Dict = field(default_factory=dict)
+    
+    # Robustez global
+    overall_robustness: float = 0.0
+    parameter_importance: Dict = field(default_factory=dict)
+
+
+class StrategyAnalyzer:
+    """Analizador global de estrategia."""
+    
+    def __init__(self, df: pd.DataFrame, schema: DataSchema):
+        self.df = df
+        self.schema = schema
+    
+    def analyze(self) -> StrategyAnalysis:
+        """Análisis completo de la estrategia."""
+        analysis = StrategyAnalysis(
+            name=self.df.get('ESTRATEGIA', pd.Series(['STRATEGY'])).iloc[0] if 'ESTRATEGIA' in self.df.columns else 'STRATEGY',
+            n_trials=len(self.df)
+        )
+        
+        # Distribuciones de métricas principales
+        for metric, attr in [('ROI_PCT', 'roi_distribution'), 
+                             ('SCORE', 'score_distribution'),
+                             ('SHARPE', 'sharpe_distribution')]:
+            col = self._find_col([metric, metric.replace('_PCT', '')])
+            if col:
+                setattr(analysis, attr, self._analyze_distribution(col))
+        
+        # Mejor y peor trial
+        score_col = self._find_col(['SCORE', 'ROI_PCT', 'ROI'])
+        if score_col:
+            best_idx = self.df[score_col].idxmax()
+            worst_idx = self.df[score_col].idxmin()
+            
+            analysis.best_trial = self.df.iloc[best_idx].to_dict()
+            analysis.worst_trial = self.df.iloc[worst_idx].to_dict()
+            analysis.median_performance = self.df.median(numeric_only=True).to_dict()
+        
+        # Importancia de parámetros (Random Forest)
+        analysis.parameter_importance = self._calculate_importance()
+        
+        # Robustez global
+        analysis.overall_robustness = self._calculate_global_robustness()
+        
+        return analysis
+    
+    def _analyze_distribution(self, col: str) -> Dict:
+        """Analiza distribución de una métrica."""
+        values = pd.to_numeric(self.df[col], errors='coerce').dropna()
+        
+        if len(values) < 10:
+            return {}
+        
+        return {
+            'mean': values.mean(),
+            'std': values.std(),
+            'median': values.median(),
+            'q25': values.quantile(0.25),
+            'q75': values.quantile(0.75),
+            'min': values.min(),
+            'max': values.max(),
+            'skew': stats.skew(values),
+            'kurtosis': stats.kurtosis(values),
+            'values': values.values
+        }
+    
+    def _calculate_importance(self) -> Dict[str, float]:
+        """Calcula importancia de parámetros con Random Forest."""
+        all_params = self.schema.params + self.schema.exit_params
+        
+        if len(all_params) < 1:
+            return {}
+        
+        # Preparar datos
+        X = self.df[all_params].copy()
         for col in X.columns:
             X[col] = pd.to_numeric(X[col], errors='coerce')
         X = X.fillna(X.median())
         
-        if len(X) < 30:
-            fig.text(0.5, 0.5, 'Datos insuficientes para análisis ML', 
-                    ha='center', va='center', fontsize=14, color=COLORS['text_muted'])
-            pdf.savefig(fig, facecolor=COLORS['bg_dark'])
-            plt.close(fig)
+        # Target: SCORE o ROI
+        target_col = self._find_col(['SCORE', 'ROI_PCT', 'ROI'])
+        if not target_col:
+            return {}
+        
+        y = pd.to_numeric(self.df[target_col], errors='coerce')
+        mask = ~y.isna()
+        X = X[mask]
+        y = y[mask]
+        
+        if len(y) < 30:
+            return {}
+        
+        try:
+            rf = RandomForestRegressor(n_estimators=100, max_depth=6, random_state=42, n_jobs=-1)
+            rf.fit(X, y)
+            
+            importance = dict(zip(all_params, rf.feature_importances_))
+            return dict(sorted(importance.items(), key=lambda x: x[1], reverse=True))
+        except:
+            return {}
+    
+    def _calculate_global_robustness(self) -> float:
+        """Calcula robustez global de la estrategia."""
+        score_col = self._find_col(['SCORE', 'ROI_PCT'])
+        if not score_col:
+            return 0.5
+        
+        values = pd.to_numeric(self.df[score_col], errors='coerce').dropna()
+        
+        if len(values) < 10:
+            return 0.5
+        
+        # % de trials rentables
+        profitable = (values > 0).mean()
+        
+        # Ratio media/std (inverso del CV)
+        if values.std() > 0:
+            consistency = min(1, values.mean() / (values.std() + 1e-10) / 3)
+        else:
+            consistency = 1
+        
+        # Percentil 10 vs máximo
+        p10 = values.quantile(0.1)
+        p_max = values.max()
+        if p_max > 0:
+            tail_ratio = max(0, p10 / p_max)
+        else:
+            tail_ratio = 0
+        
+        robustness = profitable * 0.4 + consistency * 0.3 + tail_ratio * 0.3
+        return min(1, max(0, robustness))
+    
+    def _find_col(self, candidates: List[str]) -> Optional[str]:
+        """Busca columna."""
+        for c in candidates:
+            if c in self.df.columns:
+                return c
+            for col in self.df.columns:
+                if col.upper() == c.upper():
+                    return col
+        return None
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# 📈 GENERADOR DE VISUALIZACIONES BLOOMBERG
+# ══════════════════════════════════════════════════════════════════════════════
+
+class BloombergVisualizer:
+    """Generador de visualizaciones estilo Bloomberg Terminal."""
+    
+    def __init__(self, df: pd.DataFrame, schema: DataSchema):
+        self.df = df
+        self.schema = schema
+        self._cached_metric_cols = {}  # Cache para búsqueda de métricas
+    
+    def create_cover_page(self, fig: plt.Figure, strategy_name: str, n_trials: int):
+        """Portada ultraminimalista."""
+        fig.patch.set_facecolor(Theme.BG_PRIMARY)
+        
+        # Título principal
+        fig.text(0.5, 0.62, 'MODELOX', fontsize=42, ha='center', va='center',
+                fontweight='bold', color=Theme.TEXT_PRIMARY,
+                fontfamily='monospace')
+        
+        fig.text(0.5, 0.52, 'Parameter Optimization Analysis', fontsize=12, 
+                ha='center', color=Theme.TEXT_SECONDARY)
+        
+        # Línea decorativa sutil
+        ax_line = fig.add_axes([0.35, 0.48, 0.3, 0.001])
+        ax_line.set_facecolor(Theme.ACCENT)
+        ax_line.set_xticks([])
+        ax_line.set_yticks([])
+        for spine in ax_line.spines.values():
+            spine.set_visible(False)
+        
+        # Info minimalista
+        fig.text(0.5, 0.38, strategy_name, fontsize=10, ha='center',
+                color=Theme.TEXT_PRIMARY, fontweight='bold')
+        
+        fig.text(0.5, 0.32, f'{n_trials:,} trials', fontsize=9, ha='center',
+                color=Theme.TEXT_DARK)
+        
+        fig.text(0.5, 0.26, datetime.now().strftime('%Y-%m-%d'), fontsize=8, ha='center',
+                color=Theme.TEXT_DARK)
+    
+    def create_strategy_overview(self, fig: plt.Figure, analysis: StrategyAnalysis):
+        """Página de resumen de estrategia."""
+        fig.patch.set_facecolor(Theme.BG_PRIMARY)
+        
+        # Título
+        fig.text(0.5, 0.95, 'STRATEGY OVERVIEW', fontsize=14, ha='center',
+                fontweight='bold', color=Theme.TEXT_PRIMARY)
+        
+        gs = gridspec.GridSpec(3, 3, figure=fig,
+                              left=0.08, right=0.92, top=0.88, bottom=0.08,
+                              wspace=0.3, hspace=0.4)
+        
+        # 1. Distribución de SCORE
+        if analysis.score_distribution:
+            ax1 = fig.add_subplot(gs[0, 0])
+            self._plot_distribution(ax1, analysis.score_distribution, 'SCORE', Theme.BLUE_BRIGHT)
+        
+        # 2. Distribución de ROI
+        if analysis.roi_distribution:
+            ax2 = fig.add_subplot(gs[0, 1])
+            self._plot_distribution(ax2, analysis.roi_distribution, 'ROI %', Theme.GREEN_BRIGHT)
+        
+        # 3. Distribución de SHARPE
+        if analysis.sharpe_distribution:
+            ax3 = fig.add_subplot(gs[0, 2])
+            self._plot_distribution(ax3, analysis.sharpe_distribution, 'SHARPE', Theme.PURPLE_BRIGHT)
+        
+        # 4. Importancia de parámetros
+        ax4 = fig.add_subplot(gs[1, :2])
+        self._plot_importance(ax4, analysis.parameter_importance)
+        
+        # 5. Métricas clave
+        ax5 = fig.add_subplot(gs[1, 2])
+        self._plot_key_metrics(ax5, analysis)
+        
+        # 6. Robustez global
+        ax6 = fig.add_subplot(gs[2, :])
+        self._plot_robustness_summary(ax6, analysis)
+    
+    def _plot_distribution(self, ax: plt.Axes, dist: Dict, title: str, color: str):
+        """Histograma con KDE overlay - Ultraminimalista."""
+        ax.set_facecolor(Theme.BG_SECONDARY)
+        
+        values = dist.get('values', np.array([]))
+        if len(values) == 0:
             return
         
-        # Calcular importancia para cada métrica
-        gs = gridspec.GridSpec(2, 2, figure=fig,
-                               left=0.12, right=0.95, top=0.88, bottom=0.08,
-                               wspace=0.30, hspace=0.35)
+        # Histograma con color único del tema
+        n, bins, patches = ax.hist(values, bins=25, density=True, 
+                                   alpha=0.4, color=Theme.ACCENT, edgecolor='none')
         
-        for idx, metric_key in enumerate(['ROI', 'SQN', 'PROFIT_FACTOR', 'DRAWDOWN']):
-            ax = fig.add_subplot(gs[idx // 2, idx % 2])
+        # KDE
+        try:
+            kde = stats.gaussian_kde(values)
+            x_kde = np.linspace(values.min(), values.max(), 100)
+            ax.plot(x_kde, kde(x_kde), color=Theme.ACCENT, linewidth=1.5, alpha=0.8)
+        except:
+            pass
+        
+        # Línea de mediana
+        ax.axvline(dist['median'], color=Theme.TEXT_SECONDARY, linestyle='--', linewidth=1, alpha=0.6)
+        
+        ax.set_title(title, fontsize=9, color=Theme.TEXT_SECONDARY, pad=6)
+        ax.set_xlabel('')
+        ax.set_ylabel('')
+        ax.tick_params(colors=Theme.TEXT_DARK, labelsize=6)
+        
+        # Stats minimalista
+        ax.text(0.95, 0.95, f'μ={dist["mean"]:.2f}\nσ={dist.get("std", 0):.2f}', 
+               transform=ax.transAxes, fontsize=6, color=Theme.TEXT_DARK,
+               ha='right', va='top')
+        
+        for spine in ax.spines.values():
+            spine.set_color(Theme.BORDER)
+    
+    def _plot_importance(self, ax: plt.Axes, importance: Dict):
+        """Barras de importancia de parámetros - Ultraminimalista."""
+        ax.set_facecolor(Theme.BG_SECONDARY)
+        
+        if not importance:
+            ax.text(0.5, 0.5, 'Insufficient Data', ha='center', va='center', 
+                   color=Theme.TEXT_DARK, fontsize=9)
+            return
+        
+        # Top 8 parámetros
+        top_params = list(importance.items())[:8]
+        params = [p[0] for p in top_params]
+        values = [p[1] for p in top_params]
+        
+        # Colores degradados usando el color de acento
+        colors = [Theme.ACCENT if i < 3 else Theme.TEXT_SECONDARY if i < 5 else Theme.TEXT_DARK 
+                 for i in range(len(params))]
+        
+        y_pos = np.arange(len(params))
+        ax.barh(y_pos, values, color=colors, height=0.55, edgecolor='none', alpha=0.7)
+        
+        ax.set_yticks(y_pos)
+        ax.set_yticklabels(params, fontsize=7, color=Theme.TEXT_SECONDARY)
+        ax.set_xlim(0, max(values) * 1.1)
+        ax.set_title('PARAMETER IMPORTANCE', fontsize=9, color=Theme.TEXT_SECONDARY, pad=6)
+        ax.invert_yaxis()
+        ax.tick_params(colors=Theme.TEXT_DARK, labelsize=6)
+        
+        # Valores
+        for i, v in enumerate(values):
+            ax.text(v + max(values) * 0.02, i, f'{v:.3f}', va='center', fontsize=6, color=Theme.TEXT_DARK)
+        
+        for spine in ax.spines.values():
+            spine.set_color(Theme.BORDER)
+    
+    def _plot_key_metrics(self, ax: plt.Axes, analysis: StrategyAnalysis):
+        """Panel de métricas clave."""
+        ax.set_facecolor(Theme.BG_TERTIARY)
+        ax.set_xticks([])
+        ax.set_yticks([])
+        
+        for spine in ax.spines.values():
+            spine.set_color(Theme.BORDER)
+        
+        # Título
+        ax.text(0.5, 0.92, 'KEY METRICS', fontsize=9, fontweight='bold',
+               ha='center', transform=ax.transAxes, color=Theme.TEXT_PRIMARY)
+        
+        metrics = [
+            ('Trials', f"{analysis.n_trials:,}"),
+            ('Robustness', f"{analysis.overall_robustness:.1%}"),
+        ]
+        
+        if analysis.score_distribution:
+            metrics.append(('Best Score', f"{analysis.score_distribution.get('max', 0):.2f}"))
+            metrics.append(('Median Score', f"{analysis.score_distribution.get('median', 0):.2f}"))
+        
+        if analysis.roi_distribution:
+            metrics.append(('Best ROI', f"{analysis.roi_distribution.get('max', 0):.1f}%"))
+        
+        y_pos = 0.78
+        for name, value in metrics[:6]:
+            ax.text(0.1, y_pos, name, fontsize=8, transform=ax.transAxes, color=Theme.TEXT_MUTED)
+            ax.text(0.9, y_pos, value, fontsize=8, transform=ax.transAxes, 
+                   color=Theme.GREEN_BRIGHT if 'Best' in name else Theme.TEXT_PRIMARY, ha='right')
+            y_pos -= 0.12
+    
+    def _plot_robustness_summary(self, ax: plt.Axes, analysis: StrategyAnalysis):
+        """Resumen visual de robustez."""
+        ax.set_facecolor(Theme.BG_SECONDARY)
+        
+        # Crear barras de progreso para diferentes aspectos
+        aspects = [
+            ('Overall Robustness', analysis.overall_robustness, Theme.BLUE_BRIGHT),
+        ]
+        
+        if analysis.score_distribution:
+            # Consistencia (1 - CV)
+            cv = analysis.score_distribution.get('std', 1) / (abs(analysis.score_distribution.get('mean', 1)) + 1e-10)
+            consistency = max(0, min(1, 1 - cv))
+            aspects.append(('Score Consistency', consistency, Theme.GREEN_BRIGHT))
             
-            # Encontrar columna de métrica
-            metric_col = None
-            for alias in [metric_key, metric_key.lower()]:
-                if alias in self.df.columns:
-                    metric_col = alias
-                    break
-                for c in self.df.columns:
-                    if c.upper() == alias.upper():
-                        metric_col = c
+            # Rentabilidad (% positivos)
+            values = analysis.score_distribution.get('values', np.array([]))
+            if len(values) > 0:
+                profitability = (values > 0).mean()
+                aspects.append(('Profitability Rate', profitability, Theme.GOLD))
+        
+        y_positions = np.arange(len(aspects))
+        bar_height = 0.5
+        
+        for i, (name, value, color) in enumerate(aspects):
+            # Fondo gris
+            ax.barh(i, 1, height=bar_height, color=Theme.BG_HIGHLIGHT, edgecolor='none')
+            # Barra de valor
+            ax.barh(i, value, height=bar_height, color=color, edgecolor='none')
+            # Texto
+            ax.text(-0.02, i, name, va='center', ha='right', fontsize=9, color=Theme.TEXT_SECONDARY)
+            ax.text(value + 0.02, i, f'{value:.1%}', va='center', fontsize=9, color=Theme.TEXT_PRIMARY)
+        
+        ax.set_xlim(-0.4, 1.1)
+        ax.set_ylim(-0.5, len(aspects) - 0.5)
+        ax.set_yticks([])
+        ax.set_xticks([])
+        ax.set_title('ROBUSTNESS ANALYSIS', fontsize=10, fontweight='bold',
+                    color=Theme.TEXT_PRIMARY, pad=10)
+        
+        for spine in ax.spines.values():
+            spine.set_visible(False)
+    
+    def create_parameter_page(self, fig: plt.Figure, analysis: ParameterAnalysis, 
+                             is_exit_param: bool = False):
+        """Página de análisis individual de parámetro."""
+        fig.patch.set_facecolor(Theme.BG_PRIMARY)
+        
+        param = analysis.param_name
+        
+        # Header con indicador de tipo
+        param_type = "EXIT PARAM" if is_exit_param else "INDICATOR"
+        type_color = Theme.GOLD if is_exit_param else Theme.BLUE_BRIGHT
+        
+        fig.text(0.04, 0.96, param_type, fontsize=8, color=type_color, fontweight='bold')
+        fig.text(0.5, 0.96, param, fontsize=14, ha='center', fontweight='bold', color=Theme.TEXT_PRIMARY)
+        
+        # Valor óptimo destacado
+        if not np.isnan(analysis.optimal_value):
+            fig.text(0.96, 0.96, f'OPTIMAL: {format_number(analysis.optimal_value)}', fontsize=10, 
+                    ha='right', color=Theme.GREEN_BRIGHT, fontweight='bold')
+        
+        # Grid layout
+        gs = gridspec.GridSpec(3, 4, figure=fig,
+                              left=0.06, right=0.94, top=0.90, bottom=0.06,
+                              wspace=0.25, hspace=0.35,
+                              height_ratios=[1.2, 1.2, 0.8])
+        
+        # Métricas principales - buscar las disponibles en el análisis
+        # DRAWDOWN primero como métrica principal de comparación, SQN en vez de PROFIT_FACTOR
+        main_metrics_priority = ['DRAWDOWN', 'ROI', 'ROI_PCT', 'SHARPE', 'SQN', 'PROFIT_FACTOR', 'SCORE', 'WINRATE']
+        metric_colors = [Theme.BLUE_BRIGHT, Theme.GREEN_BRIGHT, Theme.PURPLE_BRIGHT, Theme.CYAN,
+                        Theme.GOLD, Theme.RED_BRIGHT, Theme.ORANGE_BRIGHT, Theme.PINK]
+        
+        # Encontrar las 4 métricas disponibles
+        available_metrics = []
+        for mk in main_metrics_priority:
+            col = self._find_metric_col(mk)
+            if col and col in analysis.metric_analysis and col not in available_metrics:
+                available_metrics.append(col)
+            if len(available_metrics) >= 4:
+                break
+        
+        for i in range(4):
+            ax = fig.add_subplot(gs[i // 2, i % 2])
+            
+            if i < len(available_metrics):
+                metric_col = available_metrics[i]
+                self._plot_metric_curve(ax, analysis, metric_col, metric_colors[i])
+            else:
+                ax.text(0.5, 0.5, 'No Data', ha='center', va='center',
+                       color=Theme.TEXT_MUTED, fontsize=10)
+                ax.set_facecolor(Theme.BG_SECONDARY)
+                for spine in ax.spines.values():
+                    spine.set_color(Theme.BORDER)
+        
+        # Panel de estadísticas (derecha superior)
+        ax_stats = fig.add_subplot(gs[0:2, 2:4])
+        self._plot_stats_panel(ax_stats, analysis)
+        
+        # Panel de recomendación (inferior)
+        ax_rec = fig.add_subplot(gs[2, :])
+        self._plot_recommendation(ax_rec, analysis, is_exit_param)
+    
+    def _plot_metric_curve(self, ax: plt.Axes, analysis: ParameterAnalysis, 
+                          metric: str, color: str):
+        """Gráfico de curva para una métrica - Ultraminimalista con filtrado de outliers."""
+        ax.set_facecolor(Theme.BG_SECONDARY)
+        
+        result = analysis.metric_analysis.get(metric, {})
+        
+        if 'curve_x' not in result or 'curve_y' not in result:
+            return
+        
+        x_curve = result['curve_x']
+        y_curve = result['curve_y']
+        
+        # Datos originales
+        x_orig = pd.to_numeric(self.df[analysis.param_name], errors='coerce').values
+        y_orig = pd.to_numeric(self.df[metric], errors='coerce').values
+        mask = ~(np.isnan(x_orig) | np.isnan(y_orig))
+        
+        x_valid = x_orig[mask]
+        y_valid = y_orig[mask]
+        
+        # ═══════════════════════════════════════════════════════════════════
+        # FILTRAR OUTLIERS para scatter plot (consistente con la curva)
+        # ═══════════════════════════════════════════════════════════════════
+        if len(y_valid) > 20:
+            y_q1, y_q3 = np.percentile(y_valid, [25, 75])
+            y_iqr = y_q3 - y_q1
+            y_lower = y_q1 - 2.5 * y_iqr
+            y_upper = y_q3 + 2.5 * y_iqr
+            scatter_mask = (y_valid >= y_lower) & (y_valid <= y_upper)
+            
+            # Si muy pocos quedan, usar percentiles
+            if scatter_mask.sum() < 20:
+                y_p5, y_p95 = np.percentile(y_valid, [5, 95])
+                scatter_mask = (y_valid >= y_p5) & (y_valid <= y_p95)
+            
+            x_scatter = x_valid[scatter_mask]
+            y_scatter = y_valid[scatter_mask]
+        else:
+            x_scatter = x_valid
+            y_scatter = y_valid
+        
+        # Scatter con color uniforme del tema (más sutil)
+        ax.scatter(x_scatter, y_scatter, c=Theme.ACCENT, alpha=0.08, s=6, edgecolors='none')
+        
+        # Curva suavizada con color del tema
+        ax.plot(x_curve, y_curve, color=Theme.ACCENT, linewidth=2, zorder=10, alpha=0.9)
+        
+        # Zona óptima (sutil)
+        opt_range = analysis.optimal_range
+        if not np.isnan(opt_range[0]):
+            ax.axvspan(opt_range[0], opt_range[1], color=Theme.ACCENT, alpha=0.05, zorder=1)
+        
+        # Línea de óptimo
+        if not np.isnan(analysis.optimal_value):
+            ax.axvline(analysis.optimal_value, color=Theme.TEXT_SECONDARY, linestyle='--', 
+                      linewidth=1, alpha=0.5, zorder=8)
+        
+        # Título con nombre de métrica limpio
+        metric_name = metric.replace('_PCT', '%').replace('_', ' ')
+        ax.set_title(metric_name, fontsize=9, fontweight='bold', color=Theme.TEXT_SECONDARY, pad=4)
+        
+        ax.set_xlabel(analysis.param_name, fontsize=7, color=Theme.TEXT_DARK)
+        
+        # Formatear ejes sin notación científica
+        ax.xaxis.set_major_formatter(FuncFormatter(format_axis_number))
+        ax.yaxis.set_major_formatter(FuncFormatter(format_axis_number))
+        
+        ax.tick_params(axis='both', labelsize=6, colors=Theme.TEXT_DARK)
+        
+        for spine in ax.spines.values():
+            spine.set_color(Theme.BORDER)
+    
+    def _plot_stats_panel(self, ax: plt.Axes, analysis: ParameterAnalysis):
+        """Panel de estadísticas del parámetro - Ultraminimalista."""
+        ax.set_facecolor(Theme.BG_TERTIARY)
+        ax.set_xticks([])
+        ax.set_yticks([])
+        
+        for spine in ax.spines.values():
+            spine.set_color(Theme.BORDER)
+        
+        # Título
+        ax.text(0.5, 0.92, 'PARAMETER STATS', fontsize=10, fontweight='bold',
+               ha='center', transform=ax.transAxes, color=Theme.TEXT_SECONDARY)
+        
+        # Línea separadora
+        ax.plot([0.08, 0.92], [0.85, 0.85], color=Theme.DIVIDER, linewidth=0.5,
+               transform=ax.transAxes, clip_on=False)
+        
+        y_pos = 0.75
+        
+        # Datos del parámetro
+        param_data = pd.to_numeric(self.df[analysis.param_name], errors='coerce')
+        valid_data = param_data.dropna()
+        
+        # Óptimo
+        ax.text(0.08, y_pos, 'OPTIMAL', fontsize=9, color=Theme.TEXT_MUTED, transform=ax.transAxes)
+        opt_text = format_number(analysis.optimal_value) if not np.isnan(analysis.optimal_value) else 'N/A'
+        ax.text(0.92, y_pos, opt_text, fontsize=13, color=Theme.ACCENT, 
+               ha='right', transform=ax.transAxes, fontweight='bold')
+        
+        y_pos -= 0.12
+        
+        # Rango óptimo
+        ax.text(0.08, y_pos, 'RANGE', fontsize=9, color=Theme.TEXT_MUTED, transform=ax.transAxes)
+        if not np.isnan(analysis.optimal_range[0]):
+            range_text = f'[{format_number(analysis.optimal_range[0])} — {format_number(analysis.optimal_range[1])}]'
+        else:
+            range_text = 'N/A'
+        ax.text(0.92, y_pos, range_text, fontsize=10, color=Theme.TEXT_PRIMARY, 
+               ha='right', transform=ax.transAxes)
+        
+        y_pos -= 0.12
+        
+        # Línea divisoria sutil
+        ax.plot([0.08, 0.92], [y_pos + 0.04, y_pos + 0.04], color=Theme.DIVIDER, 
+               linewidth=0.3, transform=ax.transAxes, clip_on=False)
+        
+        # Data Range
+        ax.text(0.08, y_pos, 'DATA RANGE', fontsize=8, color=Theme.TEXT_DARK, transform=ax.transAxes)
+        if len(valid_data) > 0:
+            data_range = f'{format_number(valid_data.min())} — {format_number(valid_data.max())}'
+        else:
+            data_range = 'N/A'
+        ax.text(0.92, y_pos, data_range, fontsize=9, color=Theme.TEXT_SECONDARY, 
+               ha='right', transform=ax.transAxes)
+        
+        y_pos -= 0.10
+        
+        # Sample count
+        ax.text(0.08, y_pos, 'SAMPLES', fontsize=8, color=Theme.TEXT_DARK, transform=ax.transAxes)
+        ax.text(0.92, y_pos, f'{len(valid_data):,}', fontsize=9, color=Theme.TEXT_SECONDARY, 
+               ha='right', transform=ax.transAxes)
+        
+        y_pos -= 0.10
+        
+        # Unique values
+        ax.text(0.08, y_pos, 'UNIQUE', fontsize=8, color=Theme.TEXT_DARK, transform=ax.transAxes)
+        ax.text(0.92, y_pos, f'{valid_data.nunique()}', fontsize=9, color=Theme.TEXT_SECONDARY, 
+               ha='right', transform=ax.transAxes)
+        
+        y_pos -= 0.14
+        
+        # Confidence meter minimalista
+        ax.plot([0.08, 0.92], [y_pos + 0.06, y_pos + 0.06], color=Theme.DIVIDER, 
+               linewidth=0.3, transform=ax.transAxes, clip_on=False)
+        
+        ax.text(0.5, y_pos, 'CONFIDENCE', fontsize=8, ha='center', 
+               color=Theme.TEXT_DARK, transform=ax.transAxes)
+        
+        y_pos -= 0.08
+        
+        # Barra de confianza minimalista
+        bar_width = 0.70
+        bar_x = 0.15
+        
+        # Fondo de barra
+        rect_bg = FancyBboxPatch((bar_x, y_pos - 0.015), bar_width, 0.03,
+                                 boxstyle="round,pad=0.005", facecolor=Theme.BG_HIGHLIGHT,
+                                 edgecolor='none', transform=ax.transAxes)
+        ax.add_patch(rect_bg)
+        
+        # Valor de barra
+        conf_color = Theme.ACCENT if analysis.confidence >= 0.6 else Theme.TEXT_SECONDARY
+        rect_val = FancyBboxPatch((bar_x, y_pos - 0.015), bar_width * analysis.confidence, 0.03,
+                                  boxstyle="round,pad=0.005", facecolor=conf_color,
+                                  edgecolor='none', transform=ax.transAxes, alpha=0.7)
+        ax.add_patch(rect_val)
+        
+        # Porcentaje
+        ax.text(0.92, y_pos - 0.005, f'{analysis.confidence:.0%}', fontsize=9, 
+               color=Theme.TEXT_PRIMARY, ha='right', transform=ax.transAxes)
+    
+    def _plot_recommendation(self, ax: plt.Axes, analysis: ParameterAnalysis, is_exit: bool):
+        """Panel de recomendación - Ultraminimalista."""
+        # Fondo sutil basado en confianza
+        bg_alpha = 0.15 if analysis.confidence >= 0.6 else 0.08
+        ax.set_facecolor(Theme.BG_TERTIARY)
+        ax.set_xticks([])
+        ax.set_yticks([])
+        
+        for spine in ax.spines.values():
+            spine.set_color(Theme.BORDER)
+            spine.set_linewidth(1)
+        
+        # Recomendación
+        if np.isnan(analysis.optimal_value):
+            ax.text(0.5, 0.5, 'INSUFFICIENT DATA',
+                   ha='center', va='center', fontsize=10, color=Theme.TEXT_MUTED,
+                   transform=ax.transAxes)
+            return
+        
+        # Tipo de parámetro
+        param_type = '◆ EXIT' if is_exit else '○ PARAM'
+        type_color = Theme.ACCENT if is_exit else Theme.TEXT_SECONDARY
+        ax.text(0.03, 0.5, param_type, fontsize=8, va='center', 
+               transform=ax.transAxes, color=type_color)
+        
+        # Valor recomendado central
+        ax.text(0.18, 0.55, f'{analysis.param_name}', fontsize=9, color=Theme.TEXT_MUTED,
+               transform=ax.transAxes)
+        ax.text(0.18, 0.25, format_number(analysis.optimal_value), fontsize=14, color=Theme.TEXT_PRIMARY,
+               fontweight='bold', transform=ax.transAxes)
+        
+        # Indicador de confianza a la derecha
+        conf_text = f'{analysis.confidence:.0%}'
+        conf_color = Theme.ACCENT if analysis.confidence >= 0.6 else Theme.TEXT_SECONDARY
+        ax.text(0.92, 0.4, conf_text, fontsize=11, ha='right', va='center',
+               color=conf_color, transform=ax.transAxes, fontweight='bold')
+    
+    def _find_metric_col(self, key: str) -> Optional[str]:
+        """Busca columna de métrica con múltiples aliases."""
+        # Diccionario de aliases para cada métrica
+        aliases_map = {
+            'ROI_PCT': ['ROI', 'ROI_PCT', 'RETURN', 'RETORNO', 'PNL_PCT'],
+            'ROI': ['ROI', 'ROI_PCT', 'RETURN', 'RETORNO', 'PNL_PCT'],
+            'SCORE': ['SCORE'],
+            'SHARPE': ['SHARPE', 'SHARPE_RATIO'],
+            'PROFIT_FACTOR': ['PROFIT_FACTOR', 'PF', 'PROFITFACTOR'],
+            'SQN': ['SQN', 'SYSTEM_QUALITY'],
+            'DRAWDOWN': ['DRAWDOWN', 'MAX_DD', 'MAX_DD_PCT', 'DD', 'MAX_DRAWDOWN'],
+            'WINRATE': ['WINRATE', 'WINRATE_PCT', 'WIN_RATE', 'PORC_GANADORAS'],
+            'ESTABILIDAD': ['ESTABILIDAD', 'STABILITY', 'CONSISTENCY'],
+        }
+        
+        key_upper = key.upper().replace(' ', '_')
+        aliases = aliases_map.get(key_upper, [key_upper, key])
+        
+        df_cols_upper = {col.upper(): col for col in self.df.columns}
+        
+        # Búsqueda exacta
+        for alias in aliases:
+            if alias.upper() in df_cols_upper:
+                return df_cols_upper[alias.upper()]
+        
+        # Búsqueda parcial
+        for alias in aliases:
+            for col_upper, col in df_cols_upper.items():
+                if alias.upper() in col_upper:
+                    return col
+        
+        return None
+    
+    def create_recommendations_table(self, fig: plt.Figure, all_analyses: Dict[str, ParameterAnalysis],
+                                    exit_params: List[str]):
+        """Página final de recomendaciones - Ultraminimalista."""
+        fig.patch.set_facecolor(Theme.BG_PRIMARY)
+        
+        # Header
+        fig.text(0.5, 0.95, 'OPTIMIZATION RECOMMENDATIONS', fontsize=14, ha='center',
+                fontweight='bold', color=Theme.TEXT_PRIMARY, family='monospace')
+        fig.text(0.5, 0.91, 'All parameters sorted by confidence', fontsize=8, ha='center',
+                color=Theme.TEXT_DARK)
+        
+        # Línea separadora
+        ax_line = fig.add_axes([0.05, 0.885, 0.90, 0.001])
+        ax_line.set_facecolor(Theme.BORDER)
+        ax_line.set_xticks([])
+        ax_line.set_yticks([])
+        for spine in ax_line.spines.values():
+            spine.set_visible(False)
+        
+        # Ordenar por confianza
+        sorted_analyses = sorted(
+            [(p, a) for p, a in all_analyses.items() if not np.isnan(a.optimal_value)],
+            key=lambda x: x[1].confidence,
+            reverse=True
+        )
+        
+        if not sorted_analyses:
+            fig.text(0.5, 0.5, 'No valid recommendations', ha='center', va='center',
+                    fontsize=12, color=Theme.TEXT_MUTED)
+            return
+        
+        # Dividir en dos columnas
+        n_params = len(sorted_analyses)
+        mid_point = (n_params + 1) // 2
+        
+        # Header de columnas
+        y_header = 0.86
+        col_positions = [
+            {'type': 0.04, 'param': 0.08, 'value': 0.28, 'range': 0.36, 'conf': 0.47},
+            {'type': 0.54, 'param': 0.58, 'value': 0.78, 'range': 0.86, 'conf': 0.97}
+        ]
+        
+        for col in col_positions:
+            fig.text(col['param'], y_header, 'PARAMETER', fontsize=7, color=Theme.TEXT_DARK, fontweight='bold')
+            fig.text(col['value'], y_header, 'OPTIMAL', fontsize=7, color=Theme.TEXT_DARK, ha='right', fontweight='bold')
+            fig.text(col['range'], y_header, 'RANGE', fontsize=7, color=Theme.TEXT_DARK, fontweight='bold')
+            fig.text(col['conf'], y_header, 'CONF', fontsize=7, color=Theme.TEXT_DARK, ha='right', fontweight='bold')
+        
+        # Renderizar filas
+        row_height = 0.035
+        start_y = 0.82
+        
+        for i, (param, analysis) in enumerate(sorted_analyses):
+            col_idx = 0 if i < mid_point else 1
+            row_in_col = i if i < mid_point else i - mid_point
+            col = col_positions[col_idx]
+            
+            y_pos = start_y - (row_in_col * row_height)
+            
+            if y_pos < 0.06:
+                break
+            
+            is_exit = param in exit_params
+            
+            # Color según confianza
+            if analysis.confidence >= 0.7:
+                text_color = Theme.ACCENT
+            elif analysis.confidence >= 0.5:
+                text_color = Theme.TEXT_PRIMARY
+            else:
+                text_color = Theme.TEXT_SECONDARY
+            
+            # Indicador de tipo
+            type_indicator = '◆' if is_exit else '○'
+            fig.text(col['type'], y_pos, type_indicator, fontsize=7, color=text_color)
+            
+            # Nombre del parámetro
+            param_display = param[:18] + '…' if len(param) > 18 else param
+            fig.text(col['param'], y_pos, param_display, fontsize=8, color=text_color)
+            
+            # Valor óptimo
+            fig.text(col['value'], y_pos, format_number(analysis.optimal_value), fontsize=9, 
+                    color=text_color, ha='right', fontweight='bold')
+            
+            # Rango
+            if not np.isnan(analysis.optimal_range[0]):
+                range_str = f'{format_number(analysis.optimal_range[0])}—{format_number(analysis.optimal_range[1])}'
+            else:
+                range_str = '—'
+            fig.text(col['range'], y_pos, range_str, fontsize=7, color=Theme.TEXT_DARK)
+            
+            # Confianza
+            fig.text(col['conf'], y_pos, f'{analysis.confidence:.0%}', fontsize=8, 
+                    color=text_color, ha='right')
+        
+        # Leyenda al fondo
+        fig.text(0.05, 0.025, '◆ Exit Parameters    ○ Indicator Parameters', 
+                fontsize=7, color=Theme.TEXT_DARK)
+        
+        # Stats del análisis
+        avg_conf = np.mean([a.confidence for _, a in sorted_analyses])
+        high_conf = len([a for _, a in sorted_analyses if a.confidence >= 0.7])
+        fig.text(0.95, 0.025, f'{len(sorted_analyses)} params · {high_conf} high conf · avg {avg_conf:.0%}',
+                fontsize=7, color=Theme.TEXT_DARK, ha='right')
+    
+    def create_3d_surface(self, fig: plt.Figure, param1: str, param2: str, metric_col: str,
+                          title: str = ""):
+        """Crea superficie 3D de optimización."""
+        fig.patch.set_facecolor(Theme.BG_PRIMARY)
+        
+        ax = fig.add_subplot(111, projection='3d')
+        ax.set_facecolor(Theme.BG_SECONDARY)
+        
+        # Datos
+        x = pd.to_numeric(self.df[param1], errors='coerce').values
+        y = pd.to_numeric(self.df[param2], errors='coerce').values
+        z = pd.to_numeric(self.df[metric_col], errors='coerce').values
+        
+        mask = ~(np.isnan(x) | np.isnan(y) | np.isnan(z))
+        x, y, z = x[mask], y[mask], z[mask]
+        
+        if len(z) < 20:
+            ax.text2D(0.5, 0.5, 'Insufficient Data', transform=ax.transAxes,
+                     ha='center', va='center', color=Theme.TEXT_MUTED, fontsize=12)
+            return
+        
+        # Crear grid interpolado
+        grid_size = 40
+        xi = np.linspace(x.min(), x.max(), grid_size)
+        yi = np.linspace(y.min(), y.max(), grid_size)
+        xi, yi = np.meshgrid(xi, yi)
+        
+        try:
+            zi = griddata((x, y), z, (xi, yi), method='cubic')
+            zi = np.nan_to_num(zi, nan=np.nanmean(z))
+            zi = gaussian_filter(zi, sigma=3.0)  # Mayor suavizado
+        except:
+            zi = griddata((x, y), z, (xi, yi), method='linear')
+            zi = np.nan_to_num(zi, nan=np.nanmean(z))
+            zi = gaussian_filter(zi, sigma=2.5)
+        
+        # Superficie con colormap rojo→azul
+        cmap = Theme.get_surface_cmap()
+        norm = Normalize(vmin=np.percentile(z, 5), vmax=np.percentile(z, 95))
+        
+        surf = ax.plot_surface(xi, yi, zi, cmap=cmap, norm=norm,
+                               alpha=0.9, antialiased=True,
+                               linewidth=0.1, edgecolor='none')
+        
+        # Scatter puntos reales (muy sutil)
+        ax.scatter(x, y, z, c=z, cmap=cmap, norm=norm, s=5, alpha=0.3, edgecolors='none')
+        
+        # Estilo minimalista
+        ax.set_xlabel(param1, color=Theme.TEXT_DARK, labelpad=8, fontsize=8)
+        ax.set_ylabel(param2, color=Theme.TEXT_DARK, labelpad=8, fontsize=8)
+        ax.set_zlabel(metric_col, color=Theme.TEXT_DARK, labelpad=8, fontsize=8)
+        
+        ax.xaxis.pane.fill = False
+        ax.yaxis.pane.fill = False
+        ax.zaxis.pane.fill = False
+        ax.xaxis.pane.set_edgecolor(Theme.BORDER)
+        ax.yaxis.pane.set_edgecolor(Theme.BORDER)
+        ax.zaxis.pane.set_edgecolor(Theme.BORDER)
+        
+        # Formatear ejes sin notación científica
+        ax.xaxis.set_major_formatter(FuncFormatter(format_axis_number))
+        ax.yaxis.set_major_formatter(FuncFormatter(format_axis_number))
+        ax.zaxis.set_major_formatter(FuncFormatter(format_axis_number))
+        
+        ax.tick_params(colors=Theme.TEXT_DARK, labelsize=6)
+        ax.view_init(elev=25, azim=45)
+        
+        if title:
+            ax.set_title(title, color=Theme.TEXT_SECONDARY, fontsize=10, pad=15)
+        
+        # Colorbar minimalista
+        cbar = fig.colorbar(surf, ax=ax, shrink=0.5, aspect=20, pad=0.1)
+        cbar.ax.yaxis.set_major_formatter(FuncFormatter(format_axis_number))
+        cbar.ax.tick_params(colors=Theme.TEXT_DARK, labelsize=6)
+        cbar.outline.set_edgecolor(Theme.BORDER)
+    
+    def create_dual_3d_surfaces(self, fig: plt.Figure, param1: str, param2: str):
+        """Crea dos superficies 3D lado a lado (ROI y SQN)."""
+        fig.patch.set_facecolor(Theme.BG_PRIMARY)
+        
+        fig.text(0.5, 0.97, f'OPTIMIZATION SURFACE: {param1} × {param2}', fontsize=12, 
+                ha='center', fontweight='bold', color=Theme.TEXT_PRIMARY)
+        
+        # Buscar métricas
+        roi_col = self._find_metric_col('ROI')
+        sqn_col = self._find_metric_col('SQN')
+        
+        gs = gridspec.GridSpec(1, 2, figure=fig, left=0.05, right=0.95, 
+                              top=0.90, bottom=0.08, wspace=0.15)
+        
+        # Surface 1: ROI
+        if roi_col:
+            ax1 = fig.add_subplot(gs[0, 0], projection='3d')
+            self._plot_3d_mini(ax1, param1, param2, roi_col, f'{param1} × {param2} → ROI')
+        
+        # Surface 2: SQN  
+        if sqn_col:
+            ax2 = fig.add_subplot(gs[0, 1], projection='3d')
+            self._plot_3d_mini(ax2, param1, param2, sqn_col, f'{param1} × {param2} → SQN')
+    
+    def _plot_3d_mini(self, ax: plt.Axes, param1: str, param2: str, metric_col: str, title: str):
+        """Mini plot 3D para grid - Ultraminimalista."""
+        ax.set_facecolor(Theme.BG_SECONDARY)
+        
+        x = pd.to_numeric(self.df[param1], errors='coerce').values
+        y = pd.to_numeric(self.df[param2], errors='coerce').values
+        z = pd.to_numeric(self.df[metric_col], errors='coerce').values
+        
+        mask = ~(np.isnan(x) | np.isnan(y) | np.isnan(z))
+        x, y, z = x[mask], y[mask], z[mask]
+        
+        if len(z) < 15:
+            ax.text2D(0.5, 0.5, 'No Data', transform=ax.transAxes,
+                     ha='center', va='center', color=Theme.TEXT_DARK)
+            return
+        
+        # Grid
+        grid_size = 30
+        xi = np.linspace(x.min(), x.max(), grid_size)
+        yi = np.linspace(y.min(), y.max(), grid_size)
+        xi, yi = np.meshgrid(xi, yi)
+        
+        try:
+            zi = griddata((x, y), z, (xi, yi), method='cubic')
+            zi = np.nan_to_num(zi, nan=np.nanmean(z))
+            zi = gaussian_filter(zi, sigma=3.0)  # Mayor suavizado
+        except:
+            zi = griddata((x, y), z, (xi, yi), method='linear')
+            zi = np.nan_to_num(zi, nan=np.nanmean(z))
+            zi = gaussian_filter(zi, sigma=2.5)
+        
+        # Usar el colormap de superficie (rojo→azul)
+        cmap = Theme.get_surface_cmap()
+        norm = Normalize(vmin=np.percentile(z, 10), vmax=np.percentile(z, 90))
+        
+        surf = ax.plot_surface(xi, yi, zi, cmap=cmap, norm=norm,
+                               alpha=0.9, antialiased=True, linewidth=0)
+        
+        ax.set_xlabel(param1, color=Theme.TEXT_DARK, fontsize=7, labelpad=4)
+        ax.set_ylabel(param2, color=Theme.TEXT_DARK, fontsize=7, labelpad=4)
+        ax.set_zlabel(metric_col, color=Theme.TEXT_DARK, fontsize=7, labelpad=4)
+        
+        ax.xaxis.pane.fill = False
+        ax.yaxis.pane.fill = False
+        ax.zaxis.pane.fill = False
+        ax.xaxis.pane.set_edgecolor(Theme.BORDER)
+        ax.yaxis.pane.set_edgecolor(Theme.BORDER)
+        ax.zaxis.pane.set_edgecolor(Theme.BORDER)
+        
+        # Formatear ejes sin notación científica
+        ax.xaxis.set_major_formatter(FuncFormatter(format_axis_number))
+        ax.yaxis.set_major_formatter(FuncFormatter(format_axis_number))
+        ax.zaxis.set_major_formatter(FuncFormatter(format_axis_number))
+        
+        ax.tick_params(colors=Theme.TEXT_DARK, labelsize=5)
+        ax.view_init(elev=20, azim=45)
+        ax.set_title(title, fontsize=8, color=Theme.TEXT_SECONDARY, pad=8)
+    
+    def create_statistical_validation_page(self, fig: plt.Figure, validation: StatisticalValidation):
+        """Página de validación estadística PROFESIONAL completa."""
+        fig.patch.set_facecolor(Theme.BG_PRIMARY)
+        
+        # Header profesional
+        fig.text(0.5, 0.97, 'STATISTICAL VALIDATION REPORT', fontsize=14, ha='center',
+                fontweight='bold', color=Theme.TEXT_PRIMARY)
+        fig.text(0.5, 0.94, "Institutional-Grade Robustness Analysis", 
+                fontsize=9, ha='center', color=Theme.TEXT_MUTED, style='italic')
+        
+        # Línea separadora
+        line = plt.Line2D([0.05, 0.95], [0.92, 0.92], color=Theme.DIVIDER, linewidth=0.5)
+        fig.add_artist(line)
+        
+        gs = gridspec.GridSpec(3, 3, figure=fig, left=0.06, right=0.94,
+                              top=0.89, bottom=0.06, wspace=0.20, hspace=0.30,
+                              height_ratios=[1.2, 1.2, 0.8])
+        
+        # 1. White's Reality Check Panel (expandido)
+        ax1 = fig.add_subplot(gs[0, 0])
+        self._plot_wrc_panel_pro(ax1, validation)
+        
+        # 2. Deflated Sharpe Panel (expandido)
+        ax2 = fig.add_subplot(gs[0, 1])
+        self._plot_dsr_panel_pro(ax2, validation)
+        
+        # 3. Probabilistic Sharpe Ratio Visual
+        ax3 = fig.add_subplot(gs[0, 2])
+        self._plot_psr_visual(ax3, validation)
+        
+        # 4. Distribution Analysis con histograma
+        ax4 = fig.add_subplot(gs[1, 0])
+        self._plot_distribution_pro(ax4, validation)
+
+        # 5. Left Tail Risk Analysis (reemplaza tests de series temporales/regímenes)
+        ax5 = fig.add_subplot(gs[1, 1:])
+        self._plot_risk_tail_analysis(ax5, validation)
+        
+        # 7. Summary Dashboard (full width)
+        ax7 = fig.add_subplot(gs[2, :])
+        self._plot_validation_dashboard(ax7, validation)
+    
+    def _plot_wrc_panel_pro(self, ax: plt.Axes, v: StatisticalValidation):
+        """Panel profesional de White's Reality Check."""
+        ax.set_facecolor(Theme.BG_TERTIARY)
+        ax.set_xticks([])
+        ax.set_yticks([])
+        for spine in ax.spines.values():
+            spine.set_color(Theme.BORDER)
+        
+        # Título con icono
+        ax.text(0.5, 0.94, "⚡ WHITE'S REALITY CHECK", fontsize=9, fontweight='bold',
+               ha='center', transform=ax.transAxes, color=Theme.TEXT_SECONDARY)
+        
+        # Línea separadora
+        ax.plot([0.1, 0.9], [0.88, 0.88], color=Theme.DIVIDER, linewidth=0.5,
+               transform=ax.transAxes)
+        
+        # Descripción
+        ax.text(0.5, 0.82, "Data Snooping Bias Test", fontsize=7,
+               ha='center', transform=ax.transAxes, color=Theme.TEXT_DARK, style='italic')
+        
+        # Status principal con indicador visual
+        status_color = Theme.ACCENT if v.wrc_is_significant else '#e53935'
+        status_text = '✓ PASSED' if v.wrc_is_significant else '✗ FAILED'
+        
+        # Círculo indicador
+        circle_color = Theme.ACCENT if v.wrc_is_significant else '#e53935'
+        circle = plt.Circle((0.15, 0.68), 0.04, color=circle_color, transform=ax.transAxes)
+        ax.add_patch(circle)
+        
+        ax.text(0.25, 0.68, status_text, fontsize=10, va='center',
+               transform=ax.transAxes, color=status_color, fontweight='bold')
+        
+        # Métricas detalladas
+        y_pos = 0.52
+        metrics = [
+            ('P-Value', f'{v.wrc_p_value:.4f}', v.wrc_p_value <= 0.05),
+            ('Bootstrap μ', f'{v.wrc_bootstrap_mean:.4f}', True),
+            ('Bootstrap σ', f'{v.wrc_bootstrap_std:.4f}', True),
+            ('Significance', '95% CI' if v.wrc_is_significant else 'Below 95%', v.wrc_is_significant),
+        ]
+        
+        for label, value, is_good in metrics:
+            ax.text(0.08, y_pos, label, fontsize=7, transform=ax.transAxes, color=Theme.TEXT_DARK)
+            val_color = Theme.ACCENT if is_good else Theme.TEXT_SECONDARY
+            ax.text(0.92, y_pos, value, fontsize=8, ha='right', transform=ax.transAxes, color=val_color)
+            y_pos -= 0.12
+        
+        # Interpretación
+        interpretation = "Strategy outperforms random" if v.wrc_is_significant else "No significant edge detected"
+        ax.text(0.5, 0.06, interpretation, fontsize=6, ha='center',
+               transform=ax.transAxes, color=Theme.TEXT_DARK, style='italic')
+    
+    def _plot_dsr_panel_pro(self, ax: plt.Axes, v: StatisticalValidation):
+        """Panel profesional de Deflated Sharpe Ratio."""
+        ax.set_facecolor(Theme.BG_TERTIARY)
+        ax.set_xticks([])
+        ax.set_yticks([])
+        for spine in ax.spines.values():
+            spine.set_color(Theme.BORDER)
+        
+        # Título
+        ax.text(0.5, 0.94, "📊 DEFLATED SHARPE RATIO", fontsize=9, fontweight='bold',
+               ha='center', transform=ax.transAxes, color=Theme.TEXT_SECONDARY)
+        
+        ax.plot([0.1, 0.9], [0.88, 0.88], color=Theme.DIVIDER, linewidth=0.5,
+               transform=ax.transAxes)
+        
+        ax.text(0.5, 0.82, "Bailey & López de Prado (2014)", fontsize=7,
+               ha='center', transform=ax.transAxes, color=Theme.TEXT_DARK, style='italic')
+        
+        # Comparación visual Original vs Deflated
+        bar_width = 0.15
+        
+        # Barra Original
+        orig_height = min(0.25, abs(v.original_sharpe) * 0.08)
+        ax.add_patch(plt.Rectangle((0.2, 0.45), bar_width, orig_height, 
+                    color=Theme.TEXT_SECONDARY, transform=ax.transAxes, alpha=0.7))
+        ax.text(0.275, 0.42, 'Original', fontsize=6, ha='center', transform=ax.transAxes, color=Theme.TEXT_DARK)
+        ax.text(0.275, 0.45 + orig_height + 0.02, f'{v.original_sharpe:.2f}', fontsize=8, 
+               ha='center', transform=ax.transAxes, color=Theme.TEXT_SECONDARY)
+        
+        # Barra Deflated
+        defl_height = min(0.25, abs(v.deflated_sharpe) * 0.08)
+        defl_color = Theme.ACCENT if v.dsr_is_significant else '#e53935'
+        ax.add_patch(plt.Rectangle((0.65, 0.45), bar_width, defl_height, 
+                    color=defl_color, transform=ax.transAxes))
+        ax.text(0.725, 0.42, 'Deflated', fontsize=6, ha='center', transform=ax.transAxes, color=Theme.TEXT_DARK)
+        ax.text(0.725, 0.45 + defl_height + 0.02, f'{v.deflated_sharpe:.2f}', fontsize=9, 
+               ha='center', transform=ax.transAxes, color=defl_color, fontweight='bold')
+        
+        # Flecha de haircut
+        ax.annotate('', xy=(0.55, 0.55), xytext=(0.45, 0.55),
+                   arrowprops=dict(arrowstyle='->', color=Theme.TEXT_DARK, lw=1),
+                   transform=ax.transAxes)
+        ax.text(0.5, 0.58, f'-{v.sharpe_haircut:.0%}', fontsize=7, ha='center',
+               transform=ax.transAxes, color=Theme.TEXT_DARK)
+        
+        # Status
+        status_text = '✓ Robust Performance' if v.dsr_is_significant else '⚠ Potential Overfit'
+        status_color = Theme.ACCENT if v.dsr_is_significant else '#ff9800'
+        ax.text(0.5, 0.12, status_text, fontsize=8, ha='center',
+               transform=ax.transAxes, color=status_color, fontweight='bold')
+        
+        # Interpretación
+        ax.text(0.5, 0.04, f"Multiple testing penalty applied ({v.sharpe_haircut:.0%} reduction)", 
+               fontsize=6, ha='center', transform=ax.transAxes, color=Theme.TEXT_DARK, style='italic')
+    
+    def _plot_psr_visual(self, ax: plt.Axes, v: StatisticalValidation):
+        """Visual de Probabilistic Sharpe Ratio."""
+        ax.set_facecolor(Theme.BG_TERTIARY)
+        ax.set_xticks([])
+        ax.set_yticks([])
+        for spine in ax.spines.values():
+            spine.set_color(Theme.BORDER)
+        
+        ax.text(0.5, 0.94, "🎯 CONFIDENCE METRICS", fontsize=9, fontweight='bold',
+               ha='center', transform=ax.transAxes, color=Theme.TEXT_SECONDARY)
+        
+        ax.plot([0.1, 0.9], [0.88, 0.88], color=Theme.DIVIDER, linewidth=0.5,
+               transform=ax.transAxes)
+        
+        # Gauge de confianza
+        # Calcular PSR aproximado
+        psr = 0.95 if v.dsr_is_significant else 0.5 + (v.deflated_sharpe / (v.original_sharpe + 1e-10)) * 0.4
+        psr = max(0, min(1, psr))
+        
+        # Arco de fondo
+        theta1, theta2 = 180, 0
+        for i in range(100):
+            t = theta1 + (theta2 - theta1) * i / 100
+            color_val = i / 100
+            if color_val < 0.5:
+                color = '#e53935'
+            elif color_val < 0.7:
+                color = '#ff9800'
+            else:
+                color = Theme.ACCENT
+            arc_x = 0.5 + 0.25 * np.cos(np.radians(t))
+            arc_y = 0.55 + 0.15 * np.sin(np.radians(t))
+            ax.plot(arc_x, arc_y, 'o', markersize=2, color=color, transform=ax.transAxes, alpha=0.3)
+        
+        # Indicador
+        indicator_angle = 180 - psr * 180
+        ind_x = 0.5 + 0.20 * np.cos(np.radians(indicator_angle))
+        ind_y = 0.55 + 0.12 * np.sin(np.radians(indicator_angle))
+        ax.plot([0.5, ind_x], [0.55, ind_y], color=Theme.TEXT_PRIMARY, linewidth=2, transform=ax.transAxes)
+        ax.plot(ind_x, ind_y, 'o', markersize=6, color=Theme.ACCENT, transform=ax.transAxes)
+        
+        # Valor central
+        ax.text(0.5, 0.38, f'{psr:.0%}', fontsize=14, ha='center', fontweight='bold',
+               transform=ax.transAxes, color=Theme.TEXT_PRIMARY)
+        ax.text(0.5, 0.30, 'PSR', fontsize=8, ha='center',
+               transform=ax.transAxes, color=Theme.TEXT_MUTED)
+        
+        # Métricas adicionales
+        ax.text(0.15, 0.15, f'Skew: {v.skewness:.2f}', fontsize=7, transform=ax.transAxes, color=Theme.TEXT_DARK)
+        ax.text(0.85, 0.15, f'Kurt: {v.kurtosis:.2f}', fontsize=7, ha='right', transform=ax.transAxes, color=Theme.TEXT_DARK)
+        
+        # Interpretación
+        if psr >= 0.95:
+            interp = "High confidence in strategy skill"
+        elif psr >= 0.7:
+            interp = "Moderate evidence of skill"
+        else:
+            interp = "Insufficient evidence of skill"
+        ax.text(0.5, 0.04, interp, fontsize=6, ha='center', transform=ax.transAxes, 
+               color=Theme.TEXT_DARK, style='italic')
+    
+    def _plot_distribution_pro(self, ax: plt.Axes, v: StatisticalValidation):
+        """Panel profesional de análisis de distribución."""
+        ax.set_facecolor(Theme.BG_TERTIARY)
+        ax.set_xticks([])
+        ax.set_yticks([])
+        for spine in ax.spines.values():
+            spine.set_color(Theme.BORDER)
+        
+        ax.text(0.5, 0.94, "📈 DISTRIBUTION ANALYSIS", fontsize=9, fontweight='bold',
+               ha='center', transform=ax.transAxes, color=Theme.TEXT_SECONDARY)
+        
+        ax.plot([0.1, 0.9], [0.88, 0.88], color=Theme.DIVIDER, linewidth=0.5,
+               transform=ax.transAxes)
+        
+        # Tests de normalidad con indicadores visuales
+        tests = [
+            ('Jarque-Bera', f'p={v.jarque_bera_pvalue:.4f}', v.jarque_bera_pvalue > 0.05, 
+             'Normal' if v.jarque_bera_pvalue > 0.05 else 'Non-Normal'),
+            ('Skewness', f'{v.skewness:.3f}', -0.5 <= v.skewness <= 0.5,
+             'Symmetric' if -0.5 <= v.skewness <= 0.5 else ('Left Tail' if v.skewness < -0.5 else 'Right Tail')),
+            ('Kurtosis', f'{v.kurtosis:.3f}', -1 <= v.kurtosis <= 1,
+             'Normal Tails' if -1 <= v.kurtosis <= 1 else ('Thin Tails' if v.kurtosis < -1 else 'Fat Tails')),
+        ]
+        
+        y_pos = 0.75
+        for name, value, is_good, interpretation in tests:
+            # Indicador de estado
+            status_color = Theme.ACCENT if is_good else '#ff9800'
+            ax.plot(0.08, y_pos, 'o', markersize=6, color=status_color, transform=ax.transAxes)
+            
+            # Nombre del test
+            ax.text(0.14, y_pos, name, fontsize=8, va='center', transform=ax.transAxes, color=Theme.TEXT_SECONDARY)
+            
+            # Valor
+            ax.text(0.58, y_pos, value, fontsize=8, va='center', ha='right', transform=ax.transAxes, color=Theme.TEXT_DARK)
+            
+            # Interpretación
+            ax.text(0.62, y_pos, interpretation, fontsize=7, va='center', transform=ax.transAxes, 
+                   color=status_color, style='italic')
+            
+            y_pos -= 0.18
+        
+        # Resumen de distribución
+        n_passed = sum([v.jarque_bera_pvalue > 0.05, -0.5 <= v.skewness <= 0.5, -1 <= v.kurtosis <= 1])
+        summary_text = f"Distribution Quality: {n_passed}/3 tests passed"
+        summary_color = Theme.ACCENT if n_passed >= 2 else '#ff9800' if n_passed == 1 else '#e53935'
+        ax.text(0.5, 0.12, summary_text, fontsize=8, ha='center', transform=ax.transAxes, 
+               color=summary_color, fontweight='bold')
+        
+        # Nota
+        ax.text(0.5, 0.04, "Non-normal returns may affect risk metrics", fontsize=6, 
+               ha='center', transform=ax.transAxes, color=Theme.TEXT_DARK, style='italic')
+
+    def _plot_risk_tail_analysis(self, ax: plt.Axes, v: StatisticalValidation):
+        """Panel de análisis de cola izquierda (VaR/CVaR) sobre trials."""
+        ax.set_facecolor(Theme.BG_TERTIARY)
+        for spine in ax.spines.values():
+            spine.set_color(Theme.BORDER)
+
+        ax.text(0.5, 0.94, "📉 LEFT TAIL RISK", fontsize=9, fontweight='bold',
+                ha='center', transform=ax.transAxes, color=Theme.TEXT_SECONDARY)
+        ax.plot([0.05, 0.95], [0.88, 0.88], color=Theme.DIVIDER, linewidth=0.5, transform=ax.transAxes)
+
+        values = np.asarray(getattr(v, 'trial_returns', np.array([])), dtype=float)
+        if values.size < 10:
+            ax.text(0.5, 0.5, 'Insufficient Data', ha='center', va='center',
+                    transform=ax.transAxes, color=Theme.TEXT_DARK, fontsize=10)
+            ax.set_xticks([])
+            ax.set_yticks([])
+            return
+
+        # Enfocar en pérdidas: si hay negativos, mirar <=0; si no, mostrar el peor cuartil
+        if np.any(values < 0):
+            focus = values[values <= 0]
+            x_right = 0.0
+        else:
+            focus = values
+            x_right = float(np.quantile(values, 0.25))
+
+        x_left = float(np.quantile(values, 0.01))
+        if x_left == x_right:
+            x_left = float(values.min())
+            x_right = float(values.max())
+
+        # Histograma del foco
+        ax.hist(focus, bins=30, color=Theme.RED_BRIGHT, alpha=0.30, edgecolor='none', density=True)
+
+        # KDE overlay (sutil)
+        try:
+            kde = stats.gaussian_kde(focus)
+            x_kde = np.linspace(min(focus.min(), x_left), max(focus.max(), x_right), 200)
+            y_kde = kde(x_kde)
+            ax.plot(x_kde, y_kde, color=Theme.RED_BRIGHT, linewidth=1.5, alpha=0.7)
+            ax.fill_between(x_kde, 0, y_kde, where=(x_kde <= v.var_95), color=Theme.RED_BRIGHT, alpha=0.08)
+        except Exception:
+            pass
+
+        # Líneas VaR/CVaR
+        ax.axvline(v.var_95, color=Theme.GOLD, linestyle='--', linewidth=1.6, alpha=0.95)
+        ax.axvline(v.cvar_95, color=Theme.RED_BRIGHT, linestyle='-', linewidth=1.6, alpha=0.95)
+        ax.axvline(0, color=Theme.DIVIDER, linestyle='-', linewidth=1.0, alpha=0.6)
+
+        ax.set_xlim(x_left, x_right)
+        ax.set_yticks([])
+        ax.tick_params(colors=Theme.TEXT_DARK, labelsize=7)
+        ax.xaxis.set_major_formatter(FuncFormatter(format_axis_number))
+
+        # Anotaciones
+        ax.text(0.02, 0.78, 'VaR95', transform=ax.transAxes, fontsize=7, color=Theme.GOLD)
+        ax.text(0.02, 0.70, 'CVaR95', transform=ax.transAxes, fontsize=7, color=Theme.RED_BRIGHT)
+
+        ax.text(0.98, 0.80,
+                f"VaR95: {v.var_95:.3f}\nCVaR95: {v.cvar_95:.3f}\nP(Loss): {v.prob_loss:.0%}",
+                transform=ax.transAxes, ha='right', va='top', fontsize=8, color=Theme.TEXT_DARK)
+
+        ax.text(0.5, 0.10,
+                "Historical tail risk across optimization trials (cross-sectional)",
+                transform=ax.transAxes, ha='center', va='center', fontsize=6,
+                color=Theme.TEXT_DARK, style='italic')
+    
+    def _plot_validation_dashboard(self, ax: plt.Axes, v: StatisticalValidation):
+        """Dashboard resumen profesional de validación."""
+        ax.set_facecolor(Theme.BG_TERTIARY)
+        ax.set_xticks([])
+        ax.set_yticks([])
+        for spine in ax.spines.values():
+            spine.set_color(Theme.BORDER)
+        
+        # Calcular score total
+        tests = [
+            ('Reality Check', v.wrc_is_significant, "Strategy outperforms random"),
+            ('Deflated Sharpe', v.dsr_is_significant, "Robust risk-adjusted returns"),
+            ('Distribution', v.jarque_bera_pvalue > 0.05, "Normal return distribution"),
+            ('Left Tail Risk', v.var_95 > 0, "Worst 5% configurations remain profitable"),
+        ]
+        
+        n_passed = sum(t[1] for t in tests)
+        
+        # Determinar calificación general
+        if n_passed == 4:
+            grade = 'A+'
+            grade_text = 'EXCELLENT'
+            grade_color = Theme.ACCENT
+            verdict = 'Strategy shows strong statistical robustness across all tests'
+        elif n_passed == 3:
+            grade = 'A'
+            grade_text = 'ROBUST'
+            grade_color = '#66bb6a'
+            verdict = 'Strategy demonstrates solid statistical foundation'
+        elif n_passed == 2:
+            grade = 'B'
+            grade_text = 'MODERATE'
+            grade_color = '#ff9800'
+            verdict = 'Strategy shows mixed statistical evidence'
+        elif n_passed == 1:
+            grade = 'C'
+            grade_text = 'WEAK'
+            grade_color = '#ff7043'
+            verdict = 'Strategy requires additional validation'
+        else:
+            grade = 'D'
+            grade_text = 'UNCERTAIN'
+            grade_color = '#e53935'
+            verdict = 'Strategy lacks statistical support'
+        
+        # Grade principal
+        ax.text(0.08, 0.55, grade, fontsize=28, fontweight='bold', va='center',
+               transform=ax.transAxes, color=grade_color)
+        ax.text(0.08, 0.25, grade_text, fontsize=10, fontweight='bold', va='center',
+               transform=ax.transAxes, color=grade_color)
+        
+        # Línea vertical separadora
+        ax.plot([0.18, 0.18], [0.15, 0.85], color=Theme.DIVIDER, linewidth=1,
+               transform=ax.transAxes)
+        
+        # Tests individuales
+        x_start = 0.22
+        x_spacing = 0.20
+        
+        for i, (name, passed, desc) in enumerate(tests):
+            x_pos = x_start + i * x_spacing
+            
+            # Indicador
+            status_color = Theme.ACCENT if passed else '#e53935'
+            status_text = '✓' if passed else '✗'
+            
+            ax.text(x_pos, 0.72, status_text, fontsize=14, ha='center', transform=ax.transAxes, 
+                   color=status_color, fontweight='bold')
+            ax.text(x_pos, 0.52, name, fontsize=7, ha='center', transform=ax.transAxes, 
+                   color=Theme.TEXT_SECONDARY, fontweight='bold')
+            ax.text(x_pos, 0.35, desc[:20] + '...' if len(desc) > 20 else desc, fontsize=5, 
+                   ha='center', transform=ax.transAxes, color=Theme.TEXT_DARK)
+        
+        # Veredicto final
+        ax.text(0.60, 0.12, verdict, fontsize=8, ha='center', transform=ax.transAxes, 
+               color=Theme.TEXT_SECONDARY, style='italic')
+        
+        # Score
+        ax.text(0.95, 0.55, f'{n_passed}/4', fontsize=16, ha='right', va='center',
+               transform=ax.transAxes, color=Theme.TEXT_PRIMARY, fontweight='bold')
+        ax.text(0.95, 0.35, 'Tests Passed', fontsize=7, ha='right', transform=ax.transAxes, 
+               color=Theme.TEXT_DARK)
+    
+    def find_exit_params(self) -> Tuple[Optional[str], Optional[str]]:
+        """Encuentra los parámetros SL y TP."""
+        sl_col = None
+        tp_col = None
+        
+        for col in self.schema.exit_params:
+            col_upper = col.upper()
+            if 'SL' in col_upper and sl_col is None:
+                sl_col = col
+            elif 'TP' in col_upper and tp_col is None:
+                tp_col = col
+        
+        return sl_col, tp_col
+    
+    def create_correlation_page(self, fig: plt.Figure, correlations: List[ParameterCorrelation]):
+        """Página de análisis de correlación entre parámetros."""
+        fig.patch.set_facecolor(Theme.BG_PRIMARY)
+        
+        fig.text(0.5, 0.96, 'PARAMETER CORRELATION ANALYSIS', fontsize=12, ha='center',
+                fontweight='bold', color=Theme.TEXT_PRIMARY)
+        fig.text(0.5, 0.93, 'Detecting related parameters for 3D surface analysis', 
+                fontsize=8, ha='center', color=Theme.TEXT_DARK)
+        
+        if not correlations:
+            fig.text(0.5, 0.5, 'Insufficient data for correlation analysis',
+                    ha='center', va='center', fontsize=10, color=Theme.TEXT_MUTED)
+            return
+        
+        gs = gridspec.GridSpec(2, 2, figure=fig, left=0.08, right=0.92,
+                              top=0.88, bottom=0.12, wspace=0.25, hspace=0.35)
+        
+        # 1. Matriz de correlación (solo los parámetros principales)
+        ax1 = fig.add_subplot(gs[0, 0])
+        self._plot_correlation_matrix(ax1, correlations)
+        
+        # 2. Top pares correlacionados
+        ax2 = fig.add_subplot(gs[0, 1])
+        self._plot_top_pairs(ax2, correlations)
+        
+        # 3. Scatter de los top 2 pares
+        ax3 = fig.add_subplot(gs[1, 0])
+        ax4 = fig.add_subplot(gs[1, 1])
+        
+        if len(correlations) >= 1:
+            self._plot_pair_scatter(ax3, correlations[0])
+        else:
+            ax3.axis('off')
+            
+        if len(correlations) >= 2:
+            self._plot_pair_scatter(ax4, correlations[1])
+        else:
+            ax4.axis('off')
+        
+        # Leyenda de pares fuertes al final
+        strong_pairs = [c for c in correlations if c.is_strongly_related]
+        if strong_pairs:
+            text = 'Strong pairs → 3D Analysis: ' + ', '.join([f'{c.param1}×{c.param2}' for c in strong_pairs[:4]])
+            fig.text(0.5, 0.03, text, fontsize=7, ha='center', color=Theme.ACCENT)
+    
+    def _plot_correlation_matrix(self, ax: plt.Axes, correlations: List[ParameterCorrelation]):
+        """Dibuja matriz de correlación simplificada."""
+        ax.set_facecolor(Theme.BG_TERTIARY)
+        
+        # Obtener parámetros únicos
+        params = list(set([c.param1 for c in correlations] + [c.param2 for c in correlations]))
+        params = params[:8]  # Limitar a 8 para legibilidad
+        n = len(params)
+        
+        if n < 2:
+            ax.text(0.5, 0.5, 'Not enough params', ha='center', va='center',
+                   color=Theme.TEXT_DARK, fontsize=9, transform=ax.transAxes)
+            return
+        
+        # Crear matriz
+        matrix = np.zeros((n, n))
+        param_idx = {p: i for i, p in enumerate(params)}
+        
+        for c in correlations:
+            if c.param1 in param_idx and c.param2 in param_idx:
+                i, j = param_idx[c.param1], param_idx[c.param2]
+                matrix[i, j] = c.spearman_corr
+                matrix[j, i] = c.spearman_corr
+        
+        # Diagonal = 1
+        np.fill_diagonal(matrix, 1)
+        
+        # Heatmap
+        cmap = Theme.get_correlation_cmap()
+        im = ax.imshow(matrix, cmap=cmap, vmin=-1, vmax=1, aspect='auto')
+        
+        # Labels
+        ax.set_xticks(np.arange(n))
+        ax.set_yticks(np.arange(n))
+        short_params = [p[:10] for p in params]
+        ax.set_xticklabels(short_params, fontsize=6, rotation=45, ha='right')
+        ax.set_yticklabels(short_params, fontsize=6)
+        
+        # Valores en celdas
+        for i in range(n):
+            for j in range(n):
+                if i != j:
+                    val = matrix[i, j]
+                    color = Theme.TEXT_PRIMARY if abs(val) > 0.3 else Theme.TEXT_DARK
+                    ax.text(j, i, f'{val:.2f}', ha='center', va='center', 
+                           fontsize=5, color=color)
+        
+        ax.set_title('Spearman Correlation', fontsize=8, color=Theme.TEXT_SECONDARY, pad=4)
+        
+        for spine in ax.spines.values():
+            spine.set_color(Theme.BORDER)
+    
+    def _plot_top_pairs(self, ax: plt.Axes, correlations: List[ParameterCorrelation]):
+        """Muestra los pares más correlacionados."""
+        ax.set_facecolor(Theme.BG_TERTIARY)
+        ax.set_xticks([])
+        ax.set_yticks([])
+        
+        for spine in ax.spines.values():
+            spine.set_color(Theme.BORDER)
+        
+        ax.text(0.5, 0.95, 'TOP RELATED PAIRS', fontsize=9, ha='center',
+               transform=ax.transAxes, color=Theme.TEXT_SECONDARY)
+        
+        y_pos = 0.82
+        for i, c in enumerate(correlations[:6]):
+            # Indicador de fuerza
+            if c.is_strongly_related:
+                indicator = '●'
+                color = Theme.ACCENT
+            else:
+                indicator = '○'
+                color = Theme.TEXT_SECONDARY
+            
+            # Nombre del par
+            pair_name = f'{c.param1[:12]} × {c.param2[:12]}'
+            ax.text(0.05, y_pos, indicator, fontsize=8, color=color, transform=ax.transAxes)
+            ax.text(0.12, y_pos, pair_name, fontsize=7, color=color, transform=ax.transAxes)
+            
+            # Correlación
+            corr_val = (abs(c.pearson_corr) + abs(c.spearman_corr)) / 2
+            ax.text(0.95, y_pos, f'{corr_val:.2f}', fontsize=7, ha='right',
+                   color=Theme.TEXT_PRIMARY, transform=ax.transAxes)
+            
+            y_pos -= 0.12
+        
+        # Leyenda
+        ax.text(0.5, 0.05, '● Strong (3D surface)  ○ Weak', fontsize=6, 
+               ha='center', color=Theme.TEXT_DARK, transform=ax.transAxes)
+    
+    def _plot_pair_scatter(self, ax: plt.Axes, corr: ParameterCorrelation):
+        """Scatter plot de un par de parámetros."""
+        ax.set_facecolor(Theme.BG_SECONDARY)
+        
+        x = pd.to_numeric(self.df[corr.param1], errors='coerce').values
+        y = pd.to_numeric(self.df[corr.param2], errors='coerce').values
+        
+        mask = ~(np.isnan(x) | np.isnan(y))
+        x, y = x[mask], y[mask]
+        
+        if len(x) < 5:
+            ax.text(0.5, 0.5, 'No Data', ha='center', va='center',
+                   color=Theme.TEXT_DARK, transform=ax.transAxes)
+            return
+        
+        # Colorear por target si existe
+        target_col = self._find_metric_col('ROI') or self._find_metric_col('SCORE')
+        if target_col:
+            z = pd.to_numeric(self.df.loc[mask.nonzero()[0], target_col], errors='coerce').values
+            z = np.nan_to_num(z, nan=np.nanmean(z))
+            scatter = ax.scatter(x, y, c=z, cmap=Theme.get_surface_cmap(), 
+                               s=15, alpha=0.6, edgecolors='none')
+        else:
+            ax.scatter(x, y, c=Theme.ACCENT, s=15, alpha=0.6, edgecolors='none')
+        
+        # Línea de tendencia
+        try:
+            z_fit = np.polyfit(x, y, 1)
+            p = np.poly1d(z_fit)
+            x_line = np.linspace(x.min(), x.max(), 50)
+            ax.plot(x_line, p(x_line), color=Theme.TEXT_MUTED, linewidth=1, 
+                   linestyle='--', alpha=0.7)
+        except:
+            pass
+        
+        ax.set_xlabel(corr.param1[:15], fontsize=7, color=Theme.TEXT_DARK)
+        ax.set_ylabel(corr.param2[:15], fontsize=7, color=Theme.TEXT_DARK)
+        ax.tick_params(labelsize=6, colors=Theme.TEXT_DARK)
+        
+        # Título con correlación
+        title = f'ρ={corr.spearman_corr:.2f}'
+        ax.set_title(title, fontsize=7, color=Theme.TEXT_SECONDARY, pad=3)
+        
+        for spine in ax.spines.values():
+            spine.set_color(Theme.BORDER)
+    
+    def create_correlated_pair_surface(self, fig: plt.Figure, param1: str, param2: str, 
+                                        corr_info: Optional[ParameterCorrelation] = None):
+        """Crea página de superficie 3D para un par de parámetros correlacionados."""
+        fig.patch.set_facecolor(Theme.BG_PRIMARY)
+        
+        # Título
+        title = f'{param1} × {param2}'
+        if corr_info:
+            title += f'  (ρ={corr_info.spearman_corr:.2f})'
+        
+        fig.text(0.5, 0.97, f'3D OPTIMIZATION: {title}', fontsize=11, ha='center',
+                fontweight='bold', color=Theme.TEXT_PRIMARY)
+        
+        # Grid para 4 superficies: ROI, SQN, SCORE, SHARPE
+        gs = gridspec.GridSpec(2, 2, figure=fig, left=0.05, right=0.95, 
+                              top=0.92, bottom=0.05, wspace=0.12, hspace=0.18)
+        
+        metrics_to_plot = [
+            ('ROI', 'ROI %'),
+            ('SQN', 'SQN'),
+            ('SCORE', 'SCORE'),
+            ('SHARPE', 'SHARPE')
+        ]
+        
+        for idx, (metric_key, label) in enumerate(metrics_to_plot):
+            metric_col = self._find_metric_col(metric_key)
+            if not metric_col:
+                continue
+            
+            ax = fig.add_subplot(gs[idx // 2, idx % 2], projection='3d')
+            self._plot_3d_mini_enhanced(ax, param1, param2, metric_col, label)
+    
+    def _plot_3d_mini_enhanced(self, ax: plt.Axes, param1: str, param2: str, 
+                                metric_col: str, label: str):
+        """Mini plot 3D mejorado con mejor manejo de escalas."""
+        ax.set_facecolor(Theme.BG_SECONDARY)
+        
+        x = pd.to_numeric(self.df[param1], errors='coerce').values
+        y = pd.to_numeric(self.df[param2], errors='coerce').values
+        z = pd.to_numeric(self.df[metric_col], errors='coerce').values
+        
+        mask = ~(np.isnan(x) | np.isnan(y) | np.isnan(z))
+        x, y, z = x[mask], y[mask], z[mask]
+        
+        if len(z) < 10:
+            ax.text2D(0.5, 0.5, 'No Data', transform=ax.transAxes,
+                     ha='center', va='center', color=Theme.TEXT_DARK, fontsize=8)
+            return
+        
+        # Filtrar outliers para mejor visualización
+        z_p5, z_p95 = np.percentile(z, [5, 95])
+        clip_mask = (z >= z_p5) & (z <= z_p95)
+        x_clip, y_clip, z_clip = x[clip_mask], y[clip_mask], z[clip_mask]
+        
+        if len(z_clip) < 10:
+            x_clip, y_clip, z_clip = x, y, z
+        
+        # Grid más fino
+        grid_size = 35
+        x_range = x_clip.max() - x_clip.min()
+        y_range = y_clip.max() - y_clip.min()
+        
+        # Asegurar rangos válidos
+        if x_range < 1e-10 or y_range < 1e-10:
+            ax.text2D(0.5, 0.5, 'Constant Data', transform=ax.transAxes,
+                     ha='center', va='center', color=Theme.TEXT_DARK, fontsize=8)
+            return
+        
+        xi = np.linspace(x_clip.min(), x_clip.max(), grid_size)
+        yi = np.linspace(y_clip.min(), y_clip.max(), grid_size)
+        xi, yi = np.meshgrid(xi, yi)
+        
+        try:
+            zi = griddata((x_clip, y_clip), z_clip, (xi, yi), method='cubic')
+            zi = np.nan_to_num(zi, nan=np.nanmean(z_clip))
+            zi = gaussian_filter(zi, sigma=3.0)  # Mayor suavizado
+        except:
+            try:
+                zi = griddata((x_clip, y_clip), z_clip, (xi, yi), method='linear')
+                zi = np.nan_to_num(zi, nan=np.nanmean(z_clip))
+                zi = gaussian_filter(zi, sigma=2.5)
+            except:
+                ax.text2D(0.5, 0.5, 'Interpolation Error', transform=ax.transAxes,
+                         ha='center', va='center', color=Theme.TEXT_DARK, fontsize=8)
+                return
+        
+        # Normalización robusta para el color
+        z_min, z_max = np.percentile(z_clip, [5, 95])
+        if z_max - z_min < 1e-10:
+            z_min, z_max = z_clip.min(), z_clip.max()
+        
+        cmap = Theme.get_surface_cmap()
+        norm = Normalize(vmin=z_min, vmax=z_max)
+        
+        surf = ax.plot_surface(xi, yi, zi, cmap=cmap, norm=norm,
+                               alpha=0.92, antialiased=True, linewidth=0,
+                               rcount=40, ccount=40)
+        
+        # Estilo
+        ax.set_xlabel(param1[:10], color=Theme.TEXT_DARK, fontsize=6, labelpad=2)
+        ax.set_ylabel(param2[:10], color=Theme.TEXT_DARK, fontsize=6, labelpad=2)
+        ax.set_zlabel(label, color=Theme.TEXT_DARK, fontsize=6, labelpad=2)
+        
+        ax.xaxis.pane.fill = False
+        ax.yaxis.pane.fill = False
+        ax.zaxis.pane.fill = False
+        ax.xaxis.pane.set_edgecolor(Theme.BORDER)
+        ax.yaxis.pane.set_edgecolor(Theme.BORDER)
+        ax.zaxis.pane.set_edgecolor(Theme.BORDER)
+        
+        # Formateo de ticks para evitar notación científica
+        ax.xaxis.set_major_formatter(FuncFormatter(format_axis_number))
+        ax.yaxis.set_major_formatter(FuncFormatter(format_axis_number))
+        ax.zaxis.set_major_formatter(FuncFormatter(format_axis_number))
+        ax.xaxis.set_major_locator(MaxNLocator(5))
+        ax.yaxis.set_major_locator(MaxNLocator(5))
+        ax.zaxis.set_major_locator(MaxNLocator(5))
+        
+        ax.tick_params(colors=Theme.TEXT_DARK, labelsize=5, pad=1)
+        ax.view_init(elev=22, azim=45)
+        ax.set_title(label, fontsize=7, color=Theme.TEXT_SECONDARY, pad=2)
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# 📄 GENERADOR DE REPORTE PDF
+# ══════════════════════════════════════════════════════════════════════════════
+
+class ReportGenerator:
+    """Generador de reporte PDF completo."""
+    
+    def __init__(self, loader: 'DataLoader'):
+        self.loader = loader
+        self.df = loader.df
+        self.schema = loader.schema
+        self.all_analyses: Dict[str, ParameterAnalysis] = {}
+
+    def generate(self, output_path: str) -> Dict[str, ParameterAnalysis]:
+        """Genera reporte completo."""
+        print(f"\n{'━'*70}")
+        print("  📊 GENERATING QUANTITATIVE REPORT")
+        print('━'*70)
+        
+        visualizer = BloombergVisualizer(self.df, self.schema)
+        all_params = self.schema.params + self.schema.exit_params
+        
+        # Métricas a analizar
+        metrics_to_analyze = self._get_available_metrics()
+        
+        # Motor de análisis
+        engine = QuantEngine(self.df, all_params)
+        
+        # Análisis de correlación entre parámetros
+        target_col = visualizer._find_metric_col('ROI') or visualizer._find_metric_col('SCORE')
+        correlations = []
+        if target_col and len(all_params) >= 2:
+            print("  [*] Analyzing parameter correlations...")
+            corr_analyzer = CorrelationAnalyzer(self.df, all_params, target_col)
+            correlations = corr_analyzer.analyze_all_pairs(min_correlation=0.25)
+            strong_pairs = corr_analyzer.get_strongly_related_pairs()
+            if strong_pairs:
+                print(f"      Found {len(strong_pairs)} strongly related pairs")
+        
+        with PdfPages(output_path) as pdf:
+            # 1. Portada
+            fig = plt.figure(figsize=(11, 8.5))
+            visualizer.create_cover_page(fig, self.loader.strategy_name, len(self.df))
+            pdf.savefig(fig, facecolor=Theme.BG_PRIMARY)
+            plt.close(fig)
+            
+            # 2. Overview de estrategia
+            strategy_analyzer = StrategyAnalyzer(self.df, self.schema)
+            strategy_analysis = strategy_analyzer.analyze()
+            
+            fig = plt.figure(figsize=(11, 8.5))
+            visualizer.create_strategy_overview(fig, strategy_analysis)
+            pdf.savefig(fig, facecolor=Theme.BG_PRIMARY)
+            plt.close(fig)
+            
+            # 3. Análisis por parámetro
+            for i, param in enumerate(all_params):
+                print(f"  [{i+1}/{len(all_params)}] {param}")
+                
+                # Análisis cuantitativo
+                analysis = engine.analyze_parameter(param, metrics_to_analyze)
+                self.all_analyses[param] = analysis
+                
+                # Página visual
+                fig = plt.figure(figsize=(11, 8.5))
+                is_exit = param in self.schema.exit_params
+                visualizer.create_parameter_page(fig, analysis, is_exit)
+                pdf.savefig(fig, facecolor=Theme.BG_PRIMARY)
+                plt.close(fig)
+            
+            # 4. Análisis de Correlación entre parámetros
+            if correlations:
+                print("  [+] Parameter Correlation Analysis")
+                fig = plt.figure(figsize=(11, 8.5))
+                visualizer.create_correlation_page(fig, correlations)
+                pdf.savefig(fig, facecolor=Theme.BG_PRIMARY)
+                plt.close(fig)
+            
+            # 5. Superficie 3D (SL × TP) si existen ambos parámetros
+            sl_col, tp_col = visualizer.find_exit_params()
+            if sl_col and tp_col:
+                print("  [+] 3D Surface: SL × TP")
+                fig = plt.figure(figsize=(11, 8.5))
+                visualizer.create_correlated_pair_surface(fig, sl_col, tp_col)
+                pdf.savefig(fig, facecolor=Theme.BG_PRIMARY)
+                plt.close(fig)
+            
+            # 6. Superficies 3D para pares fuertemente correlacionados
+            strong_pairs = [c for c in correlations if c.is_strongly_related]
+            for corr in strong_pairs[:3]:  # Máximo 3 pares adicionales
+                # Evitar duplicar SL×TP
+                if sl_col and tp_col:
+                    if (corr.param1 in [sl_col, tp_col] and corr.param2 in [sl_col, tp_col]):
+                        continue
+                
+                print(f"  [+] 3D Surface: {corr.param1} × {corr.param2}")
+                fig = plt.figure(figsize=(11, 8.5))
+                visualizer.create_correlated_pair_surface(fig, corr.param1, corr.param2, corr)
+                pdf.savefig(fig, facecolor=Theme.BG_PRIMARY)
+                plt.close(fig)
+            
+            # 7. Validación Estadística
+            try:
+                roi_col = visualizer._find_metric_col('ROI')
+                if roi_col and len(self.df) >= 30:
+                    print("  [+] Statistical Validation")
+                    # Obtener retornos como array numérico
+                    returns = pd.to_numeric(self.df[roi_col], errors='coerce').dropna().values
+                    if len(returns) >= 20:
+                        validator = StatisticalValidator(returns, len(self.df))
+                        validation = validator.validate()
+                        
+                        fig = plt.figure(figsize=(11, 8.5))
+                        visualizer.create_statistical_validation_page(fig, validation)
+                        pdf.savefig(fig, facecolor=Theme.BG_PRIMARY)
+                        plt.close(fig)
+            except Exception as e:
+                print(f"  [!] Statistical validation skipped: {e}")
+            
+            # 8. Tabla de recomendaciones (FINAL)
+            fig = plt.figure(figsize=(11, 8.5))
+            visualizer.create_recommendations_table(fig, self.all_analyses, self.schema.exit_params)
+            pdf.savefig(fig, facecolor=Theme.BG_PRIMARY)
+            plt.close(fig)
+        
+        # Guardar CSV
+        csv_path = output_path.replace('.pdf', '_RECOMMENDATIONS.csv')
+        self._save_csv(csv_path)
+        
+        print(f"\n  ✓ PDF: {output_path}")
+        print(f"  ✓ CSV: {csv_path}")
+        
+        return self.all_analyses
+    
+    def _get_available_metrics(self) -> List[str]:
+        """Obtiene métricas disponibles con detección robusta."""
+        # Prioridad de métricas (lista de posibles nombres para cada métrica)
+        # DRAWDOWN primero para que sea la métrica principal de comparación
+        metric_aliases = [
+            ['DRAWDOWN', 'MAX_DD', 'MAX_DD_PCT', 'DD'],
+            ['ROI', 'ROI_PCT', 'RETURN', 'RETORNO'],
+            ['SHARPE', 'SHARPE_RATIO'],
+            ['PROFIT_FACTOR', 'PF'],
+            ['SQN'],
+            ['SCORE'],
+            ['WINRATE', 'WINRATE_PCT', 'WIN_RATE'],
+            ['ESTABILIDAD', 'STABILITY'],
+            ['EXPECTATIVA', 'EXPECTANCY'],
+            ['SORTINO'],
+        ]
+        
+        available = []
+        df_cols_upper = {col.upper(): col for col in self.df.columns}
+        
+        for aliases in metric_aliases:
+            found = False
+            for alias in aliases:
+                # Búsqueda exacta primero
+                if alias in df_cols_upper:
+                    col = df_cols_upper[alias]
+                    if col not in available:
+                        available.append(col)
+                        found = True
                         break
             
-            if metric_col is None:
-                ax.text(0.5, 0.5, f'{metric_key}\nNo encontrada', ha='center', va='center',
-                       color=COLORS['text_muted'])
-                continue
-            
-            y = pd.to_numeric(self.df[metric_col], errors='coerce')
-            
-            # Alinear X e y
-            mask = ~y.isna()
-            X_clean = X[mask]
-            y_clean = y[mask]
-            
-            if len(y_clean) < 30:
-                ax.text(0.5, 0.5, 'Datos insuficientes', ha='center', va='center',
-                       color=COLORS['text_muted'])
-                continue
-            
-            # Random Forest
-            try:
-                rf = RandomForestRegressor(n_estimators=50, max_depth=5, random_state=42, n_jobs=-1)
-                rf.fit(X_clean, y_clean)
-                
-                importance = rf.feature_importances_
-                
-                # Ordenar y mostrar top 10
-                top_n = min(10, len(importance))
-                sorted_idx = np.argsort(importance)[-top_n:]
-                
-                colors = [METRIC_STYLE[metric_key]['color']] * top_n
-                
-                ax.barh(range(top_n), importance[sorted_idx], color=colors, alpha=0.8)
-                ax.set_yticks(range(top_n))
-                ax.set_yticklabels([params_to_use[i] for i in sorted_idx], fontsize=7)
-                ax.set_xlabel('Importancia', fontsize=9)
-                ax.set_title(METRIC_STYLE[metric_key]['name'], fontsize=11,
-                            color=METRIC_STYLE[metric_key]['color'], fontweight='bold')
-                
-                ax.set_facecolor(COLORS['bg_panel'])
-                ax.grid(True, alpha=0.2, axis='x')
-                
-            except Exception as e:
-                ax.text(0.5, 0.5, f'Error: {str(e)[:30]}', ha='center', va='center',
-                       color=COLORS['red'], fontsize=8)
+            # Si no encontró exacto, buscar parcial
+            if not found:
+                for alias in aliases:
+                    for col_upper, col in df_cols_upper.items():
+                        if alias in col_upper and col not in available:
+                            available.append(col)
+                            found = True
+                            break
+                    if found:
+                        break
         
-        pdf.savefig(fig, facecolor=COLORS['bg_dark'])
-        plt.close(fig)
+        return available[:8]  # Máximo 8 métricas
+    
+    def _save_csv(self, path: str):
+        """Guarda recomendaciones en CSV."""
+        rows = []
+        
+        for param, analysis in self.all_analyses.items():
+            if np.isnan(analysis.optimal_value):
+                continue
+            
+            rows.append({
+                'PARAMETER': param,
+                'OPTIMAL_VALUE': analysis.optimal_value,
+                'RANGE_MIN': analysis.optimal_range[0],
+                'RANGE_MAX': analysis.optimal_range[1],
+                'CONFIDENCE': analysis.confidence,
+                'ROBUSTNESS': analysis.robustness,
+                'STABILITY': analysis.stability,
+                'SENSITIVITY': analysis.sensitivity,
+                'IS_EXIT_PARAM': param in self.schema.exit_params
+            })
+        
+        if rows:
+            df = pd.DataFrame(rows)
+            df = df.sort_values('CONFIDENCE', ascending=False)
+            df.to_csv(path, index=False)
 
 
-# ==============================================================================
-# 🚀 FUNCIÓN PRINCIPAL
-# ==============================================================================
+# ══════════════════════════════════════════════════════════════════════════════
+# 🚀 MAIN
+# ══════════════════════════════════════════════════════════════════════════════
 
-def find_data_files() -> List[str]:
-    """Busca archivos CSV/Excel en el directorio de resultados."""
+def find_files() -> List[str]:
+    """Busca archivos de datos."""
+    patterns = ['resultados/**/*.csv', 'resultados/**/*.xlsx', '*.csv', '*.xlsx']
     files = []
+    for p in patterns:
+        files.extend(glob.glob(p, recursive=True))
     
-    # Buscar en resultados/
-    patterns = [
-        'resultados/**/*.csv',
-        'resultados/**/*.xlsx',
-        'resultados/**/*.xls',
-        '*.csv',
-        '*.xlsx',
-    ]
-    
-    for pattern in patterns:
-        files.extend(glob.glob(pattern, recursive=True))
-    
-    # Filtrar solo RESUMEN
-    resumen_files = [f for f in files if 'RESUMEN' in f.upper()]
-    
-    if resumen_files:
-        return resumen_files
-    return files
+    # Priorizar RESUMEN
+    resumen = [f for f in files if 'RESUMEN' in f.upper()]
+    return resumen if resumen else files
 
 
 def main():
     """Función principal."""
-    print("\n" + "═"*70)
-    print("   📊 MODELOX PARAMETER ANALYZER v9.0 - INSTITUTIONAL")
-    print("   🧹 Análisis Individual con Reducción de Ruido ML")
-    print("═"*70)
+    print("\n" + "━"*70)
+    print("  MODELOX PARAMETER ANALYZER v19.0")
+    print("━"*70)
     
     # Obtener archivo
     file_path = None
     
-    # 1. Argumento de línea de comandos
     if len(sys.argv) > 1:
         file_path = sys.argv[1]
         if not os.path.exists(file_path):
-            print(f"\n❌ Error: Archivo no encontrado: {file_path}")
+            print(f"\n  ✗ File not found: {file_path}")
             sys.exit(1)
-    
-    # 2. Buscar automáticamente
     else:
-        print("\n🔍 Buscando archivos de datos...")
-        files = find_data_files()
+        files = find_files()
         
         if not files:
-            print("\n❌ No se encontraron archivos CSV/Excel")
-            print("   Uso: python analisis.py <archivo.csv>")
-            print("   O coloca archivos RESUMEN en resultados/")
+            print("\n  ✗ No CSV/Excel files found")
             sys.exit(1)
         
-        print(f"\n📁 Archivos encontrados ({len(files)}):")
+        print(f"\n  Files found ({len(files)}):")
         for i, f in enumerate(files[:10]):
-            print(f"   [{i+1}] {f}")
+            print(f"  [{i+1}] {f}")
         
-        if len(files) > 10:
-            print(f"   ... y {len(files) - 10} más")
+        print(f"\n  Options: Number (1-{min(10, len(files))}) | Drag file | Enter for first")
+        choice = input("\n  Choice: ").strip().strip("'\"")
         
-        # Seleccionar
-        if len(files) == 1:
-            file_path = files[0]
-            print(f"\n✅ Seleccionado automáticamente: {file_path}")
+        if os.path.exists(choice):
+            file_path = choice
+        elif choice.isdigit():
+            idx = int(choice) - 1
+            file_path = files[idx] if 0 <= idx < len(files) else files[0]
         else:
-            try:
-                choice = input(f"\n🔢 Selecciona archivo (1-{min(10, len(files))}): ").strip()
-                idx = int(choice) - 1
-                if 0 <= idx < len(files):
-                    file_path = files[idx]
-                else:
-                    file_path = files[0]
-            except:
-                file_path = files[0]
-                print(f"   Usando: {file_path}")
+            file_path = files[0]
     
     # Cargar datos
     loader = DataLoader()
     if not loader.load(file_path):
-        print("\n❌ Error al cargar datos")
         sys.exit(1)
     
-    if not loader.columns.parameters:
-        print("\n⚠️ No se detectaron parámetros analizables")
+    # Filtrar (SCORE >= 0.6, TPD >= 0.25)
+    loader.apply_filters(min_score=0.6, min_tpd=0.25)
+    
+    # Reclasificar después de filtrar
+    loader.schema = SmartColumnDetector.detect(loader.df)
+    
+    if len(loader.df) < 10:
+        print("\n  ✗ Not enough trials after filtering (min: 10)")
+        sys.exit(1)
+    
+    if len(loader.df) < 30:
+        print(f"  ⚠ Pocos trials ({len(loader.df)}) - resultados pueden ser menos fiables")
+    
+    all_params = loader.schema.params + loader.schema.exit_params
+    if not all_params:
+        print("\n  ✗ No parameters detected")
         sys.exit(1)
     
     # Generar reporte
     base_name = os.path.splitext(os.path.basename(file_path))[0]
     output_dir = os.path.dirname(file_path) or '.'
-    output_path = os.path.join(output_dir, f'ANALYSIS_{base_name}_{loader.strategy_name}.pdf')
+    timestamp = datetime.now().strftime('%Y%m%d_%H%M%S')
+    output_path = os.path.join(output_dir, f'ANALYSIS_{base_name}_{timestamp}.pdf')
     
     report = ReportGenerator(loader)
-    report.generate(output_path)
+    results = report.generate(output_path)
     
-    print(f"\n🎉 ¡Análisis completado!")
-    print(f"   📄 Reporte: {output_path}")
+    # Resumen en consola
+    print(f"\n{'━'*70}")
+    print("  TOP RECOMMENDATIONS")
+    print('━'*70)
+    
+    sorted_results = sorted(
+        [(p, r) for p, r in results.items() if not np.isnan(r.optimal_value)],
+        key=lambda x: x[1].confidence,
+        reverse=True
+    )
+    
+    for param, analysis in sorted_results[:8]:
+        icon = '💰' if param in loader.schema.exit_params else '⚙️'
+        conf = analysis.confidence * 100
+        print(f"  {icon} {param:<22} = {analysis.optimal_value:<12.5g} (Conf: {conf:.0f}%)")
+    
+    print('━'*70)
+    print("\n  ✓ Analysis complete!")
 
 
 if __name__ == '__main__':

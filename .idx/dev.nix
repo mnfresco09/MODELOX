@@ -1,46 +1,47 @@
 { pkgs, ... }: {
-  # Let Nix manage pkgs
-  environment.systemPackages = [
+  # Use the stable channel
+  channel = "stable-23.11";
+
+  # Packages to install in the environment
+  packages = [
     pkgs.python311
     pkgs.python311Packages.pip
     pkgs.python311Packages.virtualenv
     pkgs.nodejs_20
     pkgs.docker
     pkgs.docker-compose
+    # Libraries for Python wheels
     pkgs.stdenv.cc.cc.lib
     pkgs.zlib
+    pkgs.glib
   ];
 
-  # Set environment variables
-  environment.variables = {
-    # Fix: Asegura que los paquetes instalados con pip encuentren las librerias de C++ necesarias
+  # Environment variables
+  env = {
     LD_LIBRARY_PATH = pkgs.lib.makeLibraryPath [
       pkgs.stdenv.cc.cc.lib
       pkgs.zlib
+      pkgs.glib
     ];
   };
 
-  # Start services
+  # Enable Docker
   services.docker.enable = true;
 
-  # Custom commands
-  idx.commands = [
-    {
-      name = "Setup and Install Backend Dependencies";
-      command = ''
-        if [ ! -d "venv" ]; then
-          echo "Creating Python virtual environment..."
+  # IDX specific configuration
+  idx = {
+    workspace = {
+      # Runs when the workspace is first created
+      onCreate = {
+        install-dependencies = ''
           python3 -m venv venv
-        fi
-        echo "Installing backend dependencies..."
-        source venv/bin/activate
-        pip install --upgrade pip
-        pip install -r app/backend/requirements.txt
-      '';
-    }
-    {
-      name = "Install Frontend Dependencies";
-      command = "cd app/frontend && npm install";
-    }
-  ];
+          source venv/bin/activate
+          pip install --upgrade pip
+          pip install -r app/backend/requirements.txt
+          # Instalar dependencias extra para análisis
+          pip install matplotlib seaborn scikit-learn
+        '';
+      };
+    };
+  };
 }
