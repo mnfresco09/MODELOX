@@ -461,7 +461,7 @@ class DataLoader:
         print(f"  ✓ {len(self.df):,} trials | {self.strategy_name}")
         print(f"  ✓ Params: {len(self.schema.params)} | Exit: {len(self.schema.exit_params)} | Metrics: {len(self.schema.metrics)}")
     
-    def apply_filters(self, min_score: float = 0.2, min_tpd: float = 0.15) -> int:
+    def apply_filters(self, min_score: float = 0.11) -> int:
         """Aplica filtros de calidad."""
         initial = len(self.df)
         
@@ -470,18 +470,13 @@ class DataLoader:
         if score_col:
             self.df = self.df[pd.to_numeric(self.df[score_col], errors='coerce') >= min_score]
         
-        # Filtro trades por día
-        tpd_col = self._find_col(['TRADES_DIA', 'TRADES_POR_DIA', 'TPD', 'TRADES_DIA'])
-        if tpd_col:
-            self.df = self.df[pd.to_numeric(self.df[tpd_col], errors='coerce') >= min_tpd]
-        
         self.df = self.df.reset_index(drop=True)
         removed = initial - len(self.df)
         
         if removed > 0:
-            print(f"  ⚡ Filtrado: {removed} trials eliminados (SCORE<{min_score} o TPD<{min_tpd})")
+            print(f"  ⚡ Filtrado: {removed} trials eliminados (SCORE<{min_score})")
         else:
-            print(f"  ✓ Sin filtrado necesario (todos cumplen SCORE>={min_score} y TPD>={min_tpd})")
+            print(f"  ✓ Sin filtrado necesario (todos cumplen SCORE>={min_score})")
         
         return removed
     
@@ -3972,8 +3967,8 @@ def main():
     if not loader.load(file_path):
         sys.exit(1)
     
-    # Filtrar (SCORE >= 0.6, TPD >= 0.25)
-    loader.apply_filters(min_score=0.6, min_tpd=0.25)
+    # Filtrar (SCORE >= 0.11)
+    loader.apply_filters(min_score=0.11)
     
     # Reclasificar después de filtrar
     loader.schema = SmartColumnDetector.detect(loader.df)

@@ -133,7 +133,7 @@ EXIT_TRAIL_DIST_PCT_RANGE = DEFAULT_EXIT_TRAIL_DIST_PCT_RANGE
 # 1.9 RESULTADOS Y LIMPIEZA
 # ----------------------------------------------------------------------------
 MAX_ARCHIVOS_GUARDAR = 5
-GENERAR_PLOTS = True
+GENERAR_PLOTS = False
 USAR_EXCEL = True
 PURGE_PYCACHE_ON_EXIT = True
 

@@ -45,7 +45,7 @@ DEFAULT_OPTIMIZE_EXITS = True
 
 # Rangos de optimización Optuna (min, max, step) - en PNL_PCT
 DEFAULT_EXIT_SL_PCT_RANGE = (5.0, 40.0, 1)      # SL: 5% a 30%
-DEFAULT_EXIT_TP_PCT_RANGE = (50.0, 40.0, 1)     # TP: 5% a 100%
+DEFAULT_EXIT_TP_PCT_RANGE = (5.0, 40.0, 1)     # TP: 5% a 100%
 DEFAULT_EXIT_TRAIL_ACT_PCT_RANGE = (10.0, 28.0, 1.0)   # Activación: 5% a 100%
 DEFAULT_EXIT_TRAIL_DIST_PCT_RANGE = (2.0, 8.0, 0.5)  # Distancia: 2.5% a 50%
 

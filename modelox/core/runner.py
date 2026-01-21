@@ -1,23 +1,15 @@
 """modelox/core/runner.py
 
-Runner principal (V2) basado en:
-- DataLoader: carga/normaliza datos
-- SignalGenerator: genera señales (multi-timeframe opcional)
-- BacktestEngine: ejecuta el vector engine
-
-Este archivo reemplaza runner_v2.py para que el sistema use el nombre estable
-`modelox.core.runner`.
-
-Nota: se mantiene `OptunaConfig` y `create_study_for_strategy` aquí mismo para
-no depender de módulos separados.
+Runner principal con soporte Multi-Objetivo (NSGA-II).
 """
 
 from __future__ import annotations
 
 import os
 import time
-from dataclasses import dataclass
-from typing import Any, Dict, Optional, Sequence
+import math
+from dataclasses import dataclass, field
+from typing import Any, Dict, Optional, Sequence, List
 
 import re
 import warnings
@@ -25,19 +17,21 @@ import warnings
 import optuna
 import polars as pl
 
+# IMPORTANTE: Importar el sampler genético
+from optuna.samplers import TPESampler, NSGAIISampler
 from optuna.exceptions import ExperimentalWarning
 
 from .engine import BacktestParams, calculate_performance_vectorized_numba
 from .metrics import resumen_metricas
-from .scoring import score_optuna
+from .scoring import score_optuna, score_quality_only
 from .types import BacktestConfig, Reporter, Strategy, TrialArtifacts, normalize_timeframe_to_suffix
 from .data_blender import prepare_multitimeframe_data
 from .exits import resolve_exit_settings_for_trial
 
-# Silenciar warnings experimentales de Optuna (multivariate/group en TPESampler)
+# Silenciar warnings experimentales de Optuna
 warnings.filterwarnings("ignore", category=ExperimentalWarning)
 
-# Debug timings (activar con env MODELOX_TIMINGS_VERBOSE=1)
+# Debug timings
 _TIMINGS_VERBOSE = os.environ.get("MODELOX_TIMINGS_VERBOSE", "0") in {"1", "true", "True", "YES", "yes"}
 _TIMINGS_PRINT_EVERY = int(os.environ.get("MODELOX_TIMINGS_PRINT_EVERY", "1"))
 
@@ -48,7 +42,13 @@ class OptunaConfig:
     n_jobs: int = 1
     storage: Optional[str] = None
     study_name_prefix: str = "MODELOX"
-    sampler: str = "tpe"
+    
+    # Cambio de motor por defecto a NSGA-II (Genético)
+    sampler: str = "nsgaii"  
+    
+    # Definición de objetivos: [Objetivo1, Objetivo2]
+    # Default: Maximizar Calidad, Minimizar Riesgo (Drawdown)
+    directions: Optional[List[str]] = field(default_factory=lambda: ["maximize", "minimize"])
 
 
 def _slug(s: str) -> str:
@@ -58,18 +58,42 @@ def _slug(s: str) -> str:
     return s or "study"
 
 
+def _get(metrics: Dict[str, Any], key: str, default: float = 0.0) -> float:
+    """Helper seguro para extraer valores numéricos de las métricas (evita errores en optimization)."""
+    try:
+        val = metrics.get(key, default)
+        if val is None:
+            return default
+        f_val = float(val)
+        if math.isnan(f_val) or math.isinf(f_val):
+            return default
+        return f_val
+    except Exception:
+        return default
+
+
 def create_study_for_strategy(
     *,
     cfg: OptunaConfig,
     strategy_name: str,
     activo: Optional[str] = None,
 ) -> optuna.study.Study:
+    
     sampler: optuna.samplers.BaseSampler
+    
+    # 1. SELECCIÓN DE MOTOR (SAMPLER)
     if str(cfg.sampler).lower() == "tpe":
-        sampler = optuna.samplers.TPESampler(
+        sampler = TPESampler(
             seed=cfg.seed,
             multivariate=True,
             group=True,
+        )
+    elif str(cfg.sampler).lower() == "nsgaii":
+        # NSGA-II: Algoritmo Genético Multi-Objetivo
+        # population_size=50 es un buen equilibrio velocidad/diversidad
+        sampler = NSGAIISampler(
+            seed=cfg.seed,
+            population_size=50 
         )
     else:
         raise ValueError(f"Sampler no soportado: {cfg.sampler}")
@@ -79,19 +103,36 @@ def create_study_for_strategy(
         parts.append(str(activo))
     study_name = _slug("_".join(parts))
 
-    return optuna.create_study(
-        direction="maximize",
-        sampler=sampler,
-        study_name=study_name,
-        storage=None,
-        load_if_exists=False,
-    )
+    # 2. CONFIGURACIÓN DE OBJETIVOS
+    # Si cfg.directions es None, asumimos modo clásico (maximize score)
+    directions = cfg.directions or ["maximize"]
+
+    # Validar que si usamos TPE, solo haya 1 objetivo (TPE no soporta multi nativo bien en versiones viejas)
+    if isinstance(sampler, TPESampler) and len(directions) > 1:
+        # Fallback seguro para TPE
+        directions = ["maximize"]
+
+    if len(directions) > 1:
+        return optuna.create_study(
+            directions=directions,
+            sampler=sampler,
+            study_name=study_name,
+            storage=None,
+            load_if_exists=False,
+        )
+    else:
+        return optuna.create_study(
+            direction=directions[0],
+            sampler=sampler,
+            study_name=study_name,
+            storage=None,
+            load_if_exists=False,
+        )
 
 
 @dataclass
 class DataLoader:
     """Handles data loading and normalization."""
-
     @staticmethod
     def load_data(file_path: str) -> pl.DataFrame:
         if file_path.endswith(".parquet"):
@@ -105,17 +146,14 @@ class DataLoader:
 
         if "timestamp" not in df.columns and "datetime" in df.columns:
             df = df.rename({"datetime": "timestamp"})
-
         if "timestamp" not in df.columns:
-            raise ValueError("DataFrame must have 'timestamp' or 'datetime' column")
-
+            raise ValueError("DataFrame must have 'timestamp' column")
         return df
 
 
 @dataclass
 class SignalGenerator:
     """Executes strategy and returns a DataFrame with signals."""
-
     @staticmethod
     def generate_signals(
         df: pl.DataFrame,
@@ -147,8 +185,7 @@ class SignalGenerator:
 
 @dataclass
 class BacktestEngine:
-    """Takes signals + prices and returns metrics, without knowing about Optuna."""
-
+    """Takes signals + prices and returns metrics."""
     @staticmethod
     def run_backtest(
         df: pl.DataFrame,
@@ -181,15 +218,14 @@ class BacktestEngine:
 
 @dataclass
 class OptimizationRunner:
-    """Optimization runner using vectorized engine (V2)."""
+    """Optimization runner using vectorized engine (V2) with Multi-Objective Support."""
 
     config: BacktestConfig
     n_trials: int
     reporters: Sequence[Reporter]
-    optuna: OptunaConfig = OptunaConfig()
+    optuna: OptunaConfig = field(default_factory=OptunaConfig)
     activo: Optional[str] = None
 
-    # Para UI / post-processing
     _last_study: Optional[optuna.study.Study] = None
 
     def optimize_strategies(
@@ -211,13 +247,12 @@ class OptimizationRunner:
             results[strat.name] = study
             self._last_study = study
 
-            # Llamar on_strategy_end para mostrar resumen (top 5 trials, etc.)
             for reporter in self.reporters:
                 if hasattr(reporter, "on_strategy_end"):
                     try:
                         reporter.on_strategy_end(strat.name, study)
                     except Exception:
-                        pass  # Nunca romper el flujo por errores de reporting
+                        pass
         return results
 
     def _optimize_one(
@@ -231,24 +266,26 @@ class OptimizationRunner:
         base_tf = normalize_timeframe_to_suffix(base_timeframe or "1h")
         df_map = df_by_timeframe or {base_tf: df}
         df_base = df_map.get(base_tf, df)
+        
+        # Detectar si estamos en modo multi-objetivo
+        is_multiobj = len(self.optuna.directions or []) > 1
 
-        def objective(trial: optuna.trial.Trial) -> float:
+        def objective(trial: optuna.trial.Trial):
             t0_total = time.perf_counter()
             
             params_puros = strategy.suggest_params(trial)
             params_rt = dict(params_puros)
 
+            # Inyectar config global
             params_rt["__saldo_operativo_max"] = float(self.config.saldo_operativo_max)
             params_rt["__qty_max_activo"] = float(self.config.qty_max_activo)
             params_rt["__comision_pct"] = float(self.config.comision_pct)
             params_rt["__comision_sides"] = int(self.config.comision_sides)
             params_rt["__saldo_usado"] = float(self.config.saldo_usado)
             params_rt["__apalancamiento_max"] = float(self.config.apalancamiento_max)
-
-            # Reporting/UI: marcar si la estrategia controla salidas
             params_rt["__strategy_exit_enabled"] = bool(getattr(strategy, "SALIDAS_PERSONALIZADAS", False))
 
-            # Usar resolve_exit_settings_for_trial (soporta optimize_exits)
+            # Resolver salidas
             exit_settings = resolve_exit_settings_for_trial(trial=trial, config=self.config)
             params_rt["__exit_type"] = exit_settings.exit_type
             params_rt["__exit_sl_pct"] = exit_settings.sl_pct
@@ -256,22 +293,23 @@ class OptimizationRunner:
             params_rt["__exit_trail_act_pct"] = exit_settings.trail_act_pct
             params_rt["__exit_trail_dist_pct"] = exit_settings.trail_dist_pct
             
-            # Copiar valores visibles para mostrar en params (usados por Rich)
+            # Parametros visibles
             params_rt["exit_type"] = exit_settings.exit_type
             params_rt["exit_sl_pct"] = exit_settings.sl_pct
             params_rt["exit_tp_pct"] = exit_settings.tp_pct
             params_rt["exit_trail_act_pct"] = exit_settings.trail_act_pct
             params_rt["exit_trail_dist_pct"] = exit_settings.trail_dist_pct
 
+            # Timeframes
             entry_tf = normalize_timeframe_to_suffix(getattr(strategy, "timeframe_entry", None) or base_tf)
             exit_tf = normalize_timeframe_to_suffix(getattr(strategy, "timeframe_exit", None) or base_tf)
-
             params_rt["__timeframe_base"] = base_tf
             params_rt["__timeframe_entry"] = entry_tf
             params_rt["__timeframe_exit"] = exit_tf
 
             df_entry = df_map.get(entry_tf, df_base)
 
+            # --- GENERACION Y BACKTEST ---
             t1_signals = time.perf_counter()
             signals_df = SignalGenerator.generate_signals(
                 df_entry,
@@ -290,58 +328,43 @@ class OptimizationRunner:
                 strategy,
             )
             t2_backtest = time.perf_counter()
+            
+            # --- EVALUACION ---
 
             if trades_df.is_empty():
-                return 0.0
+                # Penalización total
+                if is_multiobj:
+                    return 0.0, 100.0 # Calidad 0, Riesgo 100%
+                else:
+                    return 0.0
 
             trial.set_user_attr("metricas", metrics)
-            score = float(score_optuna(metrics))
             
-            t_total = time.perf_counter() - t0_total
-            
-            # Debug timings
-            if _TIMINGS_VERBOSE and (trial.number % _TIMINGS_PRINT_EVERY == 0):
-                print(
-                    f"  ⏱ TRIAL {trial.number:3d} │ "
-                    f"signals {(t2_signals - t1_signals)*1000:6.1f}ms │ "
-                    f"backtest {(t2_backtest - t1_backtest)*1000:6.1f}ms │ "
-                    f"total {t_total*1000:6.1f}ms │ "
-                    f"trades {len(trades_df):5d}"
-                )
-
-            # Determinar si algún reporter necesita df_signals (ej: PlotReporter para top-K)
-            # Si lo necesita, combinamos OHLC de df_base con señales+indicadores de signals_df
-            df_signals_for_artifacts = None
-            for reporter in self.reporters:
-                if hasattr(reporter, "needs_dataframe") and reporter.needs_dataframe(score):
-                    # Columnas OHLC base
-                    ohlc_cols = ["timestamp", "open", "high", "low", "close", "volume"]
-                    base_cols = [c for c in ohlc_cols if c in df_base.columns]
-                    # Columnas de señales/indicadores (sin duplicar las que ya están en base)
-                    signal_cols = [c for c in signals_df.columns if c not in base_cols]
-                    # hstack es seguro porque ambos DFs tienen mismo nº de filas (mismo origen)
-                    df_signals_for_artifacts = df_base.select(base_cols).hstack(
-                        signals_df.select(signal_cols)
-                    )
-                    break
-
-            artifacts = TrialArtifacts(
-                strategy_name=strategy.name,
-                trial_number=trial.number,
-                params=params_rt,
-                params_reporting=params_rt,
-                score=score,
-                metrics=metrics,
-                df_signals=df_signals_for_artifacts,
-                trades=trades_df.to_pandas(),
-                equity_curve=equity_curve,
-                indicators_used=params_rt.get("__indicators_used", []),
-            )
-
-            for reporter in self.reporters:
-                reporter.on_trial_end(artifacts)
-
-            return score
+            # NUEVO: Lógica Multi-Objetivo
+            if is_multiobj:
+                # Objetivo 1 (Maximize): Calidad Pura (Edge, SQN, etc.)
+                # Usamos score_quality_only importada de scoring
+                quality = score_quality_only(metrics)
+                
+                # Objetivo 2 (Minimize): Riesgo Puro (Drawdown)
+                # AHORA SÍ: Usamos la función _get definida arriba en este archivo
+                risk = _get(metrics, "drawdown", 100.0)
+                
+                # Guardamos atributos para verlos en dashboard
+                trial.set_user_attr("quality_score", quality)
+                trial.set_user_attr("risk_dd", risk)
+                
+                # Reporting Artifacts
+                # (Lógica existente para crear artifacts...)
+                self._report_trial(trial, strategy, params_rt, quality, metrics, df_base, signals_df, trades_df, equity_curve)
+                
+                return quality, risk
+                
+            else:
+                # Modo Clásico (Single Objective TPE)
+                score = float(score_optuna(metrics))
+                self._report_trial(trial, strategy, params_rt, score, metrics, df_base, signals_df, trades_df, equity_curve)
+                return score
 
         study = create_study_for_strategy(cfg=self.optuna, strategy_name=strategy.name, activo=self.activo)
 
@@ -354,3 +377,37 @@ class OptimizationRunner:
         )
 
         return study
+
+    def _report_trial(self, trial, strategy, params, score, metrics, df_base, signals_df, trades_df, equity_curve):
+        """Helper para generar reportes y artefactos fuera del bloque principal."""
+        
+        # Determinar si algún reporter necesita df_signals
+        df_signals_for_artifacts = None
+        for reporter in self.reporters:
+            # En multi-obj score es tuple, cogemos el primero (quality) como proxy de "importancia"
+            score_val = score[0] if isinstance(score, tuple) else score
+            
+            if hasattr(reporter, "needs_dataframe") and reporter.needs_dataframe(score_val):
+                ohlc_cols = ["timestamp", "open", "high", "low", "close", "volume"]
+                base_cols = [c for c in ohlc_cols if c in df_base.columns]
+                signal_cols = [c for c in signals_df.columns if c not in base_cols]
+                df_signals_for_artifacts = df_base.select(base_cols).hstack(
+                    signals_df.select(signal_cols)
+                )
+                break
+
+        artifacts = TrialArtifacts(
+            strategy_name=strategy.name,
+            trial_number=trial.number,
+            params=params,
+            params_reporting=params,
+            score=score[0] if isinstance(score, tuple) else score, # Artifacts espera un float por ahora
+            metrics=metrics,
+            df_signals=df_signals_for_artifacts,
+            trades=trades_df.to_pandas(),
+            equity_curve=equity_curve,
+            indicators_used=params.get("__indicators_used", []),
+        )
+
+        for reporter in self.reporters:
+            reporter.on_trial_end(artifacts)
