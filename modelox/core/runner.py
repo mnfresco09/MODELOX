@@ -1,15 +1,23 @@
 """modelox/core/runner.py
 
-Runner principal con soporte Multi-Objetivo (NSGA-II).
+Runner principal (V2) con soporte para NSGA-II (Multi-Objetivo).
+
+Soporta:
+- TPE (Single-Objective): Optimización tradicional
+- NSGA-II (Multi-Objetivo): Maximiza calidad, minimiza drawdown
+
+Basado en:
+- DataLoader: carga/normaliza datos
+- SignalGenerator: genera señales (multi-timeframe opcional)
+- BacktestEngine: ejecuta el vector engine
 """
 
 from __future__ import annotations
 
 import os
 import time
-import math
-from dataclasses import dataclass, field
-from typing import Any, Dict, Optional, Sequence, List
+from dataclasses import dataclass
+from typing import Any, Dict, Optional, Sequence
 
 import re
 import warnings
@@ -17,13 +25,12 @@ import warnings
 import optuna
 import polars as pl
 
-# IMPORTANTE: Importar el sampler genético
-from optuna.samplers import TPESampler, NSGAIISampler
 from optuna.exceptions import ExperimentalWarning
+from optuna.samplers import NSGAIISampler, TPESampler
 
 from .engine import BacktestParams, calculate_performance_vectorized_numba
 from .metrics import resumen_metricas
-from .scoring import score_optuna, score_quality_only
+from .scoring import score_optuna, score_quality_only, nsga2_objectives
 from .types import BacktestConfig, Reporter, Strategy, TrialArtifacts, normalize_timeframe_to_suffix
 from .data_blender import prepare_multitimeframe_data
 from .exits import resolve_exit_settings_for_trial
@@ -42,13 +49,8 @@ class OptunaConfig:
     n_jobs: int = 1
     storage: Optional[str] = None
     study_name_prefix: str = "MODELOX"
-    
-    # Cambio de motor por defecto a NSGA-II (Genético)
-    sampler: str = "nsgaii"  
-    
-    # Definición de objetivos: [Objetivo1, Objetivo2]
-    # Default: Maximizar Calidad, Minimizar Riesgo (Drawdown)
-    directions: Optional[List[str]] = field(default_factory=lambda: ["maximize", "minimize"])
+    sampler: str = "tpe"  # "tpe" o "nsga2"
+    use_nsga2: bool = False  # Usar NSGA-II multi-objetivo
 
 
 def _slug(s: str) -> str:
@@ -58,71 +60,42 @@ def _slug(s: str) -> str:
     return s or "study"
 
 
-def _get(metrics: Dict[str, Any], key: str, default: float = 0.0) -> float:
-    """Helper seguro para extraer valores numéricos de las métricas (evita errores en optimization)."""
-    try:
-        val = metrics.get(key, default)
-        if val is None:
-            return default
-        f_val = float(val)
-        if math.isnan(f_val) or math.isinf(f_val):
-            return default
-        return f_val
-    except Exception:
-        return default
-
-
 def create_study_for_strategy(
     *,
     cfg: OptunaConfig,
     strategy_name: str,
     activo: Optional[str] = None,
 ) -> optuna.study.Study:
-    
-    sampler: optuna.samplers.BaseSampler
-    
-    # 1. SELECCIÓN DE MOTOR (SAMPLER)
-    if str(cfg.sampler).lower() == "tpe":
-        sampler = TPESampler(
-            seed=cfg.seed,
-            multivariate=True,
-            group=True,
-        )
-    elif str(cfg.sampler).lower() == "nsgaii":
-        # NSGA-II: Algoritmo Genético Multi-Objetivo
-        # population_size=50 es un buen equilibrio velocidad/diversidad
-        sampler = NSGAIISampler(
-            seed=cfg.seed,
-            population_size=50 
-        )
-    else:
-        raise ValueError(f"Sampler no soportado: {cfg.sampler}")
-
+    """
+    Crea estudio Optuna con soporte para NSGA-II.
+    """
     parts = [str(cfg.study_name_prefix), str(strategy_name)]
     if activo:
         parts.append(str(activo))
     study_name = _slug("_".join(parts))
-
-    # 2. CONFIGURACIÓN DE OBJETIVOS
-    # Si cfg.directions es None, asumimos modo clásico (maximize score)
-    directions = cfg.directions or ["maximize"]
-
-    # Validar que si usamos TPE, solo haya 1 objetivo (TPE no soporta multi nativo bien en versiones viejas)
-    if isinstance(sampler, TPESampler) and len(directions) > 1:
-        # Fallback seguro para TPE
-        directions = ["maximize"]
-
-    if len(directions) > 1:
+    
+    # Determinar si usar NSGA-II
+    use_nsga2 = cfg.use_nsga2 or str(cfg.sampler).lower() == "nsga2"
+    
+    if use_nsga2:
+        # NSGA-II Multi-Objetivo
+        sampler = NSGAIISampler(seed=cfg.seed)
         return optuna.create_study(
-            directions=directions,
+            directions=["maximize", "minimize"],  # quality ↑, drawdown ↓
             sampler=sampler,
             study_name=study_name,
             storage=None,
             load_if_exists=False,
         )
     else:
+        # TPE Single-Objetivo
+        sampler = TPESampler(
+            seed=cfg.seed,
+            multivariate=True,
+            group=True,
+        )
         return optuna.create_study(
-            direction=directions[0],
+            direction="maximize",
             sampler=sampler,
             study_name=study_name,
             storage=None,
@@ -133,6 +106,7 @@ def create_study_for_strategy(
 @dataclass
 class DataLoader:
     """Handles data loading and normalization."""
+
     @staticmethod
     def load_data(file_path: str) -> pl.DataFrame:
         if file_path.endswith(".parquet"):
@@ -146,14 +120,17 @@ class DataLoader:
 
         if "timestamp" not in df.columns and "datetime" in df.columns:
             df = df.rename({"datetime": "timestamp"})
+
         if "timestamp" not in df.columns:
-            raise ValueError("DataFrame must have 'timestamp' column")
+            raise ValueError("DataFrame must have 'timestamp' or 'datetime' column")
+
         return df
 
 
 @dataclass
 class SignalGenerator:
     """Executes strategy and returns a DataFrame with signals."""
+
     @staticmethod
     def generate_signals(
         df: pl.DataFrame,
@@ -185,7 +162,8 @@ class SignalGenerator:
 
 @dataclass
 class BacktestEngine:
-    """Takes signals + prices and returns metrics."""
+    """Takes signals + prices and returns metrics, without knowing about Optuna."""
+
     @staticmethod
     def run_backtest(
         df: pl.DataFrame,
@@ -218,14 +196,15 @@ class BacktestEngine:
 
 @dataclass
 class OptimizationRunner:
-    """Optimization runner using vectorized engine (V2) with Multi-Objective Support."""
+    """Optimization runner con soporte NSGA-II (Multi-Objetivo)."""
 
     config: BacktestConfig
     n_trials: int
     reporters: Sequence[Reporter]
-    optuna: OptunaConfig = field(default_factory=OptunaConfig)
+    optuna: OptunaConfig = OptunaConfig()
     activo: Optional[str] = None
 
+    # Para UI / post-processing
     _last_study: Optional[optuna.study.Study] = None
 
     def optimize_strategies(
@@ -267,104 +246,13 @@ class OptimizationRunner:
         df_map = df_by_timeframe or {base_tf: df}
         df_base = df_map.get(base_tf, df)
         
-        # Detectar si estamos en modo multi-objetivo
-        is_multiobj = len(self.optuna.directions or []) > 1
-
-        def objective(trial: optuna.trial.Trial):
-            t0_total = time.perf_counter()
-            
-            params_puros = strategy.suggest_params(trial)
-            params_rt = dict(params_puros)
-
-            # Inyectar config global
-            params_rt["__saldo_operativo_max"] = float(self.config.saldo_operativo_max)
-            params_rt["__qty_max_activo"] = float(self.config.qty_max_activo)
-            params_rt["__comision_pct"] = float(self.config.comision_pct)
-            params_rt["__comision_sides"] = int(self.config.comision_sides)
-            params_rt["__saldo_usado"] = float(self.config.saldo_usado)
-            params_rt["__apalancamiento_max"] = float(self.config.apalancamiento_max)
-            params_rt["__strategy_exit_enabled"] = bool(getattr(strategy, "SALIDAS_PERSONALIZADAS", False))
-
-            # Resolver salidas
-            exit_settings = resolve_exit_settings_for_trial(trial=trial, config=self.config)
-            params_rt["__exit_type"] = exit_settings.exit_type
-            params_rt["__exit_sl_pct"] = exit_settings.sl_pct
-            params_rt["__exit_tp_pct"] = exit_settings.tp_pct
-            params_rt["__exit_trail_act_pct"] = exit_settings.trail_act_pct
-            params_rt["__exit_trail_dist_pct"] = exit_settings.trail_dist_pct
-            
-            # Parametros visibles
-            params_rt["exit_type"] = exit_settings.exit_type
-            params_rt["exit_sl_pct"] = exit_settings.sl_pct
-            params_rt["exit_tp_pct"] = exit_settings.tp_pct
-            params_rt["exit_trail_act_pct"] = exit_settings.trail_act_pct
-            params_rt["exit_trail_dist_pct"] = exit_settings.trail_dist_pct
-
-            # Timeframes
-            entry_tf = normalize_timeframe_to_suffix(getattr(strategy, "timeframe_entry", None) or base_tf)
-            exit_tf = normalize_timeframe_to_suffix(getattr(strategy, "timeframe_exit", None) or base_tf)
-            params_rt["__timeframe_base"] = base_tf
-            params_rt["__timeframe_entry"] = entry_tf
-            params_rt["__timeframe_exit"] = exit_tf
-
-            df_entry = df_map.get(entry_tf, df_base)
-
-            # --- GENERACION Y BACKTEST ---
-            t1_signals = time.perf_counter()
-            signals_df = SignalGenerator.generate_signals(
-                df_entry,
-                strategy,
-                params_rt,
-                df_by_timeframe,
-            )
-            t2_signals = time.perf_counter()
-
-            t1_backtest = time.perf_counter()
-            trades_df, equity_curve, metrics = BacktestEngine.run_backtest(
-                df_base,
-                signals_df,
-                self.config,
-                params_rt,
-                strategy,
-            )
-            t2_backtest = time.perf_counter()
-            
-            # --- EVALUACION ---
-
-            if trades_df.is_empty():
-                # Penalización total
-                if is_multiobj:
-                    return 0.0, 100.0 # Calidad 0, Riesgo 100%
-                else:
-                    return 0.0
-
-            trial.set_user_attr("metricas", metrics)
-            
-            # NUEVO: Lógica Multi-Objetivo
-            if is_multiobj:
-                # Objetivo 1 (Maximize): Calidad Pura (Edge, SQN, etc.)
-                # Usamos score_quality_only importada de scoring
-                quality = score_quality_only(metrics)
-                
-                # Objetivo 2 (Minimize): Riesgo Puro (Drawdown)
-                # AHORA SÍ: Usamos la función _get definida arriba en este archivo
-                risk = _get(metrics, "drawdown", 100.0)
-                
-                # Guardamos atributos para verlos en dashboard
-                trial.set_user_attr("quality_score", quality)
-                trial.set_user_attr("risk_dd", risk)
-                
-                # Reporting Artifacts
-                # (Lógica existente para crear artifacts...)
-                self._report_trial(trial, strategy, params_rt, quality, metrics, df_base, signals_df, trades_df, equity_curve)
-                
-                return quality, risk
-                
-            else:
-                # Modo Clásico (Single Objective TPE)
-                score = float(score_optuna(metrics))
-                self._report_trial(trial, strategy, params_rt, score, metrics, df_base, signals_df, trades_df, equity_curve)
-                return score
+        # Determinar si usar NSGA-II
+        use_nsga2 = self.optuna.use_nsga2 or str(self.optuna.sampler).lower() == "nsga2"
+        
+        if use_nsga2:
+            objective = self._create_nsga2_objective(df_base, df_map, strategy, base_tf)
+        else:
+            objective = self._create_single_objective(df_base, df_map, strategy, base_tf)
 
         study = create_study_for_strategy(cfg=self.optuna, strategy_name=strategy.name, activo=self.activo)
 
@@ -377,37 +265,222 @@ class OptimizationRunner:
         )
 
         return study
-
-    def _report_trial(self, trial, strategy, params, score, metrics, df_base, signals_df, trades_df, equity_curve):
-        """Helper para generar reportes y artefactos fuera del bloque principal."""
+    
+    def _create_nsga2_objective(
+        self,
+        df_base: pl.DataFrame,
+        df_map: Dict[str, pl.DataFrame],
+        strategy: Strategy,
+        base_tf: str,
+    ):
+        """Crea función objetivo para NSGA-II (Multi-Objetivo)."""
         
-        # Determinar si algún reporter necesita df_signals
-        df_signals_for_artifacts = None
-        for reporter in self.reporters:
-            # En multi-obj score es tuple, cogemos el primero (quality) como proxy de "importancia"
-            score_val = score[0] if isinstance(score, tuple) else score
+        def objective(trial: optuna.trial.Trial) -> tuple[float, float]:
+            t0_total = time.perf_counter()
             
-            if hasattr(reporter, "needs_dataframe") and reporter.needs_dataframe(score_val):
-                ohlc_cols = ["timestamp", "open", "high", "low", "close", "volume"]
-                base_cols = [c for c in ohlc_cols if c in df_base.columns]
-                signal_cols = [c for c in signals_df.columns if c not in base_cols]
-                df_signals_for_artifacts = df_base.select(base_cols).hstack(
-                    signals_df.select(signal_cols)
+            params_puros = strategy.suggest_params(trial)
+            params_rt = dict(params_puros)
+
+            # Inyectar valores para reporters
+            params_rt["__activo"] = self.activo
+            params_rt["__saldo_inicial"] = float(self.config.saldo_inicial)
+            params_rt["__saldo_operativo_max"] = float(self.config.saldo_operativo_max)
+            params_rt["__qty_max_activo"] = float(self.config.qty_max_activo)
+            params_rt["__comision_pct"] = float(self.config.comision_pct)
+            params_rt["__comision_sides"] = int(self.config.comision_sides)
+            params_rt["__saldo_usado"] = float(self.config.saldo_usado)
+            params_rt["__apalancamiento_max"] = float(self.config.apalancamiento_max)
+            params_rt["__strategy_exit_enabled"] = bool(getattr(strategy, "SALIDAS_PERSONALIZADAS", False))
+
+            exit_settings = resolve_exit_settings_for_trial(trial=trial, config=self.config)
+            params_rt["__exit_type"] = exit_settings.exit_type
+            params_rt["__exit_sl_pct"] = exit_settings.sl_pct
+            params_rt["__exit_tp_pct"] = exit_settings.tp_pct
+            params_rt["__exit_trail_act_pct"] = exit_settings.trail_act_pct
+            params_rt["__exit_trail_dist_pct"] = exit_settings.trail_dist_pct
+            
+            params_rt["exit_type"] = exit_settings.exit_type
+            params_rt["exit_sl_pct"] = exit_settings.sl_pct
+            params_rt["exit_tp_pct"] = exit_settings.tp_pct
+            params_rt["exit_trail_act_pct"] = exit_settings.trail_act_pct
+            params_rt["exit_trail_dist_pct"] = exit_settings.trail_dist_pct
+
+            entry_tf = normalize_timeframe_to_suffix(getattr(strategy, "timeframe_entry", None) or base_tf)
+            exit_tf = normalize_timeframe_to_suffix(getattr(strategy, "timeframe_exit", None) or base_tf)
+
+            params_rt["__timeframe_base"] = base_tf
+            params_rt["__timeframe_entry"] = entry_tf
+            params_rt["__timeframe_exit"] = exit_tf
+
+            df_entry = df_map.get(entry_tf, df_base)
+
+            signals_df = SignalGenerator.generate_signals(
+                df_entry,
+                strategy,
+                params_rt,
+                df_map,
+            )
+
+            trades_df, equity_curve, metrics = BacktestEngine.run_backtest(
+                df_base,
+                signals_df,
+                self.config,
+                params_rt,
+                strategy,
+            )
+
+            if trades_df.is_empty():
+                return (0.1, 100.0)  # (min quality, max drawdown)
+
+            trial.set_user_attr("metricas", metrics)
+            
+            # Objetivos NSGA-II
+            quality, drawdown = nsga2_objectives(metrics)
+            score = float(score_optuna(metrics))
+
+            # Artifacts para reporters
+            df_signals_for_artifacts = None
+            for reporter in self.reporters:
+                if hasattr(reporter, "needs_dataframe") and reporter.needs_dataframe(score):
+                    ohlc_cols = ["timestamp", "open", "high", "low", "close", "volume"]
+                    base_cols = [c for c in ohlc_cols if c in df_base.columns]
+                    signal_cols = [c for c in signals_df.columns if c not in base_cols]
+                    df_signals_for_artifacts = df_base.select(base_cols).hstack(
+                        signals_df.select(signal_cols)
+                    )
+                    break
+
+            artifacts = TrialArtifacts(
+                strategy_name=strategy.name,
+                trial_number=trial.number,
+                params=params_rt,
+                params_reporting=params_rt,
+                score=score,
+                metrics=metrics,
+                df_signals=df_signals_for_artifacts,
+                trades=trades_df.to_pandas(),
+                equity_curve=equity_curve,
+                indicators_used=params_rt.get("__indicators_used", []),
+            )
+
+            for reporter in self.reporters:
+                reporter.on_trial_end(artifacts)
+
+            return (quality, drawdown)
+        
+        return objective
+    
+    def _create_single_objective(
+        self,
+        df_base: pl.DataFrame,
+        df_map: Dict[str, pl.DataFrame],
+        strategy: Strategy,
+        base_tf: str,
+    ):
+        """Crea función objetivo para TPE (Single-Objective)."""
+        
+        def objective(trial: optuna.trial.Trial) -> float:
+            t0_total = time.perf_counter()
+            
+            params_puros = strategy.suggest_params(trial)
+            params_rt = dict(params_puros)
+
+            # Inyectar activo y saldo para reporters
+            params_rt["__activo"] = self.activo
+            params_rt["__saldo_inicial"] = float(self.config.saldo_inicial)
+            params_rt["__saldo_operativo_max"] = float(self.config.saldo_operativo_max)
+            params_rt["__qty_max_activo"] = float(self.config.qty_max_activo)
+            params_rt["__comision_pct"] = float(self.config.comision_pct)
+            params_rt["__comision_sides"] = int(self.config.comision_sides)
+            params_rt["__saldo_usado"] = float(self.config.saldo_usado)
+            params_rt["__apalancamiento_max"] = float(self.config.apalancamiento_max)
+            params_rt["__strategy_exit_enabled"] = bool(getattr(strategy, "SALIDAS_PERSONALIZADAS", False))
+
+            exit_settings = resolve_exit_settings_for_trial(trial=trial, config=self.config)
+            params_rt["__exit_type"] = exit_settings.exit_type
+            params_rt["__exit_sl_pct"] = exit_settings.sl_pct
+            params_rt["__exit_tp_pct"] = exit_settings.tp_pct
+            params_rt["__exit_trail_act_pct"] = exit_settings.trail_act_pct
+            params_rt["__exit_trail_dist_pct"] = exit_settings.trail_dist_pct
+            
+            params_rt["exit_type"] = exit_settings.exit_type
+            params_rt["exit_sl_pct"] = exit_settings.sl_pct
+            params_rt["exit_tp_pct"] = exit_settings.tp_pct
+            params_rt["exit_trail_act_pct"] = exit_settings.trail_act_pct
+            params_rt["exit_trail_dist_pct"] = exit_settings.trail_dist_pct
+
+            entry_tf = normalize_timeframe_to_suffix(getattr(strategy, "timeframe_entry", None) or base_tf)
+            exit_tf = normalize_timeframe_to_suffix(getattr(strategy, "timeframe_exit", None) or base_tf)
+
+            params_rt["__timeframe_base"] = base_tf
+            params_rt["__timeframe_entry"] = entry_tf
+            params_rt["__timeframe_exit"] = exit_tf
+
+            df_entry = df_map.get(entry_tf, df_base)
+
+            t1_signals = time.perf_counter()
+            signals_df = SignalGenerator.generate_signals(
+                df_entry,
+                strategy,
+                params_rt,
+                df_map,
+            )
+            t2_signals = time.perf_counter()
+
+            t1_backtest = time.perf_counter()
+            trades_df, equity_curve, metrics = BacktestEngine.run_backtest(
+                df_base,
+                signals_df,
+                self.config,
+                params_rt,
+                strategy,
+            )
+            t2_backtest = time.perf_counter()
+
+            if trades_df.is_empty():
+                return 0.0
+
+            trial.set_user_attr("metricas", metrics)
+            score = float(score_optuna(metrics))
+            
+            t_total = time.perf_counter() - t0_total
+            
+            if _TIMINGS_VERBOSE and (trial.number % _TIMINGS_PRINT_EVERY == 0):
+                print(
+                    f"  ⏱ TRIAL {trial.number:3d} │ "
+                    f"signals {(t2_signals - t1_signals)*1000:6.1f}ms │ "
+                    f"backtest {(t2_backtest - t1_backtest)*1000:6.1f}ms │ "
+                    f"total {t_total*1000:6.1f}ms │ "
+                    f"trades {len(trades_df):5d}"
                 )
-                break
 
-        artifacts = TrialArtifacts(
-            strategy_name=strategy.name,
-            trial_number=trial.number,
-            params=params,
-            params_reporting=params,
-            score=score[0] if isinstance(score, tuple) else score, # Artifacts espera un float por ahora
-            metrics=metrics,
-            df_signals=df_signals_for_artifacts,
-            trades=trades_df.to_pandas(),
-            equity_curve=equity_curve,
-            indicators_used=params.get("__indicators_used", []),
-        )
+            df_signals_for_artifacts = None
+            for reporter in self.reporters:
+                if hasattr(reporter, "needs_dataframe") and reporter.needs_dataframe(score):
+                    ohlc_cols = ["timestamp", "open", "high", "low", "close", "volume"]
+                    base_cols = [c for c in ohlc_cols if c in df_base.columns]
+                    signal_cols = [c for c in signals_df.columns if c not in base_cols]
+                    df_signals_for_artifacts = df_base.select(base_cols).hstack(
+                        signals_df.select(signal_cols)
+                    )
+                    break
 
-        for reporter in self.reporters:
-            reporter.on_trial_end(artifacts)
+            artifacts = TrialArtifacts(
+                strategy_name=strategy.name,
+                trial_number=trial.number,
+                params=params_rt,
+                params_reporting=params_rt,
+                score=score,
+                metrics=metrics,
+                df_signals=df_signals_for_artifacts,
+                trades=trades_df.to_pandas(),
+                equity_curve=equity_curve,
+                indicators_used=params_rt.get("__indicators_used", []),
+            )
+
+            for reporter in self.reporters:
+                reporter.on_trial_end(artifacts)
+
+            return score
+        
+        return objective

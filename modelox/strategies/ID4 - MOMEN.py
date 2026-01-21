@@ -30,8 +30,8 @@ class StrategyKineticMomentumValidator(EstrategiaBase):
         
         # 1. DEFINICIÓN DE RANGOS INDEPENDIENTES
         # "Mandamelo normal entre rangos todos"
-        raw_fast = trial.suggest_int("zlema_fast_len", 100, 200, step=5)
-        raw_slow = trial.suggest_int("zlema_slow_len", 500, 700, step=5)
+        raw_fast = trial.suggest_int("zlema_fast_len", 30, 200, step=5)
+        raw_slow = trial.suggest_int("zlema_slow_len", 250, 700, step=5)
         
         # 2. VALIDACIÓN LÓGICA (SWAP)
         # Aunque los rangos son libres, para que la lógica de cruce funcione 
@@ -53,8 +53,8 @@ class StrategyKineticMomentumValidator(EstrategiaBase):
             "zlema_slow_len": slow_len,
             
             # --- FILTRO DE MOMENTUM ---
-            "lookbar": trial.suggest_int("lookbar", 50, 150, step=5),
-            "req_dist_pct": trial.suggest_float("req_dist_pct", 1.5, 2.0, step=0.05),
+            "lookbar": trial.suggest_int("lookbar", 30, 150, step=5),
+            "req_dist_pct": trial.suggest_float("req_dist_pct", 0.75, 2.0, step=0.05),
         }
 
     def generate_signals(self, df: pl.DataFrame, params: Dict[str, Any]) -> pl.DataFrame:

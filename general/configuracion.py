@@ -67,10 +67,42 @@ FECHA_FIN_PLOT = "2021-03-15"
 # ----------------------------------------------------------------------------
 # 1.4 MOTOR DE OPTIMIZACIÓN (OPTUNA - MÁXIMA POTENCIA VM)
 # ----------------------------------------------------------------------------
-N_TRIALS = 5000      # NÚMERO DE PRUEBAS (AUMENTAR SI TIENES BUENA CPU)
+N_TRIALS = 5000     # NÚMERO DE PRUEBAS (AUMENTAR SI TIENES BUENA CPU)
 OPTUNA_N_JOBS = -1      # -1 = USAR TODOS LOS NÚCLEOS DISPONIBLES
 OPTUNA_SEED = None      # SEMILLA ALEATORIA (NONE PARA VARIEDAD)
 OPTUNA_STORAGE = None   # NONE = EJECUCIÓN EN RAM (MÁS RÁPIDO)
+
+# ----------------------------------------------------------------------------
+# 1.4.1 MODO DE OPTIMIZACIÓN
+# ----------------------------------------------------------------------------
+# SELECCIONA EL MODO DE OPTIMIZACIÓN:
+#
+#   "NORMAL"     : Optimización estándar con Optuna (ejecutar.py)
+#                  - Busca mejores parámetros en datos históricos reales
+#                  - Más rápido, resultados directos
+#
+#   "MONTECARLO" : Monte Carlo + Optimización (montecarlooptimize.py)
+#                  - Genera mercados sintéticos (ruido + bootstrap)
+#                  - Cada trial evalúa parámetros en un mercado diferente
+#                  - Valida si el CONCEPTO de la estrategia es robusto
+#                  - Imposible hacer overfitting (cada evaluación es diferente)
+#
+MODO_OPTIMIZACION = "MONTECARLO"  # <--- ¡MODIFICA AQUÍ! ("NORMAL" o "MONTECARLO")
+
+# CONFIGURACIÓN MONTE CARLO (SOLO SI MODO = "MONTECARLO")
+# CONCEPTO: N_TRIALS = número de mercados sintéticos únicos
+# Cada trial de Optuna evalúa parámetros en un mercado diferente
+# Los mejores parámetros son los que funcionan bien EN PROMEDIO
+MC_NOISE_PCT = 0.5        # Porcentaje de ruido gaussiano (legacy, para method="noise")
+MC_NOISE_RANGE = 100.0    # Variación en unidades monetarias (legacy, para method="monetary")
+MC_BLOCK_SIZE = 100       # Tamaño PROMEDIO de bloque (para stationary_bootstrap)
+MC_METHOD = "stationary_bootstrap"  # MÉTODOS PROFESIONALES:
+                                    # "stationary_bootstrap" = Politis&Romano 1994 (RECOMENDADO - INDUSTRIA)
+                                    # "block_returns" = Block bootstrap sobre retornos
+                                    # "returns_shuffle" = Shuffle simple de retornos
+                                    # Legacy: "monetary", "noise", "mixed"
+MC_SEED = 42              # Semilla base para reproducibilidad
+MC_USE_NSGA2 = True       # True = NSGA-II Multi-Objetivo (Quality↑ + DD↓), False = TPE Single-Objetivo
 
 # ----------------------------------------------------------------------------
 # 1.5 ESTRATEGIAS A EJECUTAR
@@ -133,8 +165,8 @@ EXIT_TRAIL_DIST_PCT_RANGE = DEFAULT_EXIT_TRAIL_DIST_PCT_RANGE
 # 1.9 RESULTADOS Y LIMPIEZA
 # ----------------------------------------------------------------------------
 MAX_ARCHIVOS_GUARDAR = 5
-GENERAR_PLOTS = False
-USAR_EXCEL = True
+GENERAR_PLOTS = True       # Generar gráficos HTML interactivos
+USAR_EXCEL = True          # Generar archivos Excel con resumen y trades
 PURGE_PYCACHE_ON_EXIT = True
 
 
@@ -239,4 +271,12 @@ CONFIG = {
     "EXIT_TRAIL_ACT_PCT_RANGE": EXIT_TRAIL_ACT_PCT_RANGE, "EXIT_TRAIL_DIST_PCT_RANGE": EXIT_TRAIL_DIST_PCT_RANGE,
     "MAX_ARCHIVOS_GUARDAR": MAX_ARCHIVOS_GUARDAR, "GENERAR_PLOTS": GENERAR_PLOTS,
     "USAR_EXCEL": USAR_EXCEL, "PURGE_PYCACHE_ON_EXIT": PURGE_PYCACHE_ON_EXIT,
+    # MODO DE OPTIMIZACIÓN - MONTE CARLO
+    "MODO_OPTIMIZACION": MODO_OPTIMIZACION,
+    "MC_NOISE_PCT": MC_NOISE_PCT,
+    "MC_NOISE_RANGE": MC_NOISE_RANGE,
+    "MC_BLOCK_SIZE": MC_BLOCK_SIZE,
+    "MC_METHOD": MC_METHOD,
+    "MC_SEED": MC_SEED,
+    "MC_USE_NSGA2": MC_USE_NSGA2,
 }

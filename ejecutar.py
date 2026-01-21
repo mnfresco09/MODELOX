@@ -250,8 +250,185 @@ class HealthGuard:
         if CONFIG.get("PURGE_PYCACHE_ON_EXIT"):
             _purge_pycache(root=_PROJECT_ROOT, exclude={".git", ".venv", "data"})
 
+
+def run_montecarlo_mode_single_exit(
+    exit_type: str,
+    strategy: object,
+    strategy_name: str,
+    strategy_safe: str,
+    activo: str,
+    df_filtrado: object,
+    tf_cache: dict[str, object],
+    timeframe_base: str,
+    cfg: BacktestConfig,
+    tf_display: str,
+    archivo_data: str,
+    periodo_datos: str,
+    resolve_archivo_data_tf_func: object = None,
+    fecha_inicio: str | None = None,
+    fecha_fin: str | None = None,
+) -> None:
+    """
+    Ejecuta Monte Carlo Optimization con NSGA-II (Multi-Objetivo).
+    
+    CONCEPTO: Cada trial usa un mercado sintético DIFERENTE.
+    NSGA-II optimiza DOS objetivos:
+      1. MAXIMIZAR: Calidad/Rentabilidad
+      2. MINIMIZAR: Drawdown
+    """
+    from modelox.core.runner_montecarlo import MonteCarloRunner, MonteCarloConfig
+    
+    # 1. CONFIGURACIÓN
+    cfg_dict = cfg.__dict__.copy()
+    cfg_dict["exit_type"] = str(exit_type)
+    cfg_updated = BacktestConfig(**cfg_dict)
+    
+    # 2. DETECCIÓN DE CAPACIDADES
+    try:
+        indicadores = list(getattr(strategy, "parametros_optuna", {}).keys())
+    except Exception:
+        indicadores = []
+    
+    try:
+        strategy_exit_enabled = bool(
+            callable(getattr(strategy, "decide_exit", None))
+            and bool(getattr(strategy, "ACTIVAR_SALIDA_PERSONALIZADA", False))
+        )
+    except Exception:
+        strategy_exit_enabled = False
+    
+    # 3. PARÁMETROS MC
+    mc_n_trials = int(N_TRIALS)
+    mc_noise = float(CONFIG.get("MC_NOISE_PCT", 0.5))
+    mc_noise_range = float(CONFIG.get("MC_NOISE_RANGE", 100.0))
+    mc_block = int(CONFIG.get("MC_BLOCK_SIZE", 1440))
+    mc_method = str(CONFIG.get("MC_METHOD", "monetary"))
+    mc_seed = int(CONFIG.get("MC_SEED", 42))
+    use_nsga2 = bool(CONFIG.get("MC_USE_NSGA2", True))  # Por defecto usa NSGA-II
+    
+    # 4. MOSTRAR HEADER
+    sampler_name = "NSGA-II" if use_nsga2 else "TPE"
+    mostrar_cabecera_inicio(
+        activo=activo,
+        combo_nombre=f"{strategy_name} [MONTE CARLO {sampler_name}]",
+        indicadores=indicadores,
+        n_trials=mc_n_trials,
+        archivo_data=archivo_data,
+        timeframe=tf_display,
+        periodo=periodo_datos,
+        exit_type=exit_type,
+        strategy_exit_enabled=strategy_exit_enabled,
+    )
+    
+    # Info MC
+    print(f"  🎲 Monte Carlo: {mc_n_trials} mercados sintéticos únicos")
+    print(f"  🧬 Sampler: {sampler_name} {'(Multi-Objetivo: Quality↑ + DD↓)' if use_nsga2 else '(Single-Objetivo)'}")
+    print(f"  📊 Método: {mc_method} | Ruido: {mc_noise}% | Block: {mc_block}")
+    print(f"  💡 Cada trial evalúa parámetros en un mercado diferente")
+    print()
+    
+    # 5. RUTAS DE SALIDA
+    activo_safe = str(activo).upper()
+    tf_suffix = normalize_timeframe_to_suffix(timeframe_base)
+    strategy_root_dir = os.path.join(
+        "resultados",
+        f"{strategy_safe}_{str(exit_type).upper()}_MC",
+        str(tf_suffix),
+    )
+    excel_dir = os.path.join(strategy_root_dir, "excel")
+    graficos_dir = os.path.join(strategy_root_dir, "graficos", activo_safe)
+    os.makedirs(excel_dir, exist_ok=True)
+    os.makedirs(graficos_dir, exist_ok=True)
+    
+    # 6. REPORTEROS
+    reporters = [ElegantRichReporter(saldo_inicial=cfg_updated.saldo_inicial, activo=activo)]
+    
+    if USAR_EXCEL:
+        reporters.append(ExcelReporter(
+            resumen_path=f"{excel_dir}/resumen_mc.xlsx",
+            trades_base_dir=excel_dir,
+            max_archivos=int(MAX_ARCHIVOS_GUARDAR)
+        ))
+    
+    if GENERAR_PLOTS:
+        reporters.append(PlotReporter(
+            plot_base=graficos_dir,
+            fecha_inicio_plot=FECHA_INICIO_PLOT,
+            fecha_fin_plot=FECHA_FIN_PLOT,
+            max_archivos=int(MAX_ARCHIVOS_GUARDAR),
+            saldo_inicial=cfg_updated.saldo_inicial,
+            activo=activo,
+        ))
+    
+    # 7. CONFIGURACIÓN MC con NSGA-II
+    mc_config = MonteCarloConfig(
+        n_trials=mc_n_trials,
+        noise_pct=mc_noise,
+        noise_range=mc_noise_range,
+        block_size=mc_block,
+        method=mc_method,
+        seed=mc_seed,
+        use_nsga2=use_nsga2,
+    )
+    
+    # 8. RUNNER MC
+    runner = MonteCarloRunner(
+        strategy=strategy,
+        config=cfg_updated,
+        mc_config=mc_config,
+        reporters=reporters,
+        df=df_filtrado,
+    )
+    runner.activo = activo
+    
+    try:
+        results = runner.run()
+        
+        if results:
+            robustness = results.get("robustness_pct", 0)
+            best_trial = results.get("best_trial")
+            best_score = best_trial.score if best_trial else 0
+            pareto_count = len(results.get("pareto_front", []))
+            
+            suffix = f"[MC {sampler_name}: {robustness:.1f}% robustez"
+            if use_nsga2 and pareto_count > 0:
+                suffix += f", {pareto_count} Pareto"
+            suffix += "]"
+            
+            mostrar_fin_optimizacion(
+                total_trials=mc_n_trials,
+                best_score=best_score,
+                best_trial=best_trial.trial_number if best_trial else 0,
+                estrategia=f"{strategy_name} {suffix}",
+            )
+    
+    except KeyboardInterrupt:
+        raise
+    except Exception as e:
+        logger.error(f"Error en MC {strategy_name}: {e}")
+        import traceback
+        traceback.print_exc()
+    finally:
+        del runner
+        del reporters
+        gc.collect()
+
+
 def main() -> None:
     atexit.register(HealthGuard.final_cleanup)
+    
+    # DETECTAR MODO DE OPTIMIZACIÓN
+    modo = CONFIG.get("MODO_OPTIMIZACION", "NORMAL").upper()
+    
+    # HEADER según modo
+    if modo == "MONTECARLO":
+        print("\n" + "="*70)
+        print("  🎲 MODO: MONTE CARLO + OPTIMIZATION")
+        print("="*70 + "\n")
+    else:
+        print("\n" + "="*70)
+        print("  ⚡ MODO: OPTIMIZACIÓN NORMAL")
+        print("="*70 + "\n")
     
     # 1. PARSEAR ESTRATEGIAS
     if COMBINACION_A_EJECUTAR == "all":
@@ -353,23 +530,42 @@ def main() -> None:
                         types_run = ["pnl_fixed", "pnl_trailing"] if e_type == "all" else [CONFIG["EXIT_TYPE"]]
 
                         for et in types_run:
-                            run_single_exit_type(
-                                exit_type=et,
-                                strategy=strat,
-                                strategy_name=s_name,
-                                strategy_safe=s_safe,
-                                activo=activo,
-                                df_filtrado=df_filtrado,
-                                tf_cache=tf_cache,
-                                timeframe_base=tf_base,
-                                cfg=cfg,
-                                tf_display=tf_display,
-                                archivo_data=archivo,
-                                periodo_datos=periodo_str,
-                                resolve_archivo_data_tf_func=resolve_archivo_data_tf,
-                                fecha_inicio=FECHA_INICIO,
-                                fecha_fin=FECHA_FIN
-                            )
+                            if modo == "MONTECARLO":
+                                run_montecarlo_mode_single_exit(
+                                    exit_type=et,
+                                    strategy=strat,
+                                    strategy_name=s_name,
+                                    strategy_safe=s_safe,
+                                    activo=activo,
+                                    df_filtrado=df_filtrado,
+                                    tf_cache=tf_cache,
+                                    timeframe_base=tf_base,
+                                    cfg=cfg,
+                                    tf_display=tf_display,
+                                    archivo_data=archivo,
+                                    periodo_datos=periodo_str,
+                                    resolve_archivo_data_tf_func=resolve_archivo_data_tf,
+                                    fecha_inicio=FECHA_INICIO,
+                                    fecha_fin=FECHA_FIN
+                                )
+                            else:
+                                run_single_exit_type(
+                                    exit_type=et,
+                                    strategy=strat,
+                                    strategy_name=s_name,
+                                    strategy_safe=s_safe,
+                                    activo=activo,
+                                    df_filtrado=df_filtrado,
+                                    tf_cache=tf_cache,
+                                    timeframe_base=tf_base,
+                                    cfg=cfg,
+                                    tf_display=tf_display,
+                                    archivo_data=archivo,
+                                    periodo_datos=periodo_str,
+                                    resolve_archivo_data_tf_func=resolve_archivo_data_tf,
+                                    fecha_inicio=FECHA_INICIO,
+                                    fecha_fin=FECHA_FIN
+                                )
                 del df, df_filtrado
                 gc.collect()
 

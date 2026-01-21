@@ -235,7 +235,21 @@ def _detect_indicators(
     "signal_long",
     "signal_short",
     "_session_day",
+    # Columnas internas que NO deben graficarse
+    "cycle_id",
+    "CYCLE_ID",
+    "bar_index",
+    "BAR_INDEX",
+    "row_nr",
+    "ROW_NR",
   }
+
+  # Patrones de indicadores que SIEMPRE van como overlay (en el gráfico de precios)
+  OVERLAY_PATTERNS = (
+    "ma", "ema", "sma", "zlema", "alma", "wma", "hma", "kama", "dema", "tema",
+    "vwma", "vwap", "pivot", "support", "resistance", "band", "upper", "lower",
+    "bb_", "boll", "keltner", "donchian", "atr_band", "supertrend",
+  )
 
   indicators_used = params.get("__indicators_used", None) if params else None
   if isinstance(indicators_used, list) and indicators_used:
@@ -246,6 +260,10 @@ def _detect_indicators(
       for c in df.columns
       if isinstance(c, str) and c not in skip_cols and not c.startswith("_")
     ]
+  
+  # Filtrar columnas que están en skip_cols (case-insensitive)
+  skip_lower = {s.lower() for s in skip_cols}
+  candidate_cols = [c for c in candidate_cols if c.lower() not in skip_lower]
 
   specs = _get_indicator_specs(params)
   bounds_map = _get_indicator_bounds(params)
@@ -260,7 +278,14 @@ def _detect_indicators(
 
     panel = spec.get("panel", None)
     if panel not in {"overlay", "sub"}:
-      panel = "overlay" if _is_overlay_heuristic(df[col], price_range) else "sub"
+      # PRIORIDAD 1: Si el nombre contiene patrón de overlay, forzar overlay
+      col_lower = col.lower()
+      is_overlay_by_name = any(pat in col_lower for pat in OVERLAY_PATTERNS)
+      if is_overlay_by_name:
+        panel = "overlay"
+      else:
+        # PRIORIDAD 2: Heurística por valores
+        panel = "overlay" if _is_overlay_heuristic(df[col], price_range) else "sub"
 
     series_type = str(spec.get("type", "line"))
     if series_type not in {"line", "histogram"}:
@@ -1031,10 +1056,24 @@ def _get_chart_js_logic() -> str:
     """Return the JavaScript chart logic as a string (static, cacheable)."""
     return '''
 
+// ============================================================================
+// MODELOX BLOOMBERG TERMINAL v8.0 - ULTRA PROFESSIONAL TRADING INTERFACE
+// ============================================================================
+// Features:
+// - Bloomberg-style dark terminal design
+// - Interactive statistics sidebar
+// - Equity curve panel with drawdown
+// - Trade table with sorting/filtering
+// - Professional hotkeys (F=fit, H=home, E=end, T=trades, S=stats)
+// - Multi-panel synchronized crosshair
+// - Draggable panel margins
+// - Export capabilities
+// ============================================================================
+
 // Validate data loaded correctly
 if (!D || !D.t || D.t.length === 0) {
   console.error('No candle data available');
-  document.body.innerHTML = '<div style="color:#fbbf24;padding:40px;font-family:system-ui;text-align:center;"><h2>No data to display</h2><p>No candle data was generated for this trial.</p></div>';
+  document.body.innerHTML = '<div style="color:#fbbf24;padding:40px;font-family:system-ui;text-align:center;background:#0a0e17;height:100vh;display:flex;flex-direction:column;justify-content:center;align-items:center;"><h2 style="font-size:24px;margin-bottom:16px;">⚠ NO DATA AVAILABLE</h2><p style="color:#64748b;">No candle data was generated for this trial.</p></div>';
   return;
 }
 
