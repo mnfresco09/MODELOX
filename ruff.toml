@@ -1,0 +1,41 @@
+# ============================================================================
+# RUFF CONFIGURATION - MODELOX
+# ============================================================================
+# Ruff es un linter extremadamente rápido para Python
+# https://docs.astral.sh/ruff/
+
+# Versión mínima de Python
+target-version = "py310"
+
+# Longitud máxima de línea (ignoramos E501 por defecto)
+line-length = 120
+
+# Carpetas a excluir
+exclude = [
+    ".git",
+    ".venv",
+    "venv",
+    "__pycache__",
+    "x/",
+    "archivo/",
+]
+
+# Reglas a ignorar globalmente
+[lint]
+ignore = [
+    "E501",
+    "E402",
+    "F401",
+]
+
+# Reglas específicas por archivo
+[lint.per-file-ignores]
+"analisis.py" = ["F401"]
+"montecarlo.py" = ["F401"]
+
+# Formateo automático
+[format]
+quote-style = "double"
+indent-style = "space"
+skip-magic-trailing-comma = false
+line-ending = "auto"

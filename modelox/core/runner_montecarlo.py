@@ -15,11 +15,10 @@ nivel de riesgo aceptable.
 
 from __future__ import annotations
 
-import os
 import time
 import gc
 from dataclasses import dataclass
-from typing import Any, Dict, List, Optional, Callable
+from typing import Any, Dict, List, Callable
 
 import warnings
 import numpy as np
@@ -28,10 +27,8 @@ import optuna
 from optuna.samplers import NSGAIISampler, TPESampler
 from optuna.exceptions import ExperimentalWarning
 
-from .engine import BacktestParams, calculate_performance_vectorized_numba
-from .metrics import resumen_metricas
 from .scoring import score_quality_only, nsga2_objectives, score_optuna
-from .types import BacktestConfig, Reporter, Strategy, TrialArtifacts, normalize_timeframe_to_suffix
+from .types import BacktestConfig, Reporter, Strategy, TrialArtifacts
 from .exits import resolve_exit_settings_for_trial
 from .runner import SignalGenerator, BacktestEngine
 
@@ -523,7 +520,7 @@ def _reconstruct_ohlcv_from_close(df: pl.DataFrame, old_close: np.ndarray, new_c
     La forma de la vela (proporción open/high/low respecto al close)
     se preserva, pero escalada al nuevo nivel de precios.
     """
-    n = len(new_close)
+    len(new_close)
     
     old_open = df["open"].to_numpy().astype(np.float64)
     old_high = df["high"].to_numpy().astype(np.float64)
@@ -749,7 +746,7 @@ class MonteCarloRunner:
             # Score combinado para reporting (usa el sistema tradicional)
             score = float(score_optuna(metrics))
             
-            elapsed = time.perf_counter() - t0
+            time.perf_counter() - t0
             
             # Crear artifacts - incluir params_rt completo para reporters
             params_display = {k: v for k, v in params_rt.items() if not k.startswith("__")}
@@ -813,7 +810,7 @@ class MonteCarloRunner:
         config = self.config
         
         def objective(trial: optuna.Trial) -> float:
-            t0 = time.perf_counter()
+            time.perf_counter()
             
             synthetic_df = self._get_synthetic_market(trial.number)
             params = strategy.suggest_params(trial)
@@ -905,7 +902,7 @@ class MonteCarloRunner:
             if hasattr(reporter, "on_trial_end"):
                 try:
                     reporter.on_trial_end(artifact)
-                except Exception as e:
+                except Exception:
                     pass  # No romper el flujo
     
     def run(self) -> Dict[str, Any]:

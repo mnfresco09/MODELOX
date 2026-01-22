@@ -378,7 +378,7 @@ class InstitutionalVisualizer:
         
         if unique_vals > 12:
             try: data[f'{param}_BIN'] = pd.qcut(data[param], q=8, duplicates='drop'); x_col = f'{param}_BIN'
-            except: 
+            except Exception:
                 try: data[f'{param}_BIN'] = pd.cut(data[param], bins=8); x_col = f'{param}_BIN'
                 except: pass
         
@@ -506,7 +506,7 @@ def main():
             else:
                 import subprocess
                 subprocess.run(['xdg-open', out_pdf], check=False, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
-        except: 
+        except Exception:
             print(f"ℹ️  Open manually: {out_pdf}")
         
     except Exception as e:

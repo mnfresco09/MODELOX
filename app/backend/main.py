@@ -8,7 +8,6 @@
 from __future__ import annotations
 
 import asyncio
-import json
 import logging
 import os
 import re
@@ -21,14 +20,13 @@ from contextlib import asynccontextmanager
 from datetime import datetime
 from pathlib import Path
 from queue import Empty, Queue
-from typing import Any, Dict, List, Optional, Set
+from typing import Any, Dict, List, Optional
 
 import numpy as np
 import pandas as pd
 import psutil
 from fastapi import FastAPI, HTTPException, WebSocket, WebSocketDisconnect
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import FileResponse, HTMLResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
 from scipy import stats as scipy_stats
@@ -58,7 +56,7 @@ RESULTS_DIR = BASE_DIR / "resultados"
 STRATEGIES_DIR = BASE_DIR / "modelox" / "strategies"
 EJECUTAR_SCRIPT = BASE_DIR / "ejecutar.py"
 
-logger.info(f"🚀 MODELOX Backend Starting")
+logger.info("🚀 MODELOX Backend Starting")
 logger.info(f"   BASE_DIR: {BASE_DIR}")
 logger.info(f"   IN_DOCKER: {IN_DOCKER}")
 logger.info(f"   DATA_DIR: {DATA_DIR}")
@@ -507,7 +505,7 @@ class ProcessManager:
                         self.log_history.append(line)
                         if len(self.log_history) > 1000:
                             self.log_history = self.log_history[-1000:]
-                except:
+                except Exception:
                     pass
                 
                 self._parse_progress(line, trial_times)

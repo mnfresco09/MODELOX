@@ -33,7 +33,7 @@ import glob
 import warnings
 from dataclasses import dataclass, field
 from datetime import datetime
-from typing import Dict, List, Optional, Tuple, Any
+from typing import Dict, List, Optional, Tuple
 from itertools import combinations
 
 import numpy as np
@@ -42,14 +42,12 @@ import matplotlib.pyplot as plt
 import matplotlib.gridspec as gridspec
 from matplotlib.backends.backend_pdf import PdfPages
 from matplotlib.colors import LinearSegmentedColormap, Normalize
-from matplotlib.patches import FancyBboxPatch, Rectangle
-from matplotlib.ticker import MaxNLocator, ScalarFormatter, FuncFormatter
-from mpl_toolkits.mplot3d import Axes3D
+from matplotlib.patches import FancyBboxPatch
+from matplotlib.ticker import MaxNLocator, FuncFormatter
 from scipy import stats
 from scipy.ndimage import gaussian_filter1d, gaussian_filter
 from scipy.interpolate import UnivariateSpline, griddata
-from scipy.signal import find_peaks, savgol_filter
-from scipy.optimize import minimize_scalar
+from scipy.signal import savgol_filter
 from sklearn.ensemble import GradientBoostingRegressor, RandomForestRegressor
 from sklearn.preprocessing import RobustScaler, StandardScaler
 from sklearn.neighbors import KernelDensity, NearestNeighbors
@@ -340,7 +338,7 @@ class SmartColumnDetector:
             # Debe tener al menos 2 valores únicos y no ser constante
             unique_vals = numeric.nunique()
             return unique_vals >= 2 and numeric.std() > 1e-10
-        except:
+        except Exception:
             return False
 
 
@@ -391,7 +389,7 @@ class DataLoader:
     
     def _load_excel(self, path: str) -> pd.DataFrame:
         """Carga Excel con detección de header."""
-        xlsx = pd.ExcelFile(path)
+        pd.ExcelFile(path)
         preview = pd.read_excel(path, sheet_name=0, header=None, nrows=10)
         
         # Buscar fila de header
@@ -421,7 +419,7 @@ class DataLoader:
                     content = f.read(8192)
                 used_encoding = enc
                 break
-            except:
+            except Exception:
                 continue
         
         if content is None:
@@ -463,7 +461,7 @@ class DataLoader:
     
     def _print_summary(self):
         """Imprime resumen."""
-        all_params = self.schema.params + self.schema.exit_params
+        self.schema.params + self.schema.exit_params
         print(f"  ✓ {len(self.df):,} trials | {self.strategy_name}")
         print(f"  ✓ Params: {len(self.schema.params)} | Exit: {len(self.schema.exit_params)} | Metrics: {len(self.schema.metrics)}")
     
@@ -876,7 +874,7 @@ class AdvancedRobustnessAnalyzer:
         if result.n_clusters >= 2 and result.n_clusters < len(X_clean) - 1:
             try:
                 result.silhouette_score = float(silhouette_score(X_scaled, cluster_labels))
-            except:
+            except Exception:
                 result.silhouette_score = 0.0
         
         # Calcular centro y rendimiento de cada cluster
@@ -1058,7 +1056,7 @@ class AdvancedRobustnessAnalyzer:
                 subsample=0.8, random_state=42
             )
             model.fit(X_clean, y_clean)
-        except:
+        except Exception:
             return result
         
         # Encontrar la configuración "óptima" actual
@@ -1170,11 +1168,11 @@ class AdvancedRobustnessAnalyzer:
         try:
             zi = griddata((x, y_param), z, (xi_mesh, yi_mesh), method='cubic')
             zi = np.nan_to_num(zi, nan=np.nanmean(z))
-        except:
+        except Exception:
             try:
                 zi = griddata((x, y_param), z, (xi_mesh, yi_mesh), method='linear')
                 zi = np.nan_to_num(zi, nan=np.nanmean(z))
-            except:
+            except Exception:
                 return result
         
         # CV global de la superficie
@@ -1423,7 +1421,7 @@ class QuantEngine:
             )
             if not np.isnan(opt_plateau):
                 results.append(('plateau', opt_plateau, conf_plateau, plateau_range))
-        except:
+        except Exception:
             pass
         
         # ═══════════════════════════════════════════════════════════════════
@@ -1435,7 +1433,7 @@ class QuantEngine:
             )
             if not np.isnan(opt_boot):
                 results.append(('bootstrap', opt_boot, conf_boot, boot_range))
-        except:
+        except Exception:
             pass
         
         # ═══════════════════════════════════════════════════════════════════
@@ -1447,7 +1445,7 @@ class QuantEngine:
             )
             if not np.isnan(opt_cv):
                 results.append(('cross_val', opt_cv, conf_cv, cv_range))
-        except:
+        except Exception:
             pass
         
         # ═══════════════════════════════════════════════════════════════════
@@ -1459,7 +1457,7 @@ class QuantEngine:
             )
             if not np.isnan(opt_deriv):
                 results.append(('derivative', opt_deriv, conf_deriv, None))
-        except:
+        except Exception:
             pass
         
         # ═══════════════════════════════════════════════════════════════════
@@ -1471,7 +1469,7 @@ class QuantEngine:
             )
             if not np.isnan(opt_bayes):
                 results.append(('bayesian', opt_bayes, conf_bayes, None))
-        except:
+        except Exception:
             pass
         
         # ═══════════════════════════════════════════════════════════════════
@@ -1483,7 +1481,7 @@ class QuantEngine:
             )
             if not np.isnan(opt_robust):
                 results.append(('robust_reg', opt_robust, conf_robust, None))
-        except:
+        except Exception:
             pass
         
         # ═══════════════════════════════════════════════════════════════════
@@ -1493,7 +1491,7 @@ class QuantEngine:
             opt_kde, conf_kde = self._kde_mode_optimal(x_clean, y_clean, higher_better)
             if not np.isnan(opt_kde):
                 results.append(('kde_mode', opt_kde, conf_kde, None))
-        except:
+        except Exception:
             pass
         
         # ═══════════════════════════════════════════════════════════════════
@@ -1988,7 +1986,7 @@ class QuantEngine:
         if len(optimals) >= 3:
             median_opt = np.median(optimals)
             mad = np.median(np.abs(optimals - median_opt))
-            threshold = median_opt + 3 * mad * 1.4826  # Factor para convertir MAD a std
+            median_opt + 3 * mad * 1.4826  # Factor para convertir MAD a std
             inlier_mask = np.abs(optimals - median_opt) <= 2.5 * mad * 1.4826
             
             if inlier_mask.sum() >= 2:
@@ -2117,7 +2115,7 @@ class QuantEngine:
             y_smooth = np.clip(y_smooth, y_data_min, y_data_max)
             
             return x_smooth, y_smooth
-        except:
+        except Exception:
             return x_u, y_u
     
     def _compute_kde(self, x: np.ndarray, n_points: int = 100) -> Tuple[np.ndarray, np.ndarray]:
@@ -2130,7 +2128,7 @@ class QuantEngine:
             log_dens = kde.score_samples(x_plot)
             
             return x_plot.flatten(), np.exp(log_dens)
-        except:
+        except Exception:
             return np.array([]), np.array([])
     
     def _weighted_optimal(self, estimates: List[Tuple[float, float]]) -> float:
@@ -2202,7 +2200,7 @@ class QuantEngine:
                 if good_mask.sum() > 5:
                     good_x = curve_x[good_mask]
                     sensitivity_ranges.append((good_x.min(), good_x.max()))
-            except:
+            except Exception:
                 pass
         
         # ═══════════════════════════════════════════════════════════════════
@@ -2248,7 +2246,7 @@ class QuantEngine:
                     right_bound = curve_x[right_changes[0]] if len(right_changes) > 0 else curve_x[-1]
                     
                     changepoint_ranges.append((left_bound, right_bound))
-            except:
+            except Exception:
                 pass
         
         # ═══════════════════════════════════════════════════════════════════
@@ -2288,7 +2286,7 @@ class QuantEngine:
                             segments = []
                             start = 0
                             for gap_idx in large_gaps:
-                                end = np.where(good_idx)[0][gap_idx]
+                                np.where(good_idx)[0][gap_idx]
                                 segments.append(curve_x[good_idx][start:gap_idx+1])
                                 start = gap_idx + 1
                             segments.append(curve_x[good_idx][start:])
@@ -2302,7 +2300,7 @@ class QuantEngine:
                             threshold_ranges.append((good_x.min(), good_x.max()))
                     else:
                         threshold_ranges.append((good_x.min(), good_x.max()))
-            except:
+            except Exception:
                 pass
         
         # ═══════════════════════════════════════════════════════════════════
@@ -2426,7 +2424,7 @@ class QuantEngine:
             try:
                 corr, _ = stats.spearmanr(curve_x, curve_y)
                 monotonicity_scores.append(abs(corr))
-            except:
+            except Exception:
                 pass
         
         return np.mean(monotonicity_scores) if monotonicity_scores else 0.5
@@ -2568,7 +2566,7 @@ class CorrelationAnalyzer:
                 X_pair = np.column_stack([x1, x2])
                 mi = mutual_info_regression(X_pair, y, random_state=42)
                 mutual_info = float(np.mean(mi))
-            except:
+            except Exception:
                 mutual_info = 0.0
             
             # Importancia conjunta: entrenar un modelo simple con ambos params
@@ -2578,7 +2576,7 @@ class CorrelationAnalyzer:
                 rf.fit(X_pair, y)
                 # La importancia de la interacción indica relación conjunta
                 joint_importance = float(rf.feature_importances_[2])  # Término de interacción
-            except:
+            except Exception:
                 joint_importance = 0.0
             
             # Determinar si están fuertemente relacionados
@@ -2594,7 +2592,7 @@ class CorrelationAnalyzer:
                 joint_importance=joint_importance,
                 is_strongly_related=is_strong
             )
-        except Exception as e:
+        except Exception:
             return None
     
     def get_strongly_related_pairs(self) -> List[Tuple[str, str]]:
@@ -2720,7 +2718,7 @@ class StrategyAnalyzer:
             
             importance = dict(zip(all_params, rf.feature_importances_))
             return dict(sorted(importance.items(), key=lambda x: x[1], reverse=True))
-        except:
+        except Exception:
             return {}
     
     def _calculate_global_robustness(self) -> float:
@@ -2863,7 +2861,7 @@ class BloombergVisualizer:
             kde = stats.gaussian_kde(values)
             x_kde = np.linspace(values.min(), values.max(), 100)
             ax.plot(x_kde, kde(x_kde), color=Theme.ACCENT, linewidth=1.5, alpha=0.8)
-        except:
+        except Exception:
             pass
         
         # Línea de mediana
@@ -2970,7 +2968,7 @@ class BloombergVisualizer:
                 profitability = (values > 0).mean()
                 aspects.append(('Profitability Rate', profitability, Theme.GOLD))
         
-        y_positions = np.arange(len(aspects))
+        np.arange(len(aspects))
         bar_height = 0.5
         
         for i, (name, value, color) in enumerate(aspects):
@@ -3230,7 +3228,6 @@ class BloombergVisualizer:
     def _plot_recommendation(self, ax: plt.Axes, analysis: ParameterAnalysis, is_exit: bool):
         """Panel de recomendación - Ultraminimalista."""
         # Fondo sutil basado en confianza
-        bg_alpha = 0.15 if analysis.confidence >= 0.6 else 0.08
         ax.set_facecolor(Theme.BG_TERTIARY)
         ax.set_xticks([])
         ax.set_yticks([])
@@ -3433,7 +3430,7 @@ class BloombergVisualizer:
             zi = griddata((x, y), z, (xi, yi), method='cubic')
             zi = np.nan_to_num(zi, nan=np.nanmean(z))
             zi = gaussian_filter(zi, sigma=3.0)  # Mayor suavizado
-        except:
+        except Exception:
             zi = griddata((x, y), z, (xi, yi), method='linear')
             zi = np.nan_to_num(zi, nan=np.nanmean(z))
             zi = gaussian_filter(zi, sigma=2.5)
@@ -3528,7 +3525,7 @@ class BloombergVisualizer:
             zi = griddata((x, y), z, (xi, yi), method='cubic')
             zi = np.nan_to_num(zi, nan=np.nanmean(z))
             zi = gaussian_filter(zi, sigma=3.0)  # Mayor suavizado
-        except:
+        except Exception:
             zi = griddata((x, y), z, (xi, yi), method='linear')
             zi = np.nan_to_num(zi, nan=np.nanmean(z))
             zi = gaussian_filter(zi, sigma=2.5)
@@ -3537,7 +3534,7 @@ class BloombergVisualizer:
         cmap = Theme.get_surface_cmap()
         norm = Normalize(vmin=np.percentile(z, 10), vmax=np.percentile(z, 90))
         
-        surf = ax.plot_surface(xi, yi, zi, cmap=cmap, norm=norm,
+        ax.plot_surface(xi, yi, zi, cmap=cmap, norm=norm,
                                alpha=0.9, antialiased=True, linewidth=0)
         
         ax.set_xlabel(param1, color=Theme.TEXT_DARK, fontsize=7, labelpad=4)
@@ -4061,7 +4058,7 @@ class BloombergVisualizer:
         
         # Heatmap
         cmap = Theme.get_correlation_cmap()
-        im = ax.imshow(matrix, cmap=cmap, vmin=-1, vmax=1, aspect='auto')
+        ax.imshow(matrix, cmap=cmap, vmin=-1, vmax=1, aspect='auto')
         
         # Labels
         ax.set_xticks(np.arange(n))
@@ -4142,7 +4139,7 @@ class BloombergVisualizer:
         if target_col:
             z = pd.to_numeric(self.df.loc[mask.nonzero()[0], target_col], errors='coerce').values
             z = np.nan_to_num(z, nan=np.nanmean(z))
-            scatter = ax.scatter(x, y, c=z, cmap=Theme.get_surface_cmap(), 
+            ax.scatter(x, y, c=z, cmap=Theme.get_surface_cmap(), 
                                s=15, alpha=0.6, edgecolors='none')
         else:
             ax.scatter(x, y, c=Theme.ACCENT, s=15, alpha=0.6, edgecolors='none')
@@ -4154,7 +4151,7 @@ class BloombergVisualizer:
             x_line = np.linspace(x.min(), x.max(), 50)
             ax.plot(x_line, p(x_line), color=Theme.TEXT_MUTED, linewidth=1, 
                    linestyle='--', alpha=0.7)
-        except:
+        except Exception:
             pass
         
         ax.set_xlabel(corr.param1[:15], fontsize=7, color=Theme.TEXT_DARK)
@@ -4244,12 +4241,12 @@ class BloombergVisualizer:
             zi = griddata((x_clip, y_clip), z_clip, (xi, yi), method='cubic')
             zi = np.nan_to_num(zi, nan=np.nanmean(z_clip))
             zi = gaussian_filter(zi, sigma=3.0)  # Mayor suavizado
-        except:
+        except Exception:
             try:
                 zi = griddata((x_clip, y_clip), z_clip, (xi, yi), method='linear')
                 zi = np.nan_to_num(zi, nan=np.nanmean(z_clip))
                 zi = gaussian_filter(zi, sigma=2.5)
-            except:
+            except Exception:
                 ax.text2D(0.5, 0.5, 'Interpolation Error', transform=ax.transAxes,
                          ha='center', va='center', color=Theme.TEXT_DARK, fontsize=8)
                 return
@@ -4262,7 +4259,7 @@ class BloombergVisualizer:
         cmap = Theme.get_surface_cmap()
         norm = Normalize(vmin=z_min, vmax=z_max)
         
-        surf = ax.plot_surface(xi, yi, zi, cmap=cmap, norm=norm,
+        ax.plot_surface(xi, yi, zi, cmap=cmap, norm=norm,
                                alpha=0.92, antialiased=True, linewidth=0,
                                rcount=40, ccount=40)
         

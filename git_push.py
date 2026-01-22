@@ -99,14 +99,14 @@ def main(argv: Optional[List[str]] = None) -> int:
     # 3. Commit
     commit_msg = " ".join(args.message).strip() if args.message else _default_commit_message()
     
-    print(f"\n💬 Paso 4: Commit...")
+    print("\n💬 Paso 4: Commit...")
     if args.amend:
         success, output = run_command(["git", "commit", "--amend", "-m", commit_msg], check=False)
     else:
         success, output = run_command(["git", "commit", "-m", commit_msg], check=False)
     
     if not success and "nothing to commit" not in output.lower():
-        print(f"❌ Error en commit")
+        print("❌ Error en commit")
         return 1
 
     # 4. Push (con timeout más largo)
@@ -123,7 +123,7 @@ def main(argv: Optional[List[str]] = None) -> int:
             print("   Revisa que .gitignore excluya: .venv/, data/, *.csv, *.parquet")
             print("   Puede que necesites limpiar el historial de git.")
         else:
-            print(f"❌ Error al subir")
+            print("❌ Error al subir")
         return 1
 
     print("\n" + "=" * 50)

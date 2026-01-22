@@ -23,7 +23,6 @@ os.environ.setdefault("MODELOX_TIMINGS_PRINT_EVERY", "10")
 # ============================================================================
 import warnings
 import logging
-import gc
 import atexit
 import shutil
 from pathlib import Path

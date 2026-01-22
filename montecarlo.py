@@ -20,14 +20,13 @@
 from __future__ import annotations
 
 import argparse
-import os
 import sys
 import time
 import warnings
 from dataclasses import dataclass, field
 from datetime import datetime
 from pathlib import Path
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Any, Dict, List, Optional
 
 import numpy as np
 import polars as pl
@@ -41,10 +40,7 @@ try:
     from rich.console import Console
     from rich.table import Table
     from rich.panel import Panel
-    from rich.progress import Progress, SpinnerColumn, BarColumn, TextColumn, TimeElapsedColumn, TimeRemainingColumn
-    from rich.text import Text
     from rich import box
-    from rich.columns import Columns
     from rich.align import Align
     RICH_AVAILABLE = True
 except ImportError:
@@ -57,14 +53,7 @@ console = Console(force_terminal=True, color_system="truecolor") if RICH_AVAILAB
 # =============================================================================
 try:
     import matplotlib.pyplot as plt
-    import matplotlib.gridspec as gridspec
     from matplotlib.backends.backend_pdf import PdfPages
-    from matplotlib.colors import LinearSegmentedColormap, Normalize
-    from matplotlib.patches import FancyBboxPatch, Circle, Rectangle
-    from matplotlib.collections import LineCollection
-    from mpl_toolkits.mplot3d import Axes3D
-    from mpl_toolkits.mplot3d.art3d import Poly3DCollection
-    import matplotlib.patheffects as path_effects
     from scipy import stats as scipy_stats
     from scipy.ndimage import gaussian_filter
     MATPLOTLIB_AVAILABLE = True
@@ -339,7 +328,7 @@ class MonteCarloValidator:
                 if instance.combinacion_id == self.config.combinacion_id:
                     self.strategy = instance
                     break
-            except:
+            except Exception:
                 continue
         
         if self.strategy is None:
@@ -364,7 +353,7 @@ class MonteCarloValidator:
         elif csv_path.exists():
             self.df = pl.read_csv(csv_path)
         else:
-            print(f"❌ No se encontró archivo de datos")
+            print("❌ No se encontró archivo de datos")
             sys.exit(1)
         
         # Normalize datetime column name - keep both timestamp and datetime
@@ -514,7 +503,7 @@ class MonteCarloValidator:
             
             return result
             
-        except Exception as e:
+        except Exception:
             result = self._empty_metrics()
             if return_full:
                 result["_trades_df"] = None
@@ -543,7 +532,7 @@ class MonteCarloValidator:
     def run_monte_carlo(self) -> None:
         """Run Monte Carlo simulations with live reporting."""
         if RICH_AVAILABLE:
-            console.print(f"\n[bold cyan]🎲 Monte Carlo Robustness Test[/bold cyan]")
+            console.print("\n[bold cyan]🎲 Monte Carlo Robustness Test[/bold cyan]")
             console.print(f"   [dim]Simulaciones: {self.config.n_simulations:,} | Métodos: {', '.join(self.config.methods)} | Ruido: ±{self.config.noise_pct}%[/dim]\n")
         
         params = self._build_params()
@@ -577,7 +566,7 @@ class MonteCarloValidator:
                 pct = (sim_idx + 1) / self.config.n_simulations * 100
                 elapsed = time.time() - start_time
                 eta = elapsed / (sim_idx + 1) * (self.config.n_simulations - sim_idx - 1) if sim_idx > 0 else 0
-                speed = (sim_idx + 1) / elapsed if elapsed > 0 else 0
+                (sim_idx + 1) / elapsed if elapsed > 0 else 0
                 
                 # Single compact table
                 t = Table(box=box.ROUNDED, border_style="cyan", padding=(0, 1), expand=False, 
@@ -724,7 +713,7 @@ class MonteCarloValidator:
     def analyze_results(self) -> Dict[str, Any]:
         """Analyze Monte Carlo results."""
         if RICH_AVAILABLE:
-            console.print(f"\n[cyan]📈 Analizando resultados...[/cyan]")
+            console.print("\n[cyan]📈 Analizando resultados...[/cyan]")
         
         results_df = pl.DataFrame(self.simulation_results)
         
@@ -946,7 +935,7 @@ class MonteCarloValidator:
         base_name = f"MC_{self.config.combinacion_id}_{self.config.activo}"
         
         if RICH_AVAILABLE:
-            console.print(f"\n[cyan]💾 Exportando resultados...[/cyan]")
+            console.print("\n[cyan]💾 Exportando resultados...[/cyan]")
         
         # CSV
         if self.config.export_csv:
@@ -1271,8 +1260,8 @@ class MonteCarloValidator:
         roi_values = results_df["roi"].to_numpy()
         winrate_values = results_df["winrate"].to_numpy()
         dd_values = results_df["drawdown"].to_numpy()
-        sharpe_values = results_df["sharpe"].to_numpy()
-        trades_values = results_df["n_trades"].to_numpy()
+        results_df["sharpe"].to_numpy()
+        results_df["n_trades"].to_numpy()
         
         with PdfPages(str(pdf_path)) as pdf:
             # =================================================================
@@ -1362,7 +1351,7 @@ class MonteCarloValidator:
             
             # Winrate vs Drawdown Scatter
             ax2 = axes[0, 1]
-            colors = [Theme.GREEN if r > 0 else Theme.RED for r in roi_values]
+            [Theme.GREEN if r > 0 else Theme.RED for r in roi_values]
             scatter = ax2.scatter(winrate_values, dd_values, c=roi_values, cmap='RdYlGn', 
                                  alpha=0.6, s=20, edgecolors='none')
             ax2.axhline(25, color=Theme.ORANGE, linestyle='--', alpha=0.5, label='DD 25%')
@@ -1443,7 +1432,7 @@ class MonteCarloValidator:
             X, Y = np.meshgrid(xedges[:-1], yedges[:-1])
             H = gaussian_filter(H.T, sigma=1)  # Smooth
             
-            surf = ax_3d.plot_surface(X, Y, H, cmap='viridis', alpha=0.8, 
+            ax_3d.plot_surface(X, Y, H, cmap='viridis', alpha=0.8, 
                                       edgecolor='none', antialiased=True)
             ax_3d.set_xlabel('Winrate (%)', color=Theme.TEXT_MUTED, fontsize=8)
             ax_3d.set_ylabel('Drawdown (%)', color=Theme.TEXT_MUTED, fontsize=8)
@@ -1455,7 +1444,7 @@ class MonteCarloValidator:
             ax_3d2 = fig.add_subplot(222, projection='3d')
             ax_3d2.set_facecolor(Theme.BG_SECONDARY)
             
-            colors_3d = [Theme.GREEN if r > 0 else Theme.RED for r in roi_values]
+            [Theme.GREEN if r > 0 else Theme.RED for r in roi_values]
             ax_3d2.scatter(winrate_values, dd_values, roi_values, 
                           c=roi_values, cmap='RdYlGn', alpha=0.6, s=15)
             ax_3d2.set_xlabel('Winrate (%)', color=Theme.TEXT_MUTED, fontsize=8)

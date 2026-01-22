@@ -875,6 +875,131 @@ def mostrar_cabecera_inicio(
 
 
 # ============================================================================
+# ESTADÍSTICAS DE EVOLUCIÓN (BOX MÉTRICAS PROMEDIO)
+# ============================================================================
+
+class EstadisticasOptimizacion:
+    """
+    Tracker de estadísticas durante la optimización.
+    Mantiene un historial para calcular promedios en tiempo real.
+    """
+    
+    def __init__(self):
+        self.roi_valores = []
+        self.sqn_valores = []
+        self.expectativa_valores = []
+        self.sharpe_valores = []
+        self.winrate_valores = []
+        self.drawdown_valores = []
+        self.score_valores = []
+        self.mejor_score = float("-inf")
+        self.mejor_trial = 0
+    
+    def actualizar(self, metricas: Dict[str, Any], score: float, trial: int) -> None:
+        """Añade nuevos valores al historial."""
+        M = MetricMapper
+        
+        roi = M.get_float(metricas, "roi", 0.0)
+        sqn = M.get_float(metricas, "sqn", 0.0)
+        expectativa = M.get_float(metricas, "expectativa", 0.0)
+        sharpe = M.get_float(metricas, "sharpe", 0.0)
+        winrate = M.get_float(metricas, "winrate", 0.0)
+        drawdown = M.get_float(metricas, "drawdown", 0.0)
+        
+        self.roi_valores.append(roi)
+        self.sqn_valores.append(sqn)
+        self.expectativa_valores.append(expectativa)
+        self.sharpe_valores.append(sharpe)
+        self.winrate_valores.append(winrate)
+        self.drawdown_valores.append(drawdown)
+        self.score_valores.append(score)
+        
+        if score > self.mejor_score:
+            self.mejor_score = score
+            self.mejor_trial = trial
+    
+    def obtener_promedios(self) -> Dict[str, float]:
+        """Calcula los promedios actuales."""
+        def promedio_seguro(lista):
+            return sum(lista) / len(lista) if lista else 0.0
+        
+        return {
+            "roi_medio": promedio_seguro(self.roi_valores),
+            "sqn_medio": promedio_seguro(self.sqn_valores),
+            "expectativa_media": promedio_seguro(self.expectativa_valores),
+            "sharpe_medio": promedio_seguro(self.sharpe_valores),
+            "winrate_medio": promedio_seguro(self.winrate_valores),
+            "drawdown_medio": promedio_seguro(self.drawdown_valores),
+            "score_medio": promedio_seguro(self.score_valores),
+            "n_trials": len(self.score_valores),
+            "mejor_score": self.mejor_score,
+            "mejor_trial": self.mejor_trial,
+        }
+
+
+# Instancia global para tracking
+_stats_optimizacion = EstadisticasOptimizacion()
+
+
+def resetear_estadisticas() -> None:
+    """Resetea las estadísticas (usar al inicio de cada estrategia)."""
+    global _stats_optimizacion
+    _stats_optimizacion = EstadisticasOptimizacion()
+
+
+def actualizar_estadisticas(metricas: Dict[str, Any], score: float, trial: int) -> None:
+    """Actualiza las estadísticas con un nuevo trial."""
+    _stats_optimizacion.actualizar(metricas, score, trial)
+
+
+def mostrar_evolucion_metricas(mostrar_cada_n: int = 25) -> None:
+    """
+    Muestra un box compacto con la evolución de métricas promedio.
+    Solo se muestra cada N trials para no saturar la consola.
+    """
+    stats = _stats_optimizacion.obtener_promedios()
+    n_trials = stats["n_trials"]
+    
+    # Solo mostrar cada N trials
+    if n_trials == 0 or n_trials % mostrar_cada_n != 0:
+        return
+    
+    console = Console()
+    
+    # Construir tabla compacta
+    grid = Table.grid(padding=(0, 3), expand=False)
+    grid.add_column("metric", style=THEME.TEXT_SECONDARY, width=12)
+    grid.add_column("value", justify="right", width=10)
+    
+    # Colores basados en valores
+    roi_color = THEME.SUCCESS if stats["roi_medio"] > 0 else THEME.DANGER
+    sqn_color = get_metric_color(stats["sqn_medio"], 2.0, 1.0)
+    exp_color = THEME.SUCCESS if stats["expectativa_media"] > 0 else THEME.DANGER
+    sharpe_color = get_metric_color(stats["sharpe_medio"], 1.0, 0.5)
+    
+    grid.add_row("ROI Medio", f"[{roi_color}]{stats['roi_medio']:.2f}%[/]")
+    grid.add_row("SQN Medio", f"[{sqn_color}]{stats['sqn_medio']:.2f}[/]")
+    grid.add_row("Expect Media", f"[{exp_color}]{stats['expectativa_media']:.2f}[/]")
+    grid.add_row("Sharpe Medio", f"[{sharpe_color}]{stats['sharpe_medio']:.2f}[/]")
+    grid.add_row(f"[{THEME.TEXT_DIM}]────────────[/]", "")
+    grid.add_row("Mejor Score", f"[bold {THEME.BEST_MARKER}]{stats['mejor_score']:.2f}[/]")
+    grid.add_row("Mejor Trial", f"[{THEME.ACCENT}]#{stats['mejor_trial']}[/]")
+    
+    panel = Panel(
+        Align.center(grid),
+        title=f"[{THEME.TEXT_SECONDARY}]══ EVOLUCIÓN ({n_trials} trials) ══[/]",
+        title_align="center",
+        box=THEME.BOX_PANEL,
+        border_style=THEME.BORDER_DARK,
+        padding=(0, 2),
+        width=40
+    )
+    
+    console.print()
+    console.print(Align.center(panel))
+
+
+# ============================================================================
 # LEGACY COMPATIBILITY
 # ============================================================================
 
@@ -916,4 +1041,9 @@ __all__ = [
     "mostrar_fin_optimizacion",
     "mostrar_cabecera_inicio",
     "mostrar_panel_rich",
+    # Nuevas funciones de evolución
+    "EstadisticasOptimizacion",
+    "resetear_estadisticas",
+    "actualizar_estadisticas",
+    "mostrar_evolucion_metricas",
 ]

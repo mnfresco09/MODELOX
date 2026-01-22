@@ -403,14 +403,14 @@ def _aplicar_estilo_avanzado(filepath, df, metrics_cols, params_cols, saldo_ini)
     col_map = {str(ws.cell(2, c).value).strip(): get_column_letter(c) for c in range(1, max_col + 1)}
     
     if "ROI%" in col_map:
-        l = col_map["ROI%"]
-        ws.conditional_formatting.add(f"{l}3:{l}{max_row}", DataBarRule(
+        col_roi = col_map["ROI%"]
+        ws.conditional_formatting.add(f"{col_roi}3:{col_roi}{max_row}", DataBarRule(
             start_type='min', end_type='max', color="638EC6", showValue=True
         ))
     
     if "SCORE" in col_map:
-        l = col_map["SCORE"]
-        ws.conditional_formatting.add(f"{l}3:{l}{max_row}", ColorScaleRule(
+        col_score = col_map["SCORE"]
+        ws.conditional_formatting.add(f"{col_score}3:{col_score}{max_row}", ColorScaleRule(
             start_type='min', start_color='F8696B',
             mid_type='percentile', mid_value=50, mid_color='FFEB84',
             end_type='max', end_color='63BE7B'
@@ -428,7 +428,8 @@ def _aplicar_estilo_avanzado(filepath, df, metrics_cols, params_cols, saldo_ini)
                 elif val < saldo_ini:
                     cell.fill = PatternFill("solid", fgColor=COLORS["danger_bg"])
                     cell.font = Font(name=FONT_BODY, color="9C0006")
-            except: pass
+            except Exception:
+                pass
 
     ws.freeze_panes = ws.cell(row=3, column=start_metrics)
     wb.save(filepath)
@@ -477,8 +478,10 @@ def exportar_trades_excel_rapido(
     
     # Escribir CSV
     if int(trial_number) == 0 and os.path.exists(resumen_csv_path):
-        try: os.remove(resumen_csv_path)
-        except: pass
+        try:
+            os.remove(resumen_csv_path)
+        except Exception:
+            pass
         
     mode = "w" if not os.path.exists(resumen_csv_path) else "a"
     df_fila.to_csv(resumen_csv_path, index=False, mode=mode, header=(mode == "w"))
@@ -510,9 +513,12 @@ def _gestionar_archivos_trades(df, base_path, trial, score, max_files):
             try:
                 s = float(re.search(r"SCORE(-?\d+\.?\d*)", f).group(1))
                 scored.append((s, f))
-            except: scored.append((-9999, f))
+            except Exception:
+                scored.append((-9999, f))
         
         scored.sort(key=lambda x: x[0], reverse=True)
         for _, f_del in scored[max_files:]:
-            try: os.remove(os.path.join(trades_dir, f_del))
-            except: pass
+            try:
+                os.remove(os.path.join(trades_dir, f_del))
+            except Exception:
+                pass

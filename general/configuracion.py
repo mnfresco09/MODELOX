@@ -73,23 +73,42 @@ OPTUNA_SEED = None      # SEMILLA ALEATORIA (NONE PARA VARIEDAD)
 OPTUNA_STORAGE = None   # NONE = EJECUCIÓN EN RAM (MÁS RÁPIDO)
 
 # ----------------------------------------------------------------------------
-# 1.4.1 MODO DE OPTIMIZACIÓN
+# 1.4.1 MODO DE EJECUCIÓN (¡IMPORTANTE!)
 # ----------------------------------------------------------------------------
-# SELECCIONA EL MODO DE OPTIMIZACIÓN:
+# SELECCIONA EL MODO DE EJECUCIÓN:
 #
-#   "NORMAL"     : Optimización estándar con Optuna (ejecutar.py)
-#                  - Busca mejores parámetros en datos históricos reales
-#                  - Más rápido, resultados directos
+#   1 = "OPTIMIZACION"  : Optimización estándar con Optuna
+#                         - Database FIJO (datos históricos reales)
+#                         - Busca mejores parámetros
+#                         - Más rápido, resultados directos
 #
-#   "MONTECARLO" : Monte Carlo + Optimización (montecarlooptimize.py)
-#                  - Genera mercados sintéticos (ruido + bootstrap)
-#                  - Cada trial evalúa parámetros en un mercado diferente
-#                  - Valida si el CONCEPTO de la estrategia es robusto
-#                  - Imposible hacer overfitting (cada evaluación es diferente)
+#   2 = "MONTECARLO"    : Monte Carlo + Optimización
+#                         - Database DIFERENTE en cada trial
+#                         - Cada trial usa mercado sintético distinto
+#                         - Valida robustez (imposible overfitting)
+#                         - Los mejores params funcionan EN PROMEDIO
 #
-MODO_OPTIMIZACION = "MONTECARLO"  # <--- ¡MODIFICA AQUÍ! ("NORMAL" o "MONTECARLO")
+#   3 = "BACKTESTING"   : Un solo trial con database FIJO
+#                         - Para validar una estrategia específica
+#                         - Requiere definir PARAMETROS_BACKTESTING
+#                         - Genera reporte detallado
+#
+MODO_EJECUCION = 1  # <--- ¡MODIFICA AQUÍ! (1, 2 o 3)
 
-# CONFIGURACIÓN MONTE CARLO (SOLO SI MODO = "MONTECARLO")
+# Alias para compatibilidad (se calculará automáticamente)
+_MODOS_MAP = {1: "OPTIMIZACION", 2: "MONTECARLO", 3: "BACKTESTING"}
+MODO_OPTIMIZACION = _MODOS_MAP.get(MODO_EJECUCION, "OPTIMIZACION")
+
+# PARÁMETROS PARA BACKTESTING (MODO 3)
+# Define aquí los parámetros exactos para el backtest
+PARAMETROS_BACKTESTING = {
+    # Ejemplo: añadir los parámetros de tu estrategia
+    # "rsi_periodo": 14,
+    # "rsi_sobreventa": 30,
+    # etc.
+}
+
+# CONFIGURACIÓN MONTE CARLO (MODO 2)
 # CONCEPTO: N_TRIALS = número de mercados sintéticos únicos
 # Cada trial de Optuna evalúa parámetros en un mercado diferente
 # Los mejores parámetros son los que funcionan bien EN PROMEDIO
@@ -178,12 +197,15 @@ _ACTIVO_ALIASES = {"SP": "SP500", "NDX": "NASDAQ"}
 
 def _normalize_activos(v):
     """Convierte la entrada de activos en una lista limpia y en mayúsculas."""
-    if isinstance(v, (list, tuple)): raw = [str(x) for x in v]
-    else: raw = str(v).split(",")
+    if isinstance(v, (list, tuple)):
+        raw = [str(x) for x in v]
+    else:
+        raw = str(v).split(",")
     out = []
     for a in raw:
         a = str(a).strip().upper()
-        if a: out.append(_ACTIVO_ALIASES.get(a, a))
+        if a:
+            out.append(_ACTIVO_ALIASES.get(a, a))
     return out or ["GOLD"]
 
 ACTIVOS = _normalize_activos(ACTIVO)
@@ -196,7 +218,8 @@ def _normalize_timeframes(v):
     """
     def _parse_single(x):
         s = str(x).strip().lower()
-        if not s: return None
+        if not s:
+            return None
         # Caso Horas (h)
         if s.endswith("h"):
             try:
@@ -271,8 +294,11 @@ CONFIG = {
     "EXIT_TRAIL_ACT_PCT_RANGE": EXIT_TRAIL_ACT_PCT_RANGE, "EXIT_TRAIL_DIST_PCT_RANGE": EXIT_TRAIL_DIST_PCT_RANGE,
     "MAX_ARCHIVOS_GUARDAR": MAX_ARCHIVOS_GUARDAR, "GENERAR_PLOTS": GENERAR_PLOTS,
     "USAR_EXCEL": USAR_EXCEL, "PURGE_PYCACHE_ON_EXIT": PURGE_PYCACHE_ON_EXIT,
-    # MODO DE OPTIMIZACIÓN - MONTE CARLO
+    # MODO DE EJECUCIÓN (1=Optimización, 2=MonteCarlo, 3=Backtesting)
+    "MODO_EJECUCION": MODO_EJECUCION,
     "MODO_OPTIMIZACION": MODO_OPTIMIZACION,
+    "PARAMETROS_BACKTESTING": PARAMETROS_BACKTESTING,
+    # CONFIGURACIÓN MONTE CARLO
     "MC_NOISE_PCT": MC_NOISE_PCT,
     "MC_NOISE_RANGE": MC_NOISE_RANGE,
     "MC_BLOCK_SIZE": MC_BLOCK_SIZE,

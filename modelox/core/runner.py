@@ -30,7 +30,7 @@ from optuna.samplers import NSGAIISampler, TPESampler
 
 from .engine import BacktestParams, calculate_performance_vectorized_numba
 from .metrics import resumen_metricas
-from .scoring import score_optuna, score_quality_only, nsga2_objectives
+from .scoring import score_optuna, nsga2_objectives
 from .types import BacktestConfig, Reporter, Strategy, TrialArtifacts, normalize_timeframe_to_suffix
 from .data_blender import prepare_multitimeframe_data
 from .exits import resolve_exit_settings_for_trial
@@ -276,7 +276,7 @@ class OptimizationRunner:
         """Crea función objetivo para NSGA-II (Multi-Objetivo)."""
         
         def objective(trial: optuna.trial.Trial) -> tuple[float, float]:
-            t0_total = time.perf_counter()
+            time.perf_counter()
             
             params_puros = strategy.suggest_params(trial)
             params_rt = dict(params_puros)

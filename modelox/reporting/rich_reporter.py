@@ -9,7 +9,13 @@ from dataclasses import dataclass, field
 
 from modelox.core.types import TrialArtifacts
 from modelox.reporting.base import BaseReporter
-from visual.rich import mostrar_panel_elegante, mostrar_top_trials
+from visual.rich import (
+    mostrar_panel_elegante,
+    mostrar_top_trials,
+    actualizar_estadisticas,
+    mostrar_evolucion_metricas,
+    resetear_estadisticas,
+)
 
 
 @dataclass
@@ -27,11 +33,14 @@ class ElegantRichReporter(BaseReporter):
     - Conditional coloring based on metric quality
     - Clean parameter display (no __ prefixes)
     - Best-so-far tracking
+    - Evolución de métricas promedio cada N trials
     """
     
     saldo_inicial: float = 300.0
     activo: str = ""
+    mostrar_evolucion_cada: int = 50  # Mostrar box de evolución cada N trials
     _best_score: float = field(default=float("-inf"), init=False, repr=False)
+    _initialized: bool = field(default=False, init=False, repr=False)
     
     def needs_dataframe(self, score: float) -> bool:
         """RichReporter no necesita df_signals."""
@@ -39,6 +48,11 @@ class ElegantRichReporter(BaseReporter):
     
     def on_trial_end(self, artifacts: TrialArtifacts) -> None:
         """Display elegant panel for completed trial."""
+        
+        # Inicializar estadísticas en el primer trial
+        if not self._initialized:
+            resetear_estadisticas()
+            self._initialized = True
         
         # Track best score
         current_score = artifacts.score or 0
@@ -67,6 +81,9 @@ class ElegantRichReporter(BaseReporter):
             # Never break reporting due to optional metrics enrichment.
             pass
 
+        # Actualizar estadísticas de evolución
+        actualizar_estadisticas(metrics, current_score, artifacts.trial_number)
+
         # Extract timeframes from params
         tf_entry = ""
         tf_exit = ""
@@ -93,9 +110,15 @@ class ElegantRichReporter(BaseReporter):
             timeframe_entry=tf_entry,
             timeframe_exit=tf_exit,
         )
+        
+        # Mostrar box de evolución cada N trials
+        mostrar_evolucion_metricas(mostrar_cada_n=self.mostrar_evolucion_cada)
     
     def on_strategy_end(self, strategy_name: str, study) -> None:
         """Display top trials summary at strategy end."""
+        # Resetear para la siguiente estrategia
+        self._initialized = False
+        
         if study and hasattr(study, 'trials') and study.trials:
             mostrar_top_trials(study, n=5)
 

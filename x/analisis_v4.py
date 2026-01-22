@@ -19,8 +19,7 @@ import os
 import sys
 import re
 import warnings
-from pathlib import Path
-from typing import Dict, List, Optional, Tuple, Any, Set
+from typing import Dict, List, Optional, Tuple, Any
 from dataclasses import dataclass, field
 
 import numpy as np
@@ -29,7 +28,6 @@ import matplotlib.pyplot as plt
 import matplotlib.gridspec as gridspec
 import seaborn as sns
 from matplotlib.backends.backend_pdf import PdfPages
-from matplotlib.patches import FancyBboxPatch
 import scipy.stats as stats
 from scipy.ndimage import gaussian_filter1d
 from scipy.signal import savgol_filter
@@ -243,7 +241,7 @@ class IntelligentClassifier:
                     return True
             
             return False
-        except:
+        except Exception:
             return False
 
 
@@ -672,7 +670,7 @@ class QuantVisualizer:
                 ax.set_ylim(dmin - span*padding, dmax + span*padding)
             elif axis == 'x':
                 ax.set_xlim(dmin - span*padding, dmax + span*padding)
-        except:
+        except Exception:
             pass
     
     # --------------------------------------------------------------------------
@@ -1059,7 +1057,7 @@ def main():
     out_pdf = f"ANALYSIS_{os.path.splitext(os.path.basename(file_path))[0]}.pdf"
     viz = QuantVisualizer(loader)
     
-    print(f"\n⚙️  Generating report...")
+    print("\n⚙️  Generating report...")
     
     try:
         with PdfPages(out_pdf) as pdf:
@@ -1094,7 +1092,7 @@ def main():
                 import subprocess
                 subprocess.run(['xdg-open', out_pdf], check=False,
                               stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
-        except:
+        except Exception:
             pass
         
     except Exception as e:

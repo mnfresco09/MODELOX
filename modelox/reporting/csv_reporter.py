@@ -103,18 +103,49 @@ class CSVReporter(Reporter):
                 out[f"param_{k}"] = v
         return out
 
+    def _get_strategy_metadata(self, artifacts: TrialArtifacts) -> Dict[str, Any]:
+        """
+        Extrae metadatos de la estrategia para identificación automática.
+        Estos metadatos permiten a analisis.py detectar qué columnas son parámetros.
+        """
+        metadata = {
+            "__META_ESTRATEGIA_ID__": getattr(artifacts, "strategy_name", "UNKNOWN"),
+            "__META_VERSION__": "2.0",  # Versión del formato CSV
+            "__META_PARAM_COLS__": "",  # Se llenará con nombres de columnas de parámetros
+        }
+        
+        # Identificar columnas de parámetros (excluyendo __ prefijos)
+        param_cols = [
+            k for k in (artifacts.params or {}).keys()
+            if not str(k).startswith("__")
+            and k not in {"exit_type", "exit_sl_pct", "exit_tp_pct", 
+                         "exit_trail_act_pct", "exit_trail_dist_pct"}
+        ]
+        metadata["__META_PARAM_COLS__"] = ",".join(sorted(param_cols))
+        
+        return metadata
+
     def on_trial_end(self, artifacts: TrialArtifacts) -> None:
         """
-        Guardar trial con append real:
+        Guardar trial con append real y metadatos de identificación:
         - NO leer CSV previo
-        - escribir header solo si el archivo no existe
+        - Escribir header solo si el archivo no existe
+        - Incluir metadatos para identificación automática de estrategia
         """
         resumen_path = self._resumen_path_for(artifacts.strategy_name)
         write_header = not os.path.exists(resumen_path)
 
         # Normalizar columnas (mayúsculas como en Excel) + columna explícita de estrategia
         metrics = {str(k).upper(): v for k, v in (artifacts.metrics or {}).items()}
+        
+        # Obtener metadatos de identificación
+        metadata = self._get_strategy_metadata(artifacts)
+        
         row: Dict[str, Any] = {
+            # Metadatos de identificación (primero para fácil acceso)
+            "__META_ESTRATEGIA_ID__": metadata["__META_ESTRATEGIA_ID__"],
+            "__META_PARAM_COLS__": metadata["__META_PARAM_COLS__"],
+            # Datos principales
             "ESTRATEGIA": self._safe_strategy_name(artifacts.strategy_name),
             "TRIAL": artifacts.trial_number,
             "SCORE": artifacts.score,
