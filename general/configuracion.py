@@ -44,7 +44,7 @@ TIMEFRAMES = [1]  # COMPATIBILIDAD (NO MODIFICAR)
 #   [3] : 2023-02-24 -> 2024-09-18 (RECUPERACIÓN + INSTITUCIONAL/ETF)
 # ["ALL"]: 2020-01-01 -> 2024-09-18 (CICLO COMPLETO)
 #
-SELECCION_RANGO = 3  # <--- ¡MODIFICA AQUÍ! (1, 2, 3 o "ALL")
+SELECCION_RANGO = 1  # <--- ¡MODIFICA AQUÍ! (1, 2, 3 o "ALL")
 
 _RANGOS_FECHAS = {
     1:     ("2020-01-01", "2021-07-28"),
@@ -67,7 +67,7 @@ FECHA_FIN_PLOT = "2021-03-15"
 # ----------------------------------------------------------------------------
 # 1.4 MOTOR DE OPTIMIZACIÓN (OPTUNA - MÁXIMA POTENCIA VM)
 # ----------------------------------------------------------------------------
-N_TRIALS = 5000     # NÚMERO DE PRUEBAS (AUMENTAR SI TIENES BUENA CPU)
+N_TRIALS = 5     # NÚMERO DE PRUEBAS (AUMENTAR SI TIENES BUENA CPU)
 OPTUNA_N_JOBS = -1      # -1 = USAR TODOS LOS NÚCLEOS DISPONIBLES
 OPTUNA_SEED = None      # SEMILLA ALEATORIA (NONE PARA VARIEDAD)
 OPTUNA_STORAGE = None   # NONE = EJECUCIÓN EN RAM (MÁS RÁPIDO)
@@ -108,7 +108,7 @@ MC_USE_NSGA2 = True       # True = NSGA-II Multi-Objetivo (Quality↑ + DD↓), 
 # 1.5 ESTRATEGIAS A EJECUTAR
 # ----------------------------------------------------------------------------
 # LISTA DE IDs DE LAS ESTRATEGIAS QUE SE VAN A PROBAR.
-COMBINACION_A_EJECUTAR = [17]
+COMBINACION_A_EJECUTAR = [15]
 
 # ----------------------------------------------------------------------------
 # 1.6 GESTIÓN DE CAPITAL Y COSTES
