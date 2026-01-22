@@ -1,8 +1,8 @@
 #!/usr/bin/env python3
 """
 ╔═══════════════════════════════════════════════════════════════════════════════════════╗
-║                    MODELOX INSTITUTIONAL ANALYZER v19.0                               ║
-║                        Ultra-Minimalist Dark Edition                                   ║
+║                    MODELOX INSTITUTIONAL ANALYZER v20.0                               ║
+║                  Advanced Robustness & Statistical Analysis Edition                    ║
 ╠═══════════════════════════════════════════════════════════════════════════════════════╣
 ║  🎯 ADVANCED OPTIMAL DETECTION (7 técnicas combinadas):                               ║
 ║     • Regional Growth Algorithm (Plateau Detection)                                   ║
@@ -19,6 +19,11 @@
 ║  🔗 Parameter Correlation Analysis (Pearson, Spearman, Joint Importance)              ║
 ║  📊 3D Surface Optimization (SL/TP + Correlated Pairs vs ROI/SQN)                     ║
 ║  🧪 Statistical Validation (White's Reality Check + Deflated Sharpe)                  ║
+║  🔬 ADVANCED ROBUSTNESS ANALYSIS (NEW v20.0):                                         ║
+║     • DBSCAN Cluster Detection (Configuration Grouping)                               ║
+║     • Neighborhood Stability Index (NSI) - Similar Params → Similar Results?          ║
+║     • Parameter Degradation Testing (Future-Proof Simulation)                         ║
+║     • Surface CV Analysis (3D Roughness/Smoothness Quantification)                    ║
 ╚═══════════════════════════════════════════════════════════════════════════════════════╝
 """
 
@@ -46,9 +51,10 @@ from scipy.interpolate import UnivariateSpline, griddata
 from scipy.signal import find_peaks, savgol_filter
 from scipy.optimize import minimize_scalar
 from sklearn.ensemble import GradientBoostingRegressor, RandomForestRegressor
-from sklearn.preprocessing import RobustScaler
-from sklearn.neighbors import KernelDensity
-from sklearn.cluster import KMeans
+from sklearn.preprocessing import RobustScaler, StandardScaler
+from sklearn.neighbors import KernelDensity, NearestNeighbors
+from sklearn.cluster import KMeans, DBSCAN
+from sklearn.metrics import silhouette_score
 
 try:
     import xgboost as xgb
@@ -692,6 +698,585 @@ class StatisticalValidator:
         tail = r[r <= var]
         cvar = float(np.mean(tail)) if tail.size > 0 else var
         return var, cvar
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# 🔬 ADVANCED ROBUSTNESS ANALYSIS MODULE
+# ══════════════════════════════════════════════════════════════════════════════
+
+@dataclass
+class ClusterAnalysisResult:
+    """Resultado del análisis de clústeres DBSCAN."""
+    n_clusters: int = 0
+    n_noise_points: int = 0
+    silhouette_score: float = 0.0
+    cluster_labels: np.ndarray = field(default_factory=lambda: np.array([]))
+    cluster_centers: Dict[int, Dict[str, float]] = field(default_factory=dict)
+    cluster_performance: Dict[int, Dict[str, float]] = field(default_factory=dict)
+    best_cluster_id: int = -1
+    cluster_stability: float = 0.0  # ¿Los clusters son estables?
+    intra_cluster_variance: float = 0.0  # Varianza dentro de clusters (menor es mejor)
+    inter_cluster_variance: float = 0.0  # Varianza entre clusters
+
+
+@dataclass
+class NeighborhoodStabilityResult:
+    """Resultado del Índice de Estabilidad de Vecindad."""
+    nsi_global: float = 0.0  # NSI global (0-1, mayor es más estable)
+    nsi_by_param: Dict[str, float] = field(default_factory=dict)
+    local_stability_map: np.ndarray = field(default_factory=lambda: np.array([]))
+    stability_percentiles: Dict[str, float] = field(default_factory=dict)
+    stable_regions: List[Tuple[float, float]] = field(default_factory=list)  # Regiones estables
+    unstable_regions: List[Tuple[float, float]] = field(default_factory=list)  # Regiones inestables
+
+
+@dataclass
+class DegradationTestResult:
+    """Resultado del test de degradación paramétrica."""
+    original_performance: float = 0.0
+    degraded_performance_mean: float = 0.0
+    degraded_performance_std: float = 0.0
+    degradation_ratio: float = 0.0  # Cuánto se degrada (0-1, menor es más robusto)
+    worst_case_performance: float = 0.0
+    best_case_performance: float = 0.0
+    performance_at_noise_levels: Dict[float, float] = field(default_factory=dict)  # {noise%: perf}
+    robustness_score: float = 0.0  # Score de robustez (0-1)
+    parameter_sensitivity: Dict[str, float] = field(default_factory=dict)  # Sensibilidad por param
+
+
+@dataclass
+class SurfaceCVResult:
+    """Resultado del análisis de Coeficiente de Variación de Superficie."""
+    cv_global: float = 0.0  # CV de toda la superficie (menor = más lisa)
+    roughness_index: float = 0.0  # Índice de rugosidad (0-1)
+    smoothness_score: float = 0.0  # Score de suavidad (0-1, mayor es mejor)
+    local_cv_map: np.ndarray = field(default_factory=lambda: np.array([]))
+    gradient_magnitude_mean: float = 0.0
+    gradient_magnitude_std: float = 0.0
+    curvature_mean: float = 0.0
+    curvature_std: float = 0.0
+    flatness_regions: float = 0.0  # % de superficie que es relativamente plana
+
+
+@dataclass
+class RobustnessAnalysisResult:
+    """Resultado completo del análisis de robustez avanzado."""
+    cluster_analysis: ClusterAnalysisResult = field(default_factory=ClusterAnalysisResult)
+    neighborhood_stability: NeighborhoodStabilityResult = field(default_factory=NeighborhoodStabilityResult)
+    degradation_test: DegradationTestResult = field(default_factory=DegradationTestResult)
+    surface_cv: SurfaceCVResult = field(default_factory=SurfaceCVResult)
+    
+    # Score compuesto de robustez
+    overall_robustness_score: float = 0.0
+    robustness_grade: str = 'N/A'
+    is_robust: bool = False
+    confidence_in_robustness: float = 0.0
+
+
+class AdvancedRobustnessAnalyzer:
+    """
+    Analizador de robustez avanzado para optimización de parámetros.
+    
+    Implementa:
+    1. Detección de Clústeres (DBSCAN) - Identifica grupos de configuraciones similares
+    2. Neighborhood Stability Index (NSI) - Mide estabilidad local
+    3. Parameter Degradation Testing - Simula imperfecciones futuras
+    4. Surface CV - Mide rugosidad de la superficie de optimización
+    """
+    
+    def __init__(self, df: pd.DataFrame, params: List[str], target_col: str):
+        self.df = df
+        self.params = params
+        self.target_col = target_col
+        
+    def analyze_all(self) -> RobustnessAnalysisResult:
+        """Ejecuta todos los análisis de robustez."""
+        result = RobustnessAnalysisResult()
+        
+        if len(self.df) < 30 or len(self.params) < 1:
+            return result
+        
+        try:
+            # 1. Análisis de Clústeres
+            result.cluster_analysis = self._cluster_analysis()
+            
+            # 2. Neighborhood Stability Index
+            result.neighborhood_stability = self._neighborhood_stability_analysis()
+            
+            # 3. Degradation Testing
+            result.degradation_test = self._degradation_testing()
+            
+            # 4. Surface CV (si hay 2+ params)
+            if len(self.params) >= 2:
+                result.surface_cv = self._surface_cv_analysis()
+            
+            # Calcular score compuesto
+            result = self._calculate_overall_robustness(result)
+            
+        except Exception as e:
+            print(f"    [!] Robustness analysis error: {e}")
+        
+        return result
+    
+    def _cluster_analysis(self) -> ClusterAnalysisResult:
+        """
+        Análisis de clústeres DBSCAN para detectar grupos de configuraciones
+        con rendimiento similar. Los clústeres estables indican robustez.
+        """
+        result = ClusterAnalysisResult()
+        
+        # Preparar datos
+        X = self.df[self.params].copy()
+        for col in X.columns:
+            X[col] = pd.to_numeric(X[col], errors='coerce')
+        
+        y = pd.to_numeric(self.df[self.target_col], errors='coerce')
+        
+        # Eliminar NaN
+        valid_mask = ~(X.isna().any(axis=1) | y.isna())
+        X_clean = X[valid_mask].values
+        y_clean = y[valid_mask].values
+        
+        if len(X_clean) < 30:
+            return result
+        
+        # Normalizar features
+        scaler = StandardScaler()
+        X_scaled = scaler.fit_transform(X_clean)
+        
+        # Determinar epsilon óptimo usando k-distance graph
+        k = min(10, len(X_clean) // 5)
+        nn = NearestNeighbors(n_neighbors=k)
+        nn.fit(X_scaled)
+        distances, _ = nn.kneighbors(X_scaled)
+        k_distances = np.sort(distances[:, -1])
+        
+        # Encontrar el "codo" (knee point)
+        eps_optimal = np.percentile(k_distances, 90)
+        eps_optimal = max(eps_optimal, 0.1)
+        
+        # DBSCAN clustering
+        dbscan = DBSCAN(eps=eps_optimal, min_samples=max(3, len(X_clean) // 20))
+        cluster_labels = dbscan.fit_predict(X_scaled)
+        
+        result.cluster_labels = cluster_labels
+        result.n_clusters = len(set(cluster_labels)) - (1 if -1 in cluster_labels else 0)
+        result.n_noise_points = (cluster_labels == -1).sum()
+        
+        if result.n_clusters < 2:
+            # Si solo hay 1 cluster o ninguno, intentar con KMeans
+            n_clusters_kmeans = min(5, max(2, len(X_clean) // 30))
+            kmeans = KMeans(n_clusters=n_clusters_kmeans, random_state=42, n_init=10)
+            cluster_labels = kmeans.fit_predict(X_scaled)
+            result.cluster_labels = cluster_labels
+            result.n_clusters = n_clusters_kmeans
+            result.n_noise_points = 0
+        
+        # Calcular silhouette score
+        if result.n_clusters >= 2 and result.n_clusters < len(X_clean) - 1:
+            try:
+                result.silhouette_score = float(silhouette_score(X_scaled, cluster_labels))
+            except:
+                result.silhouette_score = 0.0
+        
+        # Calcular centro y rendimiento de cada cluster
+        for cluster_id in range(result.n_clusters):
+            mask = cluster_labels == cluster_id
+            if mask.sum() > 0:
+                # Centro del cluster (en escala original)
+                center = X_clean[mask].mean(axis=0)
+                result.cluster_centers[cluster_id] = {
+                    self.params[i]: center[i] for i in range(len(self.params))
+                }
+                
+                # Rendimiento del cluster
+                cluster_perf = y_clean[mask]
+                result.cluster_performance[cluster_id] = {
+                    'mean': float(np.mean(cluster_perf)),
+                    'std': float(np.std(cluster_perf)),
+                    'median': float(np.median(cluster_perf)),
+                    'min': float(np.min(cluster_perf)),
+                    'max': float(np.max(cluster_perf)),
+                    'count': int(mask.sum()),
+                    'cv': float(np.std(cluster_perf) / (np.abs(np.mean(cluster_perf)) + 1e-10))
+                }
+        
+        # Mejor cluster (mayor rendimiento medio)
+        if result.cluster_performance:
+            result.best_cluster_id = max(
+                result.cluster_performance.keys(),
+                key=lambda k: result.cluster_performance[k]['mean']
+            )
+        
+        # Estabilidad del cluster (1 - CV promedio dentro de clusters)
+        cv_values = [v['cv'] for v in result.cluster_performance.values() if v['cv'] < 10]
+        if cv_values:
+            avg_cv = np.mean(cv_values)
+            result.cluster_stability = max(0, 1 - avg_cv)
+            result.intra_cluster_variance = avg_cv
+        
+        # Varianza entre clusters
+        cluster_means = [v['mean'] for v in result.cluster_performance.values()]
+        if len(cluster_means) > 1:
+            result.inter_cluster_variance = np.std(cluster_means)
+        
+        return result
+    
+    def _neighborhood_stability_analysis(self) -> NeighborhoodStabilityResult:
+        """
+        Índice de Estabilidad de Vecindad (NSI).
+        
+        Mide si configuraciones con parámetros similares tienen
+        rendimiento similar. Un NSI alto indica robustez.
+        """
+        result = NeighborhoodStabilityResult()
+        
+        # Preparar datos
+        X = self.df[self.params].copy()
+        for col in X.columns:
+            X[col] = pd.to_numeric(X[col], errors='coerce')
+        
+        y = pd.to_numeric(self.df[self.target_col], errors='coerce')
+        
+        valid_mask = ~(X.isna().any(axis=1) | y.isna())
+        X_clean = X[valid_mask].values
+        y_clean = y[valid_mask].values
+        
+        if len(X_clean) < 20:
+            return result
+        
+        # Normalizar
+        scaler = StandardScaler()
+        X_scaled = scaler.fit_transform(X_clean)
+        
+        # Encontrar vecinos más cercanos
+        k = min(10, max(3, len(X_clean) // 10))
+        nn = NearestNeighbors(n_neighbors=k + 1)  # +1 porque incluye el punto mismo
+        nn.fit(X_scaled)
+        distances, indices = nn.kneighbors(X_scaled)
+        
+        # Calcular NSI para cada punto
+        # NSI = 1 - (varianza de rendimiento en vecindad / varianza global)
+        global_var = np.var(y_clean)
+        
+        local_stability = np.zeros(len(X_clean))
+        
+        for i in range(len(X_clean)):
+            neighbor_indices = indices[i, 1:]  # Excluir el punto mismo
+            neighbor_performance = y_clean[neighbor_indices]
+            local_var = np.var(neighbor_performance)
+            
+            # NSI local: 1 - (var_local / var_global)
+            # Clipped a [0, 1]
+            local_nsi = max(0, min(1, 1 - local_var / (global_var + 1e-10)))
+            local_stability[i] = local_nsi
+        
+        result.local_stability_map = local_stability
+        result.nsi_global = float(np.mean(local_stability))
+        
+        # Percentiles de estabilidad
+        result.stability_percentiles = {
+            'p10': float(np.percentile(local_stability, 10)),
+            'p25': float(np.percentile(local_stability, 25)),
+            'p50': float(np.percentile(local_stability, 50)),
+            'p75': float(np.percentile(local_stability, 75)),
+            'p90': float(np.percentile(local_stability, 90)),
+        }
+        
+        # NSI por parámetro individual
+        for i, param in enumerate(self.params):
+            # Ordenar por este parámetro
+            sort_idx = np.argsort(X_clean[:, i])
+            y_sorted = y_clean[sort_idx]
+            
+            # Calcular varianza local usando ventana deslizante
+            window_size = max(5, len(y_sorted) // 20)
+            local_vars = []
+            
+            for j in range(len(y_sorted) - window_size):
+                window = y_sorted[j:j + window_size]
+                local_vars.append(np.var(window))
+            
+            if local_vars:
+                avg_local_var = np.mean(local_vars)
+                param_nsi = max(0, min(1, 1 - avg_local_var / (global_var + 1e-10)))
+                result.nsi_by_param[param] = float(param_nsi)
+        
+        # Identificar regiones estables e inestables
+        stability_threshold_high = 0.7
+        stability_threshold_low = 0.3
+        
+        # Agrupar puntos en bins y determinar estabilidad promedio
+        if len(self.params) == 1:
+            param_values = X_clean[:, 0]
+            n_bins = min(20, len(np.unique(param_values)))
+            bins = np.linspace(param_values.min(), param_values.max(), n_bins + 1)
+            
+            for j in range(n_bins):
+                bin_mask = (param_values >= bins[j]) & (param_values < bins[j + 1])
+                if j == n_bins - 1:
+                    bin_mask = (param_values >= bins[j]) & (param_values <= bins[j + 1])
+                
+                if bin_mask.sum() > 0:
+                    bin_nsi = np.mean(local_stability[bin_mask])
+                    region = (float(bins[j]), float(bins[j + 1]))
+                    
+                    if bin_nsi >= stability_threshold_high:
+                        result.stable_regions.append(region)
+                    elif bin_nsi <= stability_threshold_low:
+                        result.unstable_regions.append(region)
+        
+        return result
+    
+    def _degradation_testing(self) -> DegradationTestResult:
+        """
+        Test de Degradación Paramétrica.
+        
+        Simula qué pasaría si los parámetros óptimos no fueran exactos
+        en el futuro (como ocurre cuando el mercado cambia).
+        """
+        result = DegradationTestResult()
+        
+        # Preparar datos
+        X = self.df[self.params].copy()
+        for col in X.columns:
+            X[col] = pd.to_numeric(X[col], errors='coerce')
+        
+        y = pd.to_numeric(self.df[self.target_col], errors='coerce')
+        
+        valid_mask = ~(X.isna().any(axis=1) | y.isna())
+        X_clean = X[valid_mask].values
+        y_clean = y[valid_mask].values
+        
+        if len(X_clean) < 30:
+            return result
+        
+        # Entrenar modelo surrogate para predecir rendimiento
+        try:
+            model = GradientBoostingRegressor(
+                n_estimators=50, max_depth=4, learning_rate=0.1,
+                subsample=0.8, random_state=42
+            )
+            model.fit(X_clean, y_clean)
+        except:
+            return result
+        
+        # Encontrar la configuración "óptima" actual
+        best_idx = np.argmax(y_clean)
+        best_params = X_clean[best_idx]
+        result.original_performance = float(y_clean[best_idx])
+        
+        # Niveles de ruido a probar (% del rango de cada parámetro)
+        noise_levels = [0.01, 0.02, 0.05, 0.10, 0.15, 0.20]
+        n_simulations = 100
+        
+        # Calcular rangos de cada parámetro
+        param_ranges = X_clean.max(axis=0) - X_clean.min(axis=0)
+        param_ranges = np.where(param_ranges == 0, 1, param_ranges)  # Evitar división por cero
+        
+        all_degraded_performances = []
+        
+        for noise_level in noise_levels:
+            degraded_perfs = []
+            
+            for _ in range(n_simulations):
+                # Agregar ruido a los parámetros óptimos
+                noise = np.random.normal(0, noise_level, len(best_params))
+                noise *= param_ranges
+                
+                perturbed_params = best_params + noise
+                
+                # Clipear a los rangos observados
+                perturbed_params = np.clip(
+                    perturbed_params,
+                    X_clean.min(axis=0),
+                    X_clean.max(axis=0)
+                )
+                
+                # Predecir rendimiento
+                pred_perf = model.predict(perturbed_params.reshape(1, -1))[0]
+                degraded_perfs.append(pred_perf)
+            
+            avg_perf = np.mean(degraded_perfs)
+            result.performance_at_noise_levels[noise_level] = float(avg_perf)
+            all_degraded_performances.extend(degraded_perfs)
+        
+        all_degraded = np.array(all_degraded_performances)
+        
+        result.degraded_performance_mean = float(np.mean(all_degraded))
+        result.degraded_performance_std = float(np.std(all_degraded))
+        result.worst_case_performance = float(np.min(all_degraded))
+        result.best_case_performance = float(np.max(all_degraded))
+        
+        # Ratio de degradación
+        if result.original_performance != 0:
+            result.degradation_ratio = float(
+                1 - result.degraded_performance_mean / result.original_performance
+            )
+        
+        # Score de robustez (1 - degradation_ratio), clipped a [0, 1]
+        result.robustness_score = float(max(0, min(1, 1 - abs(result.degradation_ratio))))
+        
+        # Sensibilidad por parámetro
+        for i, param in enumerate(self.params):
+            # Perturbar solo este parámetro
+            sensitivities = []
+            
+            for _ in range(50):
+                perturbed = best_params.copy()
+                noise = np.random.normal(0, 0.1) * param_ranges[i]
+                perturbed[i] += noise
+                perturbed[i] = np.clip(perturbed[i], X_clean[:, i].min(), X_clean[:, i].max())
+                
+                pred = model.predict(perturbed.reshape(1, -1))[0]
+                change = abs(pred - result.original_performance) / (abs(result.original_performance) + 1e-10)
+                sensitivities.append(change)
+            
+            result.parameter_sensitivity[param] = float(np.mean(sensitivities))
+        
+        return result
+    
+    def _surface_cv_analysis(self) -> SurfaceCVResult:
+        """
+        Análisis de Coeficiente de Variación de Superficie.
+        
+        Cuantifica qué tan "rugoso" o "liso" es el mapa de calor 3D
+        de optimización. Una superficie lisa indica robustez.
+        """
+        result = SurfaceCVResult()
+        
+        if len(self.params) < 2:
+            return result
+        
+        # Usar los primeros 2 parámetros para el análisis de superficie
+        param1, param2 = self.params[:2]
+        
+        x = pd.to_numeric(self.df[param1], errors='coerce').values
+        y_param = pd.to_numeric(self.df[param2], errors='coerce').values
+        z = pd.to_numeric(self.df[self.target_col], errors='coerce').values
+        
+        mask = ~(np.isnan(x) | np.isnan(y_param) | np.isnan(z))
+        x, y_param, z = x[mask], y_param[mask], z[mask]
+        
+        if len(z) < 30:
+            return result
+        
+        # Crear grid interpolado
+        grid_size = 30
+        xi = np.linspace(x.min(), x.max(), grid_size)
+        yi = np.linspace(y_param.min(), y_param.max(), grid_size)
+        xi_mesh, yi_mesh = np.meshgrid(xi, yi)
+        
+        try:
+            zi = griddata((x, y_param), z, (xi_mesh, yi_mesh), method='cubic')
+            zi = np.nan_to_num(zi, nan=np.nanmean(z))
+        except:
+            try:
+                zi = griddata((x, y_param), z, (xi_mesh, yi_mesh), method='linear')
+                zi = np.nan_to_num(zi, nan=np.nanmean(z))
+            except:
+                return result
+        
+        # CV global de la superficie
+        result.cv_global = float(np.std(zi) / (np.abs(np.mean(zi)) + 1e-10))
+        
+        # Calcular gradientes
+        dx = xi[1] - xi[0]
+        dy = yi[1] - yi[0]
+        
+        grad_x, grad_y = np.gradient(zi, dx, dy)
+        gradient_magnitude = np.sqrt(grad_x**2 + grad_y**2)
+        
+        result.gradient_magnitude_mean = float(np.mean(gradient_magnitude))
+        result.gradient_magnitude_std = float(np.std(gradient_magnitude))
+        
+        # Calcular curvatura (Laplaciano)
+        laplacian = np.gradient(grad_x, dx, axis=0) + np.gradient(grad_y, dy, axis=1)
+        
+        result.curvature_mean = float(np.mean(np.abs(laplacian)))
+        result.curvature_std = float(np.std(np.abs(laplacian)))
+        
+        # Índice de rugosidad
+        # Basado en la variabilidad del gradiente normalizada
+        z_range = np.max(zi) - np.min(zi)
+        if z_range > 0:
+            normalized_gradient = gradient_magnitude / z_range
+            result.roughness_index = float(np.mean(normalized_gradient))
+        
+        # Score de suavidad (1 - roughness normalizada)
+        # Normalizamos considerando que roughness típico está entre 0 y 0.5
+        result.smoothness_score = float(max(0, min(1, 1 - result.roughness_index * 2)))
+        
+        # Porcentaje de regiones "planas" (bajo gradiente)
+        flat_threshold = np.percentile(gradient_magnitude, 25)
+        result.flatness_regions = float(np.mean(gradient_magnitude < flat_threshold))
+        
+        # CV local (mapa)
+        local_cv = np.zeros_like(zi)
+        window_size = 3
+        
+        for i in range(window_size, grid_size - window_size):
+            for j in range(window_size, grid_size - window_size):
+                window = zi[i-window_size:i+window_size+1, j-window_size:j+window_size+1]
+                local_cv[i, j] = np.std(window) / (np.abs(np.mean(window)) + 1e-10)
+        
+        result.local_cv_map = local_cv
+        
+        return result
+    
+    def _calculate_overall_robustness(self, result: RobustnessAnalysisResult) -> RobustnessAnalysisResult:
+        """Calcula el score compuesto de robustez."""
+        scores = []
+        weights = []
+        
+        # 1. Cluster Stability (30%)
+        if result.cluster_analysis.cluster_stability > 0:
+            scores.append(result.cluster_analysis.cluster_stability)
+            weights.append(0.30)
+        
+        # 2. NSI (30%)
+        if result.neighborhood_stability.nsi_global > 0:
+            scores.append(result.neighborhood_stability.nsi_global)
+            weights.append(0.30)
+        
+        # 3. Degradation Robustness (25%)
+        if result.degradation_test.robustness_score > 0:
+            scores.append(result.degradation_test.robustness_score)
+            weights.append(0.25)
+        
+        # 4. Surface Smoothness (15%)
+        if result.surface_cv.smoothness_score > 0:
+            scores.append(result.surface_cv.smoothness_score)
+            weights.append(0.15)
+        
+        if scores:
+            # Normalizar pesos
+            total_weight = sum(weights)
+            weights = [w / total_weight for w in weights]
+            
+            result.overall_robustness_score = float(np.average(scores, weights=weights))
+        
+        # Determinar grade
+        score = result.overall_robustness_score
+        if score >= 0.80:
+            result.robustness_grade = 'A+'
+        elif score >= 0.70:
+            result.robustness_grade = 'A'
+        elif score >= 0.60:
+            result.robustness_grade = 'B+'
+        elif score >= 0.50:
+            result.robustness_grade = 'B'
+        elif score >= 0.40:
+            result.robustness_grade = 'C'
+        elif score >= 0.30:
+            result.robustness_grade = 'D'
+        else:
+            result.robustness_grade = 'F'
+        
+        result.is_robust = score >= 0.50
+        result.confidence_in_robustness = min(1.0, score * 1.2)  # Bonus for high scores
+        
+        return result
 
 
 # ══════════════════════════════════════════════════════════════════════════════
@@ -3705,6 +4290,472 @@ class BloombergVisualizer:
         ax.view_init(elev=22, azim=45)
         ax.set_title(label, fontsize=7, color=Theme.TEXT_SECONDARY, pad=2)
 
+    # ══════════════════════════════════════════════════════════════════════════
+    # 🔬 ADVANCED ROBUSTNESS VISUALIZATION METHODS
+    # ══════════════════════════════════════════════════════════════════════════
+
+    def create_robustness_analysis_page(self, fig: plt.Figure, 
+                                         robustness: RobustnessAnalysisResult):
+        """Página completa de análisis de robustez avanzado."""
+        fig.patch.set_facecolor(Theme.BG_PRIMARY)
+        
+        # Header profesional
+        fig.text(0.5, 0.97, 'ADVANCED ROBUSTNESS ANALYSIS', fontsize=14, ha='center',
+                fontweight='bold', color=Theme.TEXT_PRIMARY)
+        fig.text(0.5, 0.94, "Multi-Dimensional Parameter Stability Assessment", 
+                fontsize=9, ha='center', color=Theme.TEXT_MUTED, style='italic')
+        
+        # Línea separadora
+        line = plt.Line2D([0.05, 0.95], [0.92, 0.92], color=Theme.DIVIDER, linewidth=0.5)
+        fig.add_artist(line)
+        
+        gs = gridspec.GridSpec(3, 3, figure=fig, left=0.06, right=0.94,
+                              top=0.89, bottom=0.06, wspace=0.22, hspace=0.32,
+                              height_ratios=[1.1, 1.1, 0.8])
+        
+        # 1. Cluster Analysis Panel
+        ax1 = fig.add_subplot(gs[0, 0])
+        self._plot_cluster_analysis_panel(ax1, robustness.cluster_analysis)
+        
+        # 2. Neighborhood Stability Panel
+        ax2 = fig.add_subplot(gs[0, 1])
+        self._plot_nsi_panel(ax2, robustness.neighborhood_stability)
+        
+        # 3. Degradation Test Panel
+        ax3 = fig.add_subplot(gs[0, 2])
+        self._plot_degradation_panel(ax3, robustness.degradation_test)
+        
+        # 4. Surface CV Panel (con mini heatmap)
+        ax4 = fig.add_subplot(gs[1, 0])
+        self._plot_surface_cv_panel(ax4, robustness.surface_cv)
+        
+        # 5. Cluster Performance Comparison
+        ax5 = fig.add_subplot(gs[1, 1])
+        self._plot_cluster_performance(ax5, robustness.cluster_analysis)
+        
+        # 6. Parameter Sensitivity Chart
+        ax6 = fig.add_subplot(gs[1, 2])
+        self._plot_parameter_sensitivity(ax6, robustness.degradation_test)
+        
+        # 7. Overall Robustness Dashboard (full width)
+        ax7 = fig.add_subplot(gs[2, :])
+        self._plot_robustness_dashboard(ax7, robustness)
+
+    def _plot_cluster_analysis_panel(self, ax: plt.Axes, 
+                                      cluster: ClusterAnalysisResult):
+        """Panel de análisis de clústeres."""
+        ax.set_facecolor(Theme.BG_TERTIARY)
+        ax.set_xticks([])
+        ax.set_yticks([])
+        for spine in ax.spines.values():
+            spine.set_color(Theme.BORDER)
+        
+        # Título
+        ax.text(0.5, 0.94, "🔮 CLUSTER ANALYSIS", fontsize=9, fontweight='bold',
+               ha='center', transform=ax.transAxes, color=Theme.TEXT_SECONDARY)
+        ax.plot([0.1, 0.9], [0.88, 0.88], color=Theme.DIVIDER, linewidth=0.5,
+               transform=ax.transAxes)
+        
+        ax.text(0.5, 0.82, "DBSCAN Configuration Grouping", fontsize=7,
+               ha='center', transform=ax.transAxes, color=Theme.TEXT_DARK, style='italic')
+        
+        # Métricas principales
+        y_pos = 0.68
+        metrics = [
+            ('Clusters Found', f'{cluster.n_clusters}', True),
+            ('Noise Points', f'{cluster.n_noise_points}', cluster.n_noise_points < cluster.n_clusters * 5),
+            ('Silhouette Score', f'{cluster.silhouette_score:.3f}', cluster.silhouette_score > 0.3),
+            ('Cluster Stability', f'{cluster.cluster_stability:.1%}', cluster.cluster_stability > 0.5),
+            ('Intra-Cluster CV', f'{cluster.intra_cluster_variance:.3f}', cluster.intra_cluster_variance < 0.5),
+        ]
+        
+        for label, value, is_good in metrics:
+            status_color = Theme.ACCENT if is_good else Theme.TEXT_SECONDARY
+            ax.text(0.08, y_pos, label, fontsize=7, transform=ax.transAxes, color=Theme.TEXT_DARK)
+            ax.text(0.92, y_pos, value, fontsize=8, ha='right', transform=ax.transAxes, color=status_color)
+            y_pos -= 0.11
+        
+        # Interpretación
+        if cluster.n_clusters >= 2 and cluster.silhouette_score > 0.3:
+            interp = "✓ Well-defined parameter groups"
+            interp_color = Theme.ACCENT
+        elif cluster.n_clusters >= 2:
+            interp = "○ Clusters exist but overlap"
+            interp_color = Theme.ORANGE
+        else:
+            interp = "⚠ No clear parameter groups"
+            interp_color = Theme.RED_BRIGHT
+        
+        ax.text(0.5, 0.06, interp, fontsize=7, ha='center', transform=ax.transAxes, 
+               color=interp_color, fontweight='bold')
+
+    def _plot_nsi_panel(self, ax: plt.Axes, nsi: NeighborhoodStabilityResult):
+        """Panel del Índice de Estabilidad de Vecindad."""
+        ax.set_facecolor(Theme.BG_TERTIARY)
+        ax.set_xticks([])
+        ax.set_yticks([])
+        for spine in ax.spines.values():
+            spine.set_color(Theme.BORDER)
+        
+        ax.text(0.5, 0.94, "🎯 NEIGHBORHOOD STABILITY", fontsize=9, fontweight='bold',
+               ha='center', transform=ax.transAxes, color=Theme.TEXT_SECONDARY)
+        ax.plot([0.1, 0.9], [0.88, 0.88], color=Theme.DIVIDER, linewidth=0.5,
+               transform=ax.transAxes)
+        
+        ax.text(0.5, 0.82, "Similar Parameters → Similar Results?", fontsize=7,
+               ha='center', transform=ax.transAxes, color=Theme.TEXT_DARK, style='italic')
+        
+        # NSI Global con gauge visual
+        nsi_val = nsi.nsi_global
+        
+        # Barra de progreso
+        bar_width = 0.70
+        bar_x = 0.15
+        bar_y = 0.62
+        
+        ax.add_patch(plt.Rectangle((bar_x, bar_y), bar_width, 0.08,
+                    color=Theme.BG_HIGHLIGHT, transform=ax.transAxes))
+        
+        bar_color = Theme.ACCENT if nsi_val >= 0.6 else Theme.ORANGE if nsi_val >= 0.4 else Theme.RED_BRIGHT
+        ax.add_patch(plt.Rectangle((bar_x, bar_y), bar_width * nsi_val, 0.08,
+                    color=bar_color, transform=ax.transAxes))
+        
+        ax.text(0.5, 0.58, 'NSI Global', fontsize=7, ha='center', 
+               transform=ax.transAxes, color=Theme.TEXT_DARK)
+        ax.text(0.5, 0.73, f'{nsi_val:.1%}', fontsize=14, ha='center',
+               transform=ax.transAxes, color=bar_color, fontweight='bold')
+        
+        # Percentiles
+        y_pos = 0.48
+        percentiles = ['p10', 'p50', 'p90']
+        for p in percentiles:
+            val = nsi.stability_percentiles.get(p, 0)
+            ax.text(0.08, y_pos, f'NSI {p.upper()}', fontsize=6, 
+                   transform=ax.transAxes, color=Theme.TEXT_DARK)
+            ax.text(0.92, y_pos, f'{val:.1%}', fontsize=7, ha='right',
+                   transform=ax.transAxes, color=Theme.TEXT_SECONDARY)
+            y_pos -= 0.09
+        
+        # Regiones estables/inestables
+        n_stable = len(nsi.stable_regions)
+        n_unstable = len(nsi.unstable_regions)
+        
+        ax.text(0.25, 0.12, f'Stable: {n_stable}', fontsize=7, ha='center',
+               transform=ax.transAxes, color=Theme.ACCENT)
+        ax.text(0.75, 0.12, f'Unstable: {n_unstable}', fontsize=7, ha='center',
+               transform=ax.transAxes, color=Theme.RED_BRIGHT)
+        
+        # Interpretación
+        if nsi_val >= 0.6:
+            interp = "✓ Highly stable neighborhood"
+        elif nsi_val >= 0.4:
+            interp = "○ Moderate stability"
+        else:
+            interp = "⚠ Unstable - high sensitivity"
+        
+        ax.text(0.5, 0.03, interp, fontsize=6, ha='center', transform=ax.transAxes, 
+               color=Theme.TEXT_DARK, style='italic')
+
+    def _plot_degradation_panel(self, ax: plt.Axes, degrad: DegradationTestResult):
+        """Panel de test de degradación paramétrica."""
+        ax.set_facecolor(Theme.BG_TERTIARY)
+        ax.set_xticks([])
+        ax.set_yticks([])
+        for spine in ax.spines.values():
+            spine.set_color(Theme.BORDER)
+        
+        ax.text(0.5, 0.94, "⚡ DEGRADATION TEST", fontsize=9, fontweight='bold',
+               ha='center', transform=ax.transAxes, color=Theme.TEXT_SECONDARY)
+        ax.plot([0.1, 0.9], [0.88, 0.88], color=Theme.DIVIDER, linewidth=0.5,
+               transform=ax.transAxes)
+        
+        ax.text(0.5, 0.82, "What if params aren't exact?", fontsize=7,
+               ha='center', transform=ax.transAxes, color=Theme.TEXT_DARK, style='italic')
+        
+        # Comparación original vs degradado
+        orig = degrad.original_performance
+        degraded = degrad.degraded_performance_mean
+        
+        # Barras comparativas
+        max_val = max(abs(orig), abs(degraded)) if orig != 0 else 1
+        
+        orig_height = min(0.18, abs(orig) / max_val * 0.18)
+        deg_height = min(0.18, abs(degraded) / max_val * 0.18)
+        
+        ax.add_patch(plt.Rectangle((0.15, 0.55), 0.15, orig_height,
+                    color=Theme.ACCENT, transform=ax.transAxes))
+        ax.text(0.225, 0.52, 'Original', fontsize=6, ha='center',
+               transform=ax.transAxes, color=Theme.TEXT_DARK)
+        ax.text(0.225, 0.55 + orig_height + 0.02, f'{orig:.2f}', fontsize=7,
+               ha='center', transform=ax.transAxes, color=Theme.ACCENT)
+        
+        deg_color = Theme.GREEN_BRIGHT if degrad.robustness_score > 0.6 else Theme.ORANGE if degrad.robustness_score > 0.3 else Theme.RED_BRIGHT
+        ax.add_patch(plt.Rectangle((0.70, 0.55), 0.15, deg_height,
+                    color=deg_color, transform=ax.transAxes))
+        ax.text(0.775, 0.52, 'Degraded', fontsize=6, ha='center',
+               transform=ax.transAxes, color=Theme.TEXT_DARK)
+        ax.text(0.775, 0.55 + deg_height + 0.02, f'{degraded:.2f}', fontsize=7,
+               ha='center', transform=ax.transAxes, color=deg_color)
+        
+        # Flecha de degradación
+        ax.annotate('', xy=(0.60, 0.62), xytext=(0.40, 0.62),
+                   arrowprops=dict(arrowstyle='->', color=Theme.TEXT_DARK, lw=1),
+                   transform=ax.transAxes)
+        ax.text(0.50, 0.65, f'{degrad.degradation_ratio:+.1%}', fontsize=7, ha='center',
+               transform=ax.transAxes, color=Theme.TEXT_DARK)
+        
+        # Métricas adicionales
+        y_pos = 0.40
+        metrics = [
+            ('Worst Case', f'{degrad.worst_case_performance:.2f}'),
+            ('Best Case', f'{degrad.best_case_performance:.2f}'),
+            ('Robustness Score', f'{degrad.robustness_score:.1%}'),
+        ]
+        
+        for label, value in metrics:
+            ax.text(0.08, y_pos, label, fontsize=6, transform=ax.transAxes, color=Theme.TEXT_DARK)
+            ax.text(0.92, y_pos, value, fontsize=7, ha='right', transform=ax.transAxes, color=Theme.TEXT_SECONDARY)
+            y_pos -= 0.09
+        
+        # Interpretación
+        if degrad.robustness_score >= 0.7:
+            interp = "✓ Highly robust to perturbations"
+        elif degrad.robustness_score >= 0.4:
+            interp = "○ Moderately robust"
+        else:
+            interp = "⚠ Sensitive to parameter changes"
+        
+        ax.text(0.5, 0.04, interp, fontsize=6, ha='center', transform=ax.transAxes, 
+               color=Theme.TEXT_DARK, style='italic')
+
+    def _plot_surface_cv_panel(self, ax: plt.Axes, surface: SurfaceCVResult):
+        """Panel de Coeficiente de Variación de Superficie."""
+        ax.set_facecolor(Theme.BG_TERTIARY)
+        ax.set_xticks([])
+        ax.set_yticks([])
+        for spine in ax.spines.values():
+            spine.set_color(Theme.BORDER)
+        
+        ax.text(0.5, 0.94, "📊 SURFACE ANALYSIS", fontsize=9, fontweight='bold',
+               ha='center', transform=ax.transAxes, color=Theme.TEXT_SECONDARY)
+        ax.plot([0.1, 0.9], [0.88, 0.88], color=Theme.DIVIDER, linewidth=0.5,
+               transform=ax.transAxes)
+        
+        ax.text(0.5, 0.82, "3D Optimization Surface Quality", fontsize=7,
+               ha='center', transform=ax.transAxes, color=Theme.TEXT_DARK, style='italic')
+        
+        # Smoothness gauge
+        smoothness = surface.smoothness_score
+        
+        bar_width = 0.70
+        bar_x = 0.15
+        bar_y = 0.60
+        
+        ax.add_patch(plt.Rectangle((bar_x, bar_y), bar_width, 0.08,
+                    color=Theme.BG_HIGHLIGHT, transform=ax.transAxes))
+        
+        smooth_color = Theme.ACCENT if smoothness >= 0.6 else Theme.ORANGE if smoothness >= 0.4 else Theme.RED_BRIGHT
+        ax.add_patch(plt.Rectangle((bar_x, bar_y), bar_width * smoothness, 0.08,
+                    color=smooth_color, transform=ax.transAxes))
+        
+        ax.text(0.5, 0.56, 'Smoothness Score', fontsize=7, ha='center', 
+               transform=ax.transAxes, color=Theme.TEXT_DARK)
+        ax.text(0.5, 0.72, f'{smoothness:.1%}', fontsize=14, ha='center',
+               transform=ax.transAxes, color=smooth_color, fontweight='bold')
+        
+        # Métricas detalladas
+        y_pos = 0.45
+        metrics = [
+            ('Surface CV', f'{surface.cv_global:.3f}', surface.cv_global < 1.0),
+            ('Roughness Index', f'{surface.roughness_index:.3f}', surface.roughness_index < 0.3),
+            ('Gradient Mean', f'{surface.gradient_magnitude_mean:.3f}', True),
+            ('Flat Regions', f'{surface.flatness_regions:.1%}', surface.flatness_regions > 0.3),
+        ]
+        
+        for label, value, is_good in metrics:
+            status_color = Theme.ACCENT if is_good else Theme.TEXT_SECONDARY
+            ax.text(0.08, y_pos, label, fontsize=6, transform=ax.transAxes, color=Theme.TEXT_DARK)
+            ax.text(0.92, y_pos, value, fontsize=7, ha='right', transform=ax.transAxes, color=status_color)
+            y_pos -= 0.085
+        
+        # Interpretación
+        if smoothness >= 0.6:
+            interp = "✓ Smooth surface - robust opt"
+        elif smoothness >= 0.4:
+            interp = "○ Some roughness detected"
+        else:
+            interp = "⚠ Rough surface - overfit risk"
+        
+        ax.text(0.5, 0.04, interp, fontsize=6, ha='center', transform=ax.transAxes, 
+               color=Theme.TEXT_DARK, style='italic')
+
+    def _plot_cluster_performance(self, ax: plt.Axes, cluster: ClusterAnalysisResult):
+        """Gráfico de rendimiento por cluster."""
+        ax.set_facecolor(Theme.BG_SECONDARY)
+        
+        if not cluster.cluster_performance:
+            ax.text(0.5, 0.5, 'No cluster data', ha='center', va='center',
+                   transform=ax.transAxes, color=Theme.TEXT_DARK, fontsize=9)
+            for spine in ax.spines.values():
+                spine.set_color(Theme.BORDER)
+            return
+        
+        # Datos
+        cluster_ids = list(cluster.cluster_performance.keys())[:8]  # Max 8 clusters
+        means = [cluster.cluster_performance[c]['mean'] for c in cluster_ids]
+        stds = [cluster.cluster_performance[c]['std'] for c in cluster_ids]
+        counts = [cluster.cluster_performance[c]['count'] for c in cluster_ids]
+        
+        x = np.arange(len(cluster_ids))
+        
+        # Colores: mejor cluster en verde
+        colors = [Theme.ACCENT if c == cluster.best_cluster_id else Theme.TEXT_SECONDARY 
+                 for c in cluster_ids]
+        
+        # Barras con error bars
+        bars = ax.bar(x, means, color=colors, alpha=0.7, edgecolor='none')
+        ax.errorbar(x, means, yerr=stds, fmt='none', color=Theme.TEXT_DARK, 
+                   capsize=3, capthick=1, linewidth=1)
+        
+        # Labels
+        ax.set_xticks(x)
+        ax.set_xticklabels([f'C{i}' for i in cluster_ids], fontsize=6)
+        ax.set_ylabel('Performance', fontsize=7, color=Theme.TEXT_DARK)
+        ax.set_title('Cluster Performance', fontsize=8, color=Theme.TEXT_SECONDARY, pad=4)
+        
+        # Counts como labels en las barras
+        for i, (bar, count) in enumerate(zip(bars, counts)):
+            ax.text(bar.get_x() + bar.get_width()/2, bar.get_height() + max(stds)*0.1,
+                   f'n={count}', ha='center', va='bottom', fontsize=5, color=Theme.TEXT_DARK)
+        
+        ax.tick_params(colors=Theme.TEXT_DARK, labelsize=6)
+        ax.yaxis.set_major_formatter(FuncFormatter(format_axis_number))
+        
+        for spine in ax.spines.values():
+            spine.set_color(Theme.BORDER)
+
+    def _plot_parameter_sensitivity(self, ax: plt.Axes, degrad: DegradationTestResult):
+        """Gráfico de sensibilidad por parámetro."""
+        ax.set_facecolor(Theme.BG_SECONDARY)
+        
+        if not degrad.parameter_sensitivity:
+            ax.text(0.5, 0.5, 'No sensitivity data', ha='center', va='center',
+                   transform=ax.transAxes, color=Theme.TEXT_DARK, fontsize=9)
+            for spine in ax.spines.values():
+                spine.set_color(Theme.BORDER)
+            return
+        
+        # Ordenar por sensibilidad
+        sorted_sens = sorted(degrad.parameter_sensitivity.items(), 
+                            key=lambda x: x[1], reverse=True)[:8]
+        
+        params = [p[0][:12] for p in sorted_sens]
+        values = [p[1] for p in sorted_sens]
+        
+        y_pos = np.arange(len(params))
+        
+        # Colores: alta sensibilidad = rojo
+        colors = [Theme.RED_BRIGHT if v > 0.15 else Theme.ORANGE if v > 0.08 else Theme.ACCENT 
+                 for v in values]
+        
+        ax.barh(y_pos, values, color=colors, height=0.6, edgecolor='none', alpha=0.7)
+        
+        ax.set_yticks(y_pos)
+        ax.set_yticklabels(params, fontsize=6)
+        ax.set_xlabel('Sensitivity', fontsize=7, color=Theme.TEXT_DARK)
+        ax.set_title('Parameter Sensitivity', fontsize=8, color=Theme.TEXT_SECONDARY, pad=4)
+        ax.invert_yaxis()
+        
+        # Valores en barras
+        for i, v in enumerate(values):
+            ax.text(v + max(values)*0.02, i, f'{v:.3f}', va='center', fontsize=5, color=Theme.TEXT_DARK)
+        
+        ax.tick_params(colors=Theme.TEXT_DARK, labelsize=6)
+        ax.xaxis.set_major_formatter(FuncFormatter(format_axis_number))
+        
+        for spine in ax.spines.values():
+            spine.set_color(Theme.BORDER)
+
+    def _plot_robustness_dashboard(self, ax: plt.Axes, robustness: RobustnessAnalysisResult):
+        """Dashboard resumen de robustez."""
+        ax.set_facecolor(Theme.BG_TERTIARY)
+        ax.set_xticks([])
+        ax.set_yticks([])
+        for spine in ax.spines.values():
+            spine.set_color(Theme.BORDER)
+        
+        # Grade principal
+        grade = robustness.robustness_grade
+        score = robustness.overall_robustness_score
+        
+        grade_colors = {
+            'A+': Theme.ACCENT, 'A': '#66bb6a', 'B+': '#81c784', 
+            'B': '#ff9800', 'C': '#ff7043', 'D': '#e53935', 'F': '#c62828'
+        }
+        grade_color = grade_colors.get(grade, Theme.TEXT_SECONDARY)
+        
+        # Grade grande
+        ax.text(0.08, 0.55, grade, fontsize=28, fontweight='bold', va='center',
+               transform=ax.transAxes, color=grade_color)
+        
+        grade_texts = {
+            'A+': 'EXCELLENT', 'A': 'ROBUST', 'B+': 'GOOD', 
+            'B': 'MODERATE', 'C': 'WEAK', 'D': 'POOR', 'F': 'FAIL'
+        }
+        ax.text(0.08, 0.25, grade_texts.get(grade, 'N/A'), fontsize=10, fontweight='bold',
+               transform=ax.transAxes, color=grade_color)
+        
+        # Línea separadora
+        ax.plot([0.18, 0.18], [0.15, 0.85], color=Theme.DIVIDER, linewidth=1,
+               transform=ax.transAxes)
+        
+        # Componentes del score
+        components = [
+            ('Cluster Stability', robustness.cluster_analysis.cluster_stability),
+            ('Neighborhood (NSI)', robustness.neighborhood_stability.nsi_global),
+            ('Degradation Test', robustness.degradation_test.robustness_score),
+            ('Surface Smoothness', robustness.surface_cv.smoothness_score),
+        ]
+        
+        x_start = 0.22
+        x_spacing = 0.195
+        
+        for i, (name, value) in enumerate(components):
+            x_pos = x_start + i * x_spacing
+            
+            # Mini gauge
+            gauge_color = Theme.ACCENT if value >= 0.6 else Theme.ORANGE if value >= 0.4 else Theme.RED_BRIGHT
+            ax.text(x_pos, 0.72, f'{value:.0%}', fontsize=12, ha='center',
+                   transform=ax.transAxes, color=gauge_color, fontweight='bold')
+            ax.text(x_pos, 0.52, name, fontsize=6, ha='center',
+                   transform=ax.transAxes, color=Theme.TEXT_SECONDARY)
+            
+            # Mini barra
+            bar_width = 0.12
+            ax.add_patch(plt.Rectangle((x_pos - bar_width/2, 0.38), bar_width, 0.06,
+                        color=Theme.BG_HIGHLIGHT, transform=ax.transAxes))
+            ax.add_patch(plt.Rectangle((x_pos - bar_width/2, 0.38), bar_width * value, 0.06,
+                        color=gauge_color, transform=ax.transAxes))
+        
+        # Veredicto
+        if score >= 0.70:
+            verdict = "Strategy shows strong robustness across all dimensions"
+        elif score >= 0.50:
+            verdict = "Strategy demonstrates acceptable stability"
+        elif score >= 0.30:
+            verdict = "Strategy shows mixed robustness signals"
+        else:
+            verdict = "Strategy lacks robustness - high overfit risk"
+        
+        ax.text(0.60, 0.15, verdict, fontsize=8, ha='center', transform=ax.transAxes,
+               color=Theme.TEXT_SECONDARY, style='italic')
+        
+        # Score compuesto
+        ax.text(0.95, 0.55, f'{score:.0%}', fontsize=18, ha='right', va='center',
+               transform=ax.transAxes, color=Theme.TEXT_PRIMARY, fontweight='bold')
+        ax.text(0.95, 0.35, 'Overall Score', fontsize=7, ha='right',
+               transform=ax.transAxes, color=Theme.TEXT_DARK)
+
 
 # ══════════════════════════════════════════════════════════════════════════════
 # 📄 GENERADOR DE REPORTE PDF
@@ -3825,7 +4876,32 @@ class ReportGenerator:
             except Exception as e:
                 print(f"  [!] Statistical validation skipped: {e}")
             
-            # 8. Tabla de recomendaciones (FINAL)
+            # 8. ADVANCED ROBUSTNESS ANALYSIS (NEW)
+            try:
+                if target_col and len(all_params) >= 1 and len(self.df) >= 30:
+                    print("  [+] Advanced Robustness Analysis")
+                    print("      - Cluster Analysis (DBSCAN)")
+                    print("      - Neighborhood Stability Index (NSI)")
+                    print("      - Parameter Degradation Testing")
+                    print("      - Surface CV Analysis")
+                    
+                    robustness_analyzer = AdvancedRobustnessAnalyzer(
+                        self.df, all_params, target_col
+                    )
+                    robustness_result = robustness_analyzer.analyze_all()
+                    
+                    if robustness_result.overall_robustness_score > 0:
+                        fig = plt.figure(figsize=(11, 8.5))
+                        visualizer.create_robustness_analysis_page(fig, robustness_result)
+                        pdf.savefig(fig, facecolor=Theme.BG_PRIMARY)
+                        plt.close(fig)
+                        
+                        print(f"      → Robustness Grade: {robustness_result.robustness_grade}")
+                        print(f"      → Overall Score: {robustness_result.overall_robustness_score:.1%}")
+            except Exception as e:
+                print(f"  [!] Robustness analysis skipped: {e}")
+            
+            # 9. Tabla de recomendaciones (FINAL)
             fig = plt.figure(figsize=(11, 8.5))
             visualizer.create_recommendations_table(fig, self.all_analyses, self.schema.exit_params)
             pdf.savefig(fig, facecolor=Theme.BG_PRIMARY)
@@ -3929,7 +5005,8 @@ def find_files() -> List[str]:
 def main():
     """Función principal."""
     print("\n" + "━"*70)
-    print("  MODELOX PARAMETER ANALYZER v19.0")
+    print("  MODELOX PARAMETER ANALYZER v20.0")
+    print("  Advanced Robustness & Statistical Analysis")
     print("━"*70)
     
     # Obtener archivo
