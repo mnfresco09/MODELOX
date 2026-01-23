@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """
 MODELOX Git Push - Script robusto para subir cambios a GitHub.
-Con timeout, debug y manejo de errores mejorado.
+Ejecutar desde cualquier ubicación: python github/git_push.py "mensaje"
 """
 
 import subprocess
@@ -15,32 +15,32 @@ from typing import Optional, List
 # Timeout en segundos para comandos git
 GIT_TIMEOUT = 30
 
+# Obtener la raíz del repo (un nivel arriba de github/)
+REPO_ROOT = Path(__file__).resolve().parent.parent
+
 
 def run_command(cmd: List[str], check: bool = True, timeout: int = GIT_TIMEOUT) -> tuple:
     """Ejecuta un comando y retorna (éxito, output)."""
     cmd_str = ' '.join(cmd)
     print(f"   → {cmd_str}")
-    
-    # Create a clean environment for git commands to avoid LD_LIBRARY_PATH conflicts with Node/Git helpers
+
+    # Create a clean environment for git commands
     clean_env = os.environ.copy()
     if "LD_LIBRARY_PATH" in clean_env:
         del clean_env["LD_LIBRARY_PATH"]
-    
+
     try:
-        repo_root = Path(__file__).resolve().parent
-        
         result = subprocess.run(
             cmd,
             capture_output=True,
             text=True,
             check=check,
-            cwd=str(repo_root),
+            cwd=str(REPO_ROOT),  # Siempre ejecutar desde la raíz del repo
             timeout=timeout,
             env=clean_env
         )
         output = result.stdout + result.stderr
         if output.strip():
-            # Mostrar solo primeras líneas si es muy largo
             lines = output.strip().split('\n')
             if len(lines) > 5:
                 print(f"     [{len(lines)} líneas de output]")
@@ -48,11 +48,11 @@ def run_command(cmd: List[str], check: bool = True, timeout: int = GIT_TIMEOUT) 
                 for line in lines:
                     print(f"     {line}")
         return True, output
-        
+
     except subprocess.TimeoutExpired:
         print(f"   ⏱️  TIMEOUT después de {timeout}s - comando cancelado")
         return False, f"Timeout después de {timeout} segundos"
-        
+
     except subprocess.CalledProcessError as e:
         output = (e.stdout or '') + (e.stderr or '')
         print(f"   ✗ Error: {output[:200]}")
@@ -98,13 +98,13 @@ def main(argv: Optional[List[str]] = None) -> int:
 
     # 3. Commit
     commit_msg = " ".join(args.message).strip() if args.message else _default_commit_message()
-    
+
     print("\n💬 Paso 4: Commit...")
     if args.amend:
         success, output = run_command(["git", "commit", "--amend", "-m", commit_msg], check=False)
     else:
         success, output = run_command(["git", "commit", "-m", commit_msg], check=False)
-    
+
     if not success and "nothing to commit" not in output.lower():
         print("❌ Error en commit")
         return 1
@@ -116,7 +116,7 @@ def main(argv: Optional[List[str]] = None) -> int:
         push_cmd.insert(2, "--force")
 
     success, output = run_command(push_cmd, check=False, timeout=120)
-    
+
     if not success:
         if "large file" in output.lower() or "exceeds" in output.lower():
             print("\n❌ ERROR: Archivos demasiado grandes detectados!")

@@ -34,24 +34,24 @@ class Theme:
     SUCCESS: str = "spring_green3"        # Profits, wins, positive metrics
     DANGER: str = "bright_red"            # Losses, alerts, negative metrics
     WARNING: str = "dark_orange"          # Caution, neutral-negative
-    
+
     # === Grayscale Hierarchy ===
     TEXT_PRIMARY: str = "grey85"          # Main text
     TEXT_SECONDARY: str = "grey62"        # Labels, descriptions
     TEXT_MUTED: str = "grey46"            # Dimmed, less important
     TEXT_DIM: str = "grey30"              # Borders, separators
-    
+
     # === Panel/Border Colors ===
     BORDER_LIGHT: str = "grey42"          # Panel borders
     BORDER_DARK: str = "grey27"           # Table borders
     BACKGROUND: str = "grey11"            # Background hint
-    
+
     # === Semantic Aliases ===
     PROFIT: str = "spring_green3"
     LOSS: str = "bright_red"
     NEUTRAL: str = "grey62"
     BEST_MARKER: str = "gold1"
-    
+
     # === Box Styles ===
     BOX_PANEL: box.Box = box.ROUNDED
     BOX_TABLE: box.Box = box.MINIMAL
@@ -73,7 +73,7 @@ class MetricMapper:
     Handles variations like: winrate, win_rate, wr, WinRate, etc.
     Handles string-to-number conversions.
     """
-    
+
     # Define all possible key variations for each metric
     MAPPINGS: Dict[str, Tuple[str, ...]] = {
         "winrate": ("winrate", "win_rate", "wr", "winRate", "WinRate", "win_pct", "win_percent"),
@@ -95,8 +95,22 @@ class MetricMapper:
             "net_pnl_per_trading_day",
             "net_pnl_per_operated_day",
         ),
+        "trades_por_dia": (
+            "trades_por_dia",
+            "trades_dia",
+            "trades_per_day",
+            "trades_day",
+        ),
+        "saldo_mean": (
+            "saldo_mean",
+            "saldo_promedio",
+            "saldo_medio",
+            "avg_balance",
+            "average_balance",
+            "mean_balance",
+        ),
     }
-    
+
     @classmethod
     def _extract_value(cls, obj: Any, default: Any = 0.0) -> Any:
         """
@@ -105,11 +119,11 @@ class MetricMapper:
         """
         if obj is None:
             return default
-        
+
         # Handle direct values
         if isinstance(obj, (int, float, bool)):
             return obj
-        
+
         # Handle string numbers
         if isinstance(obj, str):
             try:
@@ -120,16 +134,16 @@ class MetricMapper:
                 return float(obj)
             except (ValueError, TypeError):
                 return default
-        
+
         # Handle nested dict (take first numeric value)
         if isinstance(obj, dict):
             for v in obj.values():
                 result = cls._extract_value(v, None)
                 if result is not None:
                     return result
-        
+
         return default
-    
+
     @classmethod
     def get(cls, metrics: Dict[str, Any], key: str, default: Any = 0.0) -> Any:
         """
@@ -139,21 +153,21 @@ class MetricMapper:
         # Direct match first
         if key in metrics and metrics[key] is not None:
             return cls._extract_value(metrics[key], default)
-        
+
         # Try all variations
         variations = cls.MAPPINGS.get(key, (key,))
         for var in variations:
             if var in metrics and metrics[var] is not None:
                 return cls._extract_value(metrics[var], default)
-        
+
         # Case-insensitive fallback
         key_lower = key.lower()
         for k, v in metrics.items():
             if k.lower() == key_lower and v is not None:
                 return cls._extract_value(v, default)
-        
+
         return default
-    
+
     @classmethod
     def get_float(cls, metrics: Dict[str, Any], key: str, default: float = 0.0) -> float:
         """Get metric as float with safe conversion."""
@@ -162,7 +176,7 @@ class MetricMapper:
             return float(val) if val is not None else default
         except (ValueError, TypeError):
             return default
-    
+
     @classmethod
     def get_int(cls, metrics: Dict[str, Any], key: str, default: int = 0) -> int:
         """Get metric as int with safe conversion."""
@@ -171,7 +185,7 @@ class MetricMapper:
             return int(val) if val is not None else default
         except (ValueError, TypeError):
             return default
-    
+
     @classmethod
     def extract_from_trial(cls, trial, key: str, default: Any = 0.0) -> Any:
         """
@@ -188,19 +202,19 @@ class MetricMapper:
                 result = cls.get(met, key, None)
                 if result is not None and result != default:
                     return result
-        
+
         # Try direct user_attrs
         result = cls.get(trial.user_attrs, key, None)
         if result is not None and result != default:
             return result
-        
+
         # Search all nested dicts in user_attrs
         for attr_key, attr_val in trial.user_attrs.items():
             if isinstance(attr_val, dict) and attr_key != "metricas":
                 result = cls.get(attr_val, key, None)
                 if result is not None and result != default:
                     return result
-        
+
         return default
 
 
@@ -209,9 +223,20 @@ class MetricMapper:
 # ============================================================================
 
 def fmt_number(val: float, decimals: int = 2, suffix: str = "") -> str:
-    """Format number with consistent decimal places."""
+    """
+    Format number with smart decimal places.
+    
+    Rules:
+    - If |val| < 1: use 3 decimal places (0.xxx)
+    - Otherwise: use 2 decimal places (x.xx)
+    - Unless explicitly overridden by decimals parameter
+    """
     try:
-        return f"{float(val):,.{decimals}f}{suffix}"
+        fval = float(val)
+        # Smart decimals: x.xxx if < 1, x.xx otherwise
+        if decimals == 2 and abs(fval) < 1 and fval != 0:
+            decimals = 3
+        return f"{fval:,.{decimals}f}{suffix}"
     except (ValueError, TypeError):
         return f"0.{'0' * decimals}{suffix}"
 
@@ -251,140 +276,87 @@ def get_metric_color(value: float, good: float, warn: float, higher_is_better: b
 
 def _build_performance_grid(metrics: Dict[str, Any]) -> Table:
     """
-    Build PERFORMANCE column grid.
-    Contains: Win Rate, Profit Factor, Sharpe, Max Drawdown, Total Trades
+    Build PERFORMANCE column grid - Minimalist style (NO COLORS except special).
+    Shows only KEY metrics: Winrate, Expectativa, Sharpe, SQN, PF, DD, Trades
     """
     M = MetricMapper
-    
+
     winrate = M.get_float(metrics, "winrate")
     profit_factor = M.get_float(metrics, "profit_factor")
     sharpe = M.get_float(metrics, "sharpe")
     sqn = M.get_float(metrics, "sqn")
     drawdown = M.get_float(metrics, "drawdown")
     total_trades = M.get_int(metrics, "total_trades")
+    trades_por_dia = M.get_float(metrics, "trades_por_dia")
     expectancy = M.get_float(metrics, "expectativa")
-    trades_per_day = M.get_float(metrics, "trades_por_dia")
     longs = M.get_int(metrics, "count_longs")
     shorts = M.get_int(metrics, "count_shorts")
-    
-    grid = Table.grid(padding=(0, 2), expand=True)
-    grid.add_column("label", style=THEME.TEXT_SECONDARY, width=14)
-    grid.add_column("value", justify="right")
-    
-    # Winrate y resto neutros (sin colores agresivos)
-    grid.add_row(
-        "Win Rate",
-        fmt_number(winrate, 1, "%")
-    )
 
-    # Expectativa: única métrica de performance en rojo/verde
-    exp_color = get_pnl_color(expectancy)
-    grid.add_row(
-        "Expectativa",
-        fmt_styled(expectancy, 2, "", exp_color)
-    )
+    grid = Table.grid(padding=(0, 1), expand=True)
+    grid.add_column("label", style=THEME.TEXT_SECONDARY, width=11)
+    grid.add_column("value", justify="right", width=12)
 
-    grid.add_row(
-        "Trades/Día",
-        fmt_number(trades_per_day, 2, "")
-    )
-    grid.add_row(
-        "Sharpe",
-        fmt_number(sharpe, 2, "")
-    )
+    # All metrics in neutral color (no excessive coloring)
+    grid.add_row("Win Rate", f"{fmt_number(winrate, 1)}%")
+    grid.add_row("Expectancy", fmt_number(expectancy, 2))
+    grid.add_row("Sharpe", fmt_number(sharpe, 2))
+    grid.add_row("SQN", fmt_number(sqn, 2))
 
-    # SQN: < 1.5 rojo, 1.5 a 2 naranja, > 2 verde
-    sqn_color = get_metric_color(sqn, 2.0, 1.5, higher_is_better=True)
-    grid.add_row(
-        "SQN",
-        fmt_styled(sqn, 2, "", sqn_color)
-    )
-    grid.add_row(
-        "Profit Factor",
-        fmt_number(profit_factor, 2, "")
-    )
-    grid.add_row(
-        "Max Drawdown",
-        fmt_number(drawdown, 1, "%")
-    )
-    grid.add_row(
-        f"[{THEME.TEXT_DIM}]───────────────────[/]", ""
-    )
-    grid.add_row(
-        "Total Trades",
-        f"[{THEME.ACCENT}]{total_trades}[/]"
-    )
-    grid.add_row(
-        "Long / Short",
-        f"[{THEME.TEXT_PRIMARY}]{longs}[/]  /  [{THEME.TEXT_PRIMARY}]{shorts}[/]"
-    )
-    
+    # Profit Factor (handle NaN)
+    pf_val = profit_factor if not (profit_factor != profit_factor) else 0.0
+    grid.add_row("Profit F", fmt_number(pf_val, 2))
+    grid.add_row("Max DD", f"{fmt_number(drawdown, 1)}%")
+
+    # Separator
+    grid.add_row(f"[{THEME.TEXT_DIM}]───────────[/]", "")
+
+    # Trades count (neutral)
+    grid.add_row("Trades", str(total_trades))
+    grid.add_row("Trades/Day", fmt_number(trades_por_dia, 2))
+    grid.add_row("L / S", f"{longs} / {shorts}")
+
     return grid
 
 
 def _build_financials_grid(metrics: Dict[str, Any], saldo_inicial: float) -> Table:
     """
-    Build FINANCIALS column grid.
-    Contains: PnL Neto, ROI %, Comisiones, Saldo Final
+    Build FINANCIALS column grid - Minimalist style.
+    Shows: PnL, ROI, Saldo Final, Comisiones
     """
     M = MetricMapper
-    
+
     saldo_final = M.get_float(metrics, "saldo_actual", saldo_inicial)
-    saldo_min = M.get_float(metrics, "saldo_min", saldo_inicial)
-    saldo_max = M.get_float(metrics, "saldo_max", saldo_inicial)
-    saldo_mean = M.get_float(metrics, "saldo_mean", saldo_inicial)
+    saldo_mean = M.get_float(metrics, "saldo_mean", (saldo_inicial + saldo_final) / 2)
     comisiones = M.get_float(metrics, "comisiones_total")
     roi = M.get_float(metrics, "roi") if saldo_inicial > 0 else 0.0
     pnl_neto = saldo_final - saldo_inicial
-    pnl_por_dia = M.get_float(metrics, "pnl_neto_por_dia_operado", 0.0)
-    
-    grid = Table.grid(padding=(0, 2), expand=True)
-    grid.add_column("label", style=THEME.TEXT_SECONDARY, width=14)
-    grid.add_column("value", justify="right")
-    
-    # PnL Neto (principal) - único campo financiero con rojo/verde fuerte
+
+    grid = Table.grid(padding=(0, 1), expand=True)
+    grid.add_column("label", style=THEME.TEXT_SECONDARY, width=11)
+    grid.add_column("value", justify="right", width=12)
+
+    # PnL Neto - main metric with color
     pnl_sign = "+" if pnl_neto >= 0 else ""
     pnl_color = get_pnl_color(pnl_neto)
-    grid.add_row(
-        "[bold]PnL Neto[/]",
-        f"[bold {pnl_color}]{pnl_sign}${pnl_neto:,.2f}[/]"
-    )
+    grid.add_row("[bold]PnL[/]", f"[bold {pnl_color}]{pnl_sign}${pnl_neto:,.2f}[/]")
 
-    # PnL por día operado
-    pnl_dia_sign = "+" if pnl_por_dia >= 0 else ""
-    pnl_dia_color = get_pnl_color(pnl_por_dia)
-    grid.add_row(
-        "PnL/Día",
-        f"[{pnl_dia_color}]{pnl_dia_sign}${pnl_por_dia:,.2f}[/]"
-    )
+    # ROI neutral
+    grid.add_row("ROI", f"{fmt_number(roi, 1)}%")
 
-    # ROI (neutro)
-    grid.add_row(
-        "ROI",
-        fmt_number(roi, 1, "%")
-    )
+    # Separator
+    grid.add_row(f"[{THEME.TEXT_DIM}]───────────[/]", "")
 
-    grid.add_row(
-        f"[{THEME.TEXT_DIM}]───────────────────[/]", ""
-    )
+    # Balance info (compact)
+    grid.add_row("Initial", f"${saldo_inicial:,.0f}")
+    grid.add_row("Final", f"[{THEME.TEXT_PRIMARY}]${saldo_final:,.2f}[/]")
+    grid.add_row("Avg", f"${saldo_mean:,.2f}")
 
-    # Balances
-    grid.add_row("Saldo Inicial", f"[{THEME.TEXT_PRIMARY}]${saldo_inicial:,.2f}[/]")
-    grid.add_row("Saldo Mínimo", f"[{THEME.TEXT_PRIMARY}]${saldo_min:,.2f}[/]")
-    grid.add_row("Saldo Medio", f"[{THEME.TEXT_PRIMARY}]${saldo_mean:,.2f}[/]")
-    grid.add_row("Saldo Máximo", f"[{THEME.TEXT_PRIMARY}]${saldo_max:,.2f}[/]")
-    grid.add_row("Saldo Final", f"[{THEME.TEXT_PRIMARY}]${saldo_final:,.2f}[/]")
-
-    grid.add_row(
-        f"[{THEME.TEXT_DIM}]───────────────────[/]", ""
-    )
+    # Separator
+    grid.add_row(f"[{THEME.TEXT_DIM}]───────────[/]", "")
 
     # Comisiones
-    grid.add_row(
-        "Comisiones",
-        f"[{THEME.WARNING}]${comisiones:,.2f}[/]"
-    )
-    
+    grid.add_row("Fees", f"${comisiones:,.2f}")
+
     return grid
 
 
@@ -401,14 +373,14 @@ def _build_params_grid(params: Dict[str, Any], max_params: int = 0) -> Table:
     grid = Table.grid(padding=(0, 1), expand=True)
     grid.add_column("param", style=THEME.TEXT_MUTED, width=18, no_wrap=True)
     grid.add_column("value", style=THEME.TEXT_PRIMARY, justify="left")
-    
+
     # Obtener tipo de salida y parámetros
     exit_type = str(params.get("__exit_type", params.get("exit_type", "pnl_fixed"))).strip().lower()
     sl_pct = params.get("__exit_sl_pct", params.get("exit_sl_pct", 0.0))
     tp_pct = params.get("__exit_tp_pct", params.get("exit_tp_pct", 0.0))
     trail_act_pct = params.get("__exit_trail_act_pct", params.get("exit_trail_act_pct", 0.0))
     trail_dist_pct = params.get("__exit_trail_dist_pct", params.get("exit_trail_dist_pct", 0.0))
-    
+
     # Si hay salida personalizada activa, no mostrar params de salida del sistema
     try:
         strategy_exit_enabled = bool(params.get("__strategy_exit_enabled", False))
@@ -422,49 +394,49 @@ def _build_params_grid(params: Dict[str, Any], max_params: int = 0) -> Table:
             "pnl_fixed": "PNL FIXED",
             "pnl_trailing": "TRAILING",
         }.get(exit_type, exit_type.upper())
-        
+
         grid.add_row(
-            f"[bold {THEME.ACCENT}]EXIT[/]",
-            f"[bold {THEME.ACCENT}]{exit_display}[/]"
+            f"[bold {THEME.TEXT_SECONDARY}]EXIT[/]",
+            f"[bold {THEME.TEXT_PRIMARY}]{exit_display}[/]"
         )
-        
+
         # SL siempre se muestra (ambos tipos lo usan)
         grid.add_row(
-            f"  [{THEME.DANGER}]SL%[/]",
-            f"= [{THEME.DANGER}]{sl_pct:.1f}%[/]"
+            f"  [{THEME.TEXT_MUTED}]SL%[/]",
+            f"= {sl_pct:.1f}%"
         )
-        
+
         if exit_type == "pnl_fixed":
             # TP solo para pnl_fixed
             grid.add_row(
-                f"  [{THEME.SUCCESS}]TP%[/]",
-                f"= [{THEME.SUCCESS}]{tp_pct:.1f}%[/]"
+                f"  [{THEME.TEXT_MUTED}]TP%[/]",
+                f"= {tp_pct:.1f}%"
             )
         elif exit_type == "pnl_trailing":
             # Trailing activation y distance para pnl_trailing
             grid.add_row(
-                f"  [{THEME.ACCENT}]Trail Act%[/]",
-                f"= [{THEME.ACCENT}]{trail_act_pct:.1f}%[/]"
+                f"  [{THEME.TEXT_MUTED}]Trail Act%[/]",
+                f"= {trail_act_pct:.1f}%"
             )
             grid.add_row(
-                f"  [{THEME.WARNING}]Trail Dist%[/]",
-                f"= [{THEME.WARNING}]{trail_dist_pct:.1f}%[/]"
+                f"  [{THEME.TEXT_MUTED}]Trail Dist%[/]",
+                f"= {trail_dist_pct:.1f}%"
             )
-        
+
         grid.add_row(f"[{THEME.TEXT_DIM}]──────────────[/]", "")
     else:
         grid.add_row(
-            f"[bold {THEME.ACCENT}]EXIT[/]",
-            f"[bold {THEME.WARNING}]CUSTOM[/]"
+            f"[bold {THEME.TEXT_SECONDARY}]EXIT[/]",
+            f"[bold {THEME.TEXT_PRIMARY}]CUSTOM[/]"
         )
         grid.add_row(f"[{THEME.TEXT_DIM}]──────────────[/]", "")
-    
+
     # 2) Filtrar params (exclude internal __ prefixed y params de exit ya mostrados)
     exit_param_keys = {
         "exit_type", "exit_sl_pct", "exit_tp_pct",
         "exit_trail_act_pct", "exit_trail_dist_pct"
     }
-    
+
     clean_params = {
         k: v
         for k, v in params.items()
@@ -472,17 +444,17 @@ def _build_params_grid(params: Dict[str, Any], max_params: int = 0) -> Table:
         and k not in {"NOMBRE_COMBO"}
         and k not in exit_param_keys
     }
-    
+
     # Sort keys alphabetically; show all (max_params==0 => no limit)
     sorted_keys_all = sorted(clean_params.keys())
     sorted_keys = sorted_keys_all if max_params == 0 else sorted_keys_all[:max_params]
-    
+
     for key in sorted_keys:
         value = clean_params[key]
-        
+
         # Format param name
         pname = str(key).replace("_", " ").title()
-        
+
         # Format value
         if isinstance(value, float):
             if abs(value) < 0.01:
@@ -492,13 +464,13 @@ def _build_params_grid(params: Dict[str, Any], max_params: int = 0) -> Table:
             else:
                 val_str = f"{int(value)}"
         elif isinstance(value, bool):
-            val_str = f"[{THEME.SUCCESS}]ON[/]" if value else f"[{THEME.TEXT_DIM}]OFF[/]"
+            val_str = "ON" if value else f"[{THEME.TEXT_DIM}]OFF[/]"
         else:
             val_str = str(value)[:10]
-        
+
         # Render as "Nombre Param = valor" en dos columnas claras
         grid.add_row(pname, f"= {val_str}")
-        
+
     # Añadir CANTIDAD si está disponible
     cantidad = params.get("cantidad")
     if cantidad is not None:
@@ -508,7 +480,7 @@ def _build_params_grid(params: Dict[str, Any], max_params: int = 0) -> Table:
     if max_params and len(clean_params) > max_params:
         remaining = len(clean_params) - max_params
         grid.add_row(f"[{THEME.TEXT_DIM}]+{remaining} more[/]", "")
-    
+
     return grid
 
 
@@ -546,46 +518,48 @@ def mostrar_panel_elegante(
     └───────────────────┴───────────────────┴─────────────────────────┘
     """
     console = Console()
-    
+
     # Determine if this is the best trial
     is_best = best_so_far is not None and score >= float(best_so_far)
-    
+
     # ================== HEADER LINE ==================
     header_parts = []
-    
+
     # Asset
     asset_display = activo.upper() if activo else "ASSET"
     header_parts.append(f"[bold {THEME.TEXT_PRIMARY}]{asset_display}[/]")
-    
+
     # Strategy
     if combo_str:
         header_parts.append(f"[{THEME.ACCENT}]{combo_str}[/]")
-    
+
     # Timeframes (Entry → Exit)
     if timeframe_entry and timeframe_exit:
         if timeframe_entry == timeframe_exit:
             tf_display = f"[{THEME.TEXT_SECONDARY}]TF {timeframe_entry.upper()}[/]"
         else:
-            tf_display = f"[{THEME.TEXT_SECONDARY}]TF[/] [{THEME.TEXT_PRIMARY}]{timeframe_entry.upper()}→{timeframe_exit.upper()}[/]"
+            tf_e = timeframe_entry.upper()
+            tf_x = timeframe_exit.upper()
+            tf_display = f"[{THEME.TEXT_SECONDARY}]TF[/] [{THEME.TEXT_PRIMARY}]{tf_e}→{tf_x}[/]"
         header_parts.append(tf_display)
     elif timeframe_entry:
         header_parts.append(f"[{THEME.TEXT_SECONDARY}]TF {timeframe_entry.upper()}[/]")
-    
+
     # Trial number
     header_parts.append(f"[{THEME.TEXT_SECONDARY}]TRIAL[/] [{THEME.TEXT_PRIMARY}]{trial_num}[/]")
-    
+
     # Score with best indicator
-    score_color = THEME.BEST_MARKER if is_best else THEME.SUCCESS
+    score_color = THEME.BEST_MARKER
     best_star = " ★" if is_best else ""
     header_parts.append(f"[bold {score_color}]SCORE {score:.2f}{best_star}[/]")
-    
+
     # Best so far reference
     if best_so_far is not None and not is_best:
         header_parts.append(f"[{THEME.TEXT_DIM}]BEST {best_so_far:.2f}[/]")
-    
+
     header_line = f" [{THEME.TEXT_DIM}]│[/] ".join(header_parts)
-    
-    # ================== BUILD 3-COLUMN TABLE ==================
+
+    # ================== BUILD 3-COLUMN TABLE (COMPACT) ==================
     main_table = Table(
         box=THEME.BOX_TABLE,
         show_header=True,
@@ -593,20 +567,20 @@ def mostrar_panel_elegante(
         border_style=THEME.BORDER_DARK,
         padding=(0, 1),
         expand=False,
-        width=100
+        width=85  # More compact width
     )
-    
-    main_table.add_column("PERFORMANCE", justify="left", width=30)
-    main_table.add_column("FINANCIALS", justify="left", width=30)
-    main_table.add_column("PARAMETERS", justify="left", width=34)
-    
+
+    main_table.add_column("PERFORMANCE", justify="left", width=25)
+    main_table.add_column("FINANCIALS", justify="left", width=25)
+    main_table.add_column("PARAMETERS", justify="left", width=30)
+
     # Build each column grid
     perf_grid = _build_performance_grid(metrics)
     fin_grid = _build_financials_grid(metrics, saldo_inicial)
     params_grid = _build_params_grid(params)
-    
+
     main_table.add_row(perf_grid, fin_grid, params_grid)
-    
+
     # ================== RENDER ==================
     console.print()
     console.print(f"  {header_line}")
@@ -627,20 +601,20 @@ def mostrar_top_trials(study, n: int = 5) -> None:
     """
     console = Console()
     M = MetricMapper
-    
+
     # Get completed trials with valid scores
     valid_trials = [
-        t for t in study.trials 
+        t for t in study.trials
         if t.value is not None and t.value != -9999 and t.state.name == "COMPLETE"
     ]
-    
+
     if not valid_trials:
         console.print(f"\n  [{THEME.TEXT_MUTED}]No valid trials to display.[/]\n")
         return
-    
+
     # Sort by score descending
     top_trials = sorted(valid_trials, key=lambda t: t.value or 0, reverse=True)[:n]
-    
+
     # Build table
     table = Table(
         box=box.SIMPLE_HEAD,
@@ -651,7 +625,7 @@ def mostrar_top_trials(study, n: int = 5) -> None:
         title=f"[bold {THEME.ACCENT}]═══ TOP {n} TRIALS ═══[/]",
         title_justify="center"
     )
-    
+
     table.add_column("#", justify="center", style=THEME.TEXT_MUTED, width=6)
     table.add_column("SCORE", justify="right", style=THEME.SUCCESS, width=10)
     table.add_column("ROI %", justify="right", width=10)
@@ -659,35 +633,35 @@ def mostrar_top_trials(study, n: int = 5) -> None:
     table.add_column("DD %", justify="right", width=10)
     table.add_column("BALANCE", justify="right", width=12)
     table.add_column("TRADES", justify="center", style=THEME.TEXT_PRIMARY, width=8)
-    
+
     for i, trial in enumerate(top_trials):
         # AGGRESSIVE EXTRACTION: Try multiple sources
         score = trial.value or 0.0
-        
+
         # Extract metrics using aggressive search
         roi = M.extract_from_trial(trial, "roi", 0.0)
         winrate = M.extract_from_trial(trial, "winrate", 0.0)
         drawdown = M.extract_from_trial(trial, "drawdown", 0.0)
         saldo_final = M.extract_from_trial(trial, "saldo_actual", 0.0)
         trades = M.extract_from_trial(trial, "total_trades", 0)
-        
+
         # Convert to proper types
         roi = float(roi) if roi != 0.0 else 0.0
         winrate = float(winrate) if winrate != 0.0 else 0.0
         drawdown = float(drawdown) if drawdown != 0.0 else 0.0
         saldo_final = float(saldo_final) if saldo_final != 0.0 else 0.0
         trades = int(trades) if trades != 0 else 0
-        
+
         # Format with colors
         roi_color = get_pnl_color(roi)
         win_color = get_metric_color(winrate, 55, 45)
         dd_color = get_metric_color(drawdown, 15, 30, higher_is_better=False)
         balance_color = THEME.TEXT_PRIMARY
-        
+
         # First row gets gold styling
         trial_style = THEME.BEST_MARKER if i == 0 else THEME.TEXT_MUTED
         score_style = f"bold {THEME.BEST_MARKER}" if i == 0 else THEME.SUCCESS
-        
+
         table.add_row(
             f"[{trial_style}]{trial.number}[/]",
             f"[{score_style}]{score:.2f}[/]",
@@ -697,7 +671,7 @@ def mostrar_top_trials(study, n: int = 5) -> None:
             f"[{balance_color}]${saldo_final:,.2f}[/]",
             str(trades)
         )
-    
+
     console.print()
     console.print(table)
     console.print()
@@ -718,32 +692,32 @@ def mostrar_fin_optimizacion(
     Centered with checkmark and summary.
     """
     console = Console()
-    
+
     # Build content
     content_lines = []
-    
+
     # Main title with checkmark
     content_lines.append(f"[bold {THEME.SUCCESS}]✔[/]  [bold {THEME.TEXT_PRIMARY}]OPTIMIZATION COMPLETE[/]")
     content_lines.append("")
-    
+
     # Stats grid
     stats = Table.grid(padding=(0, 2))
     stats.add_column("label", style=THEME.TEXT_SECONDARY, justify="right")
     stats.add_column("value", style=THEME.TEXT_PRIMARY, justify="left")
-    
+
     stats.add_row("Trials Executed", f"[bold]{total_trials}[/]")
     stats.add_row("Best Score", f"[bold {THEME.BEST_MARKER}]{best_score:.2f}[/]")
     stats.add_row("Best Trial", f"[{THEME.ACCENT}]#{best_trial}[/]")
-    
+
     if estrategia:
         stats.add_row("Strategy", f"[{THEME.TEXT_MUTED}]{estrategia}[/]")
-    
+
     # Compose panel content
     panel_content = Group(
         Align.center(Text.from_markup("\n".join(content_lines))),
         Align.center(stats)
     )
-    
+
     panel = Panel(
         panel_content,
         box=THEME.BOX_PANEL,
@@ -751,7 +725,7 @@ def mostrar_fin_optimizacion(
         padding=(1, 4),
         width=50
     )
-    
+
     console.print()
     console.print(Align.center(panel))
     console.print()
@@ -771,6 +745,7 @@ def mostrar_cabecera_inicio(
     periodo: str = "",
     exit_type: str = "atr_fixed",
     strategy_exit_enabled: bool = False,
+    perturbacion_activar: bool = False,
 ) -> None:
     """
     Display minimalist startup header (institutional style) - Two panel layout.
@@ -779,27 +754,28 @@ def mostrar_cabecera_inicio(
         exit_type: "atr_fixed", "trailing", or "all"
             - When "all" is used in config, this function will be called twice
               (once for each exit type sequentially)
+        perturbacion_activar: Whether data perturbation is enabled for anti-overfitting
     """
     console = Console()
-    
+
     # Clear screen
     os.system('cls' if os.name == 'nt' else 'clear')
-    
+
     # ===== PANEL 1: STRATEGY INFO =====
     grid1 = Table.grid(padding=(0, 2), expand=False)
     grid1.add_column("label", style=THEME.TEXT_SECONDARY, width=12, justify="right")
     grid1.add_column("value")
-    
+
     # Asset with icon
     asset_icons = {
         "BTC": "₿", "GOLD": "●", "SP500": "◆", "SP": "◆", "NASDAQ": "■", "NDX": "■"
     }
     asset_icon = asset_icons.get(activo.upper(), "○")
     grid1.add_row("ASSET", f"[bold {THEME.ACCENT}]{asset_icon} {activo.upper()}[/]")
-    
+
     # Strategy
     grid1.add_row("STRATEGY", f"[bold {THEME.TEXT_PRIMARY}]{combo_nombre}[/]")
-    
+
     # Timeframe
     if timeframe:
         grid1.add_row("TIMEFRAME", f"[{THEME.TEXT_PRIMARY}]{timeframe}[/]")
@@ -817,7 +793,7 @@ def mostrar_cabecera_inicio(
                 fecha2 = parts[1].split(" ")[0] if " " in parts[1] else parts[1]
                 periodo_clean = f"{fecha1} → {fecha2}"
         grid1.add_row("PERIOD", f"[{THEME.TEXT_MUTED}]{periodo_clean}[/]")
-    
+
     panel1 = Panel(
         Align.center(grid1),
         title=f"[{THEME.BORDER_LIGHT}]═══ [{THEME.TEXT_PRIMARY}]MODELOX[/] ═══[/]",
@@ -827,12 +803,12 @@ def mostrar_cabecera_inicio(
         padding=(1, 3),
         width=62
     )
-    
+
     # ===== PANEL 2: OPTIMIZATION CONFIG =====
     grid2 = Table.grid(padding=(0, 2), expand=False)
     grid2.add_column("label", style=THEME.TEXT_SECONDARY, width=12, justify="right")
     grid2.add_column("value")
-    
+
     # Exit type
     if strategy_exit_enabled:
         exit_display = "CUSTOM (Strategy decide_exit)"
@@ -844,10 +820,17 @@ def mostrar_cabecera_inicio(
             "pnl_trailing": "PNL_TRAILING (Global)",
         }.get(exit_type, str(exit_type).upper())
     grid2.add_row("EXIT MODE", f"[{THEME.ACCENT}]{exit_display}[/]")
-    
+
     # Trials
     grid2.add_row("TRIALS", f"[bold {THEME.TEXT_PRIMARY}]{n_trials}[/]")
-    
+
+    # Perturbation status
+    if perturbacion_activar:
+        perturb_display = f"[bold green]✓ ACTIVA[/] [dim](Anti-Overfitting)[/dim]"
+    else:
+        perturb_display = f"[dim]✗ Desactivada[/dim]"
+    grid2.add_row("PERTURBATION", perturb_display)
+
     # Indicators (solo mostrar si existen, más compacto)
     if indicadores:
         # Mostrar solo los primeros 3 si hay muchos
@@ -856,7 +839,7 @@ def mostrar_cabecera_inicio(
         if len(indicadores) > 3:
             inds_str += f" · +{len(indicadores)-3}"
         grid2.add_row("PARAMS", f"[{THEME.TEXT_MUTED}]{inds_str}[/]")
-    
+
     panel2 = Panel(
         Align.center(grid2),
         title=f"[{THEME.TEXT_SECONDARY}]Optimization Config[/]",
@@ -866,7 +849,7 @@ def mostrar_cabecera_inicio(
         padding=(1, 3),
         width=62
     )
-    
+
     # Render both panels
     console.print()
     console.print(Align.center(panel1))
@@ -883,7 +866,7 @@ class EstadisticasOptimizacion:
     Tracker de estadísticas durante la optimización.
     Mantiene un historial para calcular promedios en tiempo real.
     """
-    
+
     def __init__(self):
         self.roi_valores = []
         self.sqn_valores = []
@@ -894,18 +877,18 @@ class EstadisticasOptimizacion:
         self.score_valores = []
         self.mejor_score = float("-inf")
         self.mejor_trial = 0
-    
+
     def actualizar(self, metricas: Dict[str, Any], score: float, trial: int) -> None:
         """Añade nuevos valores al historial."""
         M = MetricMapper
-        
+
         roi = M.get_float(metricas, "roi", 0.0)
         sqn = M.get_float(metricas, "sqn", 0.0)
         expectativa = M.get_float(metricas, "expectativa", 0.0)
         sharpe = M.get_float(metricas, "sharpe", 0.0)
         winrate = M.get_float(metricas, "winrate", 0.0)
         drawdown = M.get_float(metricas, "drawdown", 0.0)
-        
+
         self.roi_valores.append(roi)
         self.sqn_valores.append(sqn)
         self.expectativa_valores.append(expectativa)
@@ -913,16 +896,16 @@ class EstadisticasOptimizacion:
         self.winrate_valores.append(winrate)
         self.drawdown_valores.append(drawdown)
         self.score_valores.append(score)
-        
+
         if score > self.mejor_score:
             self.mejor_score = score
             self.mejor_trial = trial
-    
+
     def obtener_promedios(self) -> Dict[str, float]:
         """Calcula los promedios actuales."""
         def promedio_seguro(lista):
             return sum(lista) / len(lista) if lista else 0.0
-        
+
         return {
             "roi_medio": promedio_seguro(self.roi_valores),
             "sqn_medio": promedio_seguro(self.sqn_valores),
@@ -952,51 +935,114 @@ def actualizar_estadisticas(metricas: Dict[str, Any], score: float, trial: int) 
     _stats_optimizacion.actualizar(metricas, score, trial)
 
 
-def mostrar_evolucion_metricas(mostrar_cada_n: int = 25) -> None:
+def mostrar_evolucion_metricas(mostrar_cada_n: int = 25, forzar: bool = False) -> None:
     """
     Muestra un box compacto con la evolución de métricas promedio.
     Solo se muestra cada N trials para no saturar la consola.
+    
+    Args:
+        mostrar_cada_n: Mostrar cada N trials (default 25)
+        forzar: Si True, muestra siempre (ignora mostrar_cada_n)
+    """
+    stats = _stats_optimizacion.obtener_promedios()
+    n_trials = stats["n_trials"]
+
+    # Solo mostrar cada N trials (o si se fuerza)
+    if not forzar and (n_trials == 0 or n_trials % mostrar_cada_n != 0):
+        return
+
+    console = Console()
+
+    # Construir tabla compacta horizontal (inline style)
+    grid = Table.grid(padding=(0, 2), expand=False)
+    grid.add_column("metric", style=THEME.TEXT_SECONDARY)
+    grid.add_column("value", justify="right")
+
+    grid.add_row("ROI μ", f"{fmt_number(stats['roi_medio'], 2)}%")
+    grid.add_row("SQN μ", f"{fmt_number(stats['sqn_medio'], 2)}")
+    grid.add_row("Exp μ", f"{fmt_number(stats['expectativa_media'], 2)}")
+    grid.add_row("Sharpe μ", f"{fmt_number(stats['sharpe_medio'], 2)}")
+    grid.add_row("Score μ", f"[{THEME.BEST_MARKER}]{fmt_number(stats['score_medio'], 2)}[/]")
+    grid.add_row(f"[{THEME.TEXT_DIM}]────────[/]", "")
+    grid.add_row("Best", f"[bold {THEME.BEST_MARKER}]{fmt_number(stats['mejor_score'], 2)}[/]")
+    grid.add_row("Trial", f"#{stats['mejor_trial']}")
+
+    panel = Panel(
+        Align.center(grid),
+        title=f"[{THEME.TEXT_SECONDARY}]═ EVOLUTION ({n_trials}) ═[/]",
+        title_align="center",
+        box=THEME.BOX_PANEL,
+        border_style=THEME.BORDER_DARK,
+        padding=(0, 1),
+        width=32
+    )
+
+    console.print()
+    console.print(Align.center(panel))
+
+
+def mostrar_evolucion_compacta() -> Optional[Panel]:
+    """
+    Retorna un box compacto con la evolución de métricas promedio.
+    Para mostrar después de CADA trial sin saturar la consola.
     """
     stats = _stats_optimizacion.obtener_promedios()
     n_trials = stats["n_trials"]
     
-    # Solo mostrar cada N trials
-    if n_trials == 0 or n_trials % mostrar_cada_n != 0:
-        return
-    
-    console = Console()
-    
-    # Construir tabla compacta
-    grid = Table.grid(padding=(0, 3), expand=False)
-    grid.add_column("metric", style=THEME.TEXT_SECONDARY, width=12)
-    grid.add_column("value", justify="right", width=10)
-    
-    # Colores basados en valores
-    roi_color = THEME.SUCCESS if stats["roi_medio"] > 0 else THEME.DANGER
-    sqn_color = get_metric_color(stats["sqn_medio"], 2.0, 1.0)
-    exp_color = THEME.SUCCESS if stats["expectativa_media"] > 0 else THEME.DANGER
-    sharpe_color = get_metric_color(stats["sharpe_medio"], 1.0, 0.5)
-    
-    grid.add_row("ROI Medio", f"[{roi_color}]{stats['roi_medio']:.2f}%[/]")
-    grid.add_row("SQN Medio", f"[{sqn_color}]{stats['sqn_medio']:.2f}[/]")
-    grid.add_row("Expect Media", f"[{exp_color}]{stats['expectativa_media']:.2f}[/]")
-    grid.add_row("Sharpe Medio", f"[{sharpe_color}]{stats['sharpe_medio']:.2f}[/]")
-    grid.add_row(f"[{THEME.TEXT_DIM}]────────────[/]", "")
-    grid.add_row("Mejor Score", f"[bold {THEME.BEST_MARKER}]{stats['mejor_score']:.2f}[/]")
-    grid.add_row("Mejor Trial", f"[{THEME.ACCENT}]#{stats['mejor_trial']}[/]")
-    
-    panel = Panel(
+    if n_trials == 0:
+        return None
+
+    grid = Table.grid(padding=(0, 2), expand=False)
+    grid.add_column("metric", style=THEME.TEXT_SECONDARY)
+    grid.add_column("value", justify="right")
+
+    grid.add_row("ROI μ", f"{fmt_number(stats['roi_medio'], 2)}%")
+    grid.add_row("SQN μ", f"{fmt_number(stats['sqn_medio'], 2)}")
+    grid.add_row("Exp μ", f"{fmt_number(stats['expectativa_media'], 2)}")
+    grid.add_row("Sharpe μ", f"{fmt_number(stats['sharpe_medio'], 2)}")
+    grid.add_row("Score μ", f"[{THEME.BEST_MARKER}]{fmt_number(stats['score_medio'], 2)}[/]")
+    grid.add_row(f"[{THEME.TEXT_DIM}]────────[/]", "")
+    grid.add_row("Best", f"[bold {THEME.BEST_MARKER}]{fmt_number(stats['mejor_score'], 2)}[/]")
+    grid.add_row("Trial", f"#{stats['mejor_trial']}")
+
+    return Panel(
         Align.center(grid),
-        title=f"[{THEME.TEXT_SECONDARY}]══ EVOLUCIÓN ({n_trials} trials) ══[/]",
+        title=f"[{THEME.TEXT_SECONDARY}]EVOLUTION ({n_trials})[/]",
         title_align="center",
         box=THEME.BOX_PANEL,
         border_style=THEME.BORDER_DARK,
-        padding=(0, 2),
-        width=40
+        padding=(0, 1),
+        width=38,
     )
+
+
+def mostrar_evolucion_inline(metrics: Dict[str, Any], score: float, trial_num: int) -> str:
+    """
+    Returns inline evolution string for display after each trial.
+    Format: [ROI: x.xx% | Sharpe: x.xx | SQN: x.xx | Exp: x.xx]
+    """
+    M = MetricMapper
     
-    console.print()
-    console.print(Align.center(panel))
+    roi = M.get_float(metrics, "roi", 0.0)
+    sharpe = M.get_float(metrics, "sharpe", 0.0)
+    sqn = M.get_float(metrics, "sqn", 0.0)
+    exp = M.get_float(metrics, "expectativa", 0.0)
+    
+    # Colors
+    roi_color = THEME.SUCCESS if roi > 0 else THEME.DANGER
+    sqn_color = get_metric_color(sqn, 2.0, 1.5)
+    exp_color = THEME.SUCCESS if exp > 0 else THEME.DANGER
+    
+    return (
+        f"[{THEME.TEXT_DIM}]│[/] "
+        f"[{THEME.TEXT_SECONDARY}]ROI[/] [{roi_color}]{fmt_number(roi, 2)}%[/] "
+        f"[{THEME.TEXT_DIM}]│[/] "
+        f"[{THEME.TEXT_SECONDARY}]Sharpe[/] {fmt_number(sharpe, 2)} "
+        f"[{THEME.TEXT_DIM}]│[/] "
+        f"[{THEME.TEXT_SECONDARY}]SQN[/] [{sqn_color}]{fmt_number(sqn, 2)}[/] "
+        f"[{THEME.TEXT_DIM}]│[/] "
+        f"[{THEME.TEXT_SECONDARY}]Exp[/] [{exp_color}]{fmt_number(exp, 2)}[/]"
+    )
 
 
 # ============================================================================
@@ -1030,20 +1076,128 @@ def mostrar_panel_rich(
 
 
 # ============================================================================
+# NEIGHBORHOOD FITNESS DISPLAY
+# ============================================================================
+
+def mostrar_resultado_vecindario(
+    result: Dict[str, Any],
+    inline: bool = False,
+) -> None:
+    """
+    Muestra el resultado del análisis de vecindario (Neighborhood Fitness).
+    
+    Args:
+        result: Dict con keys: aggregated_score, mean_score, std_score,
+                robust_dsr, worst_case_cvar, equity_stability_r2, 
+                n_neighbors_tested, n_neighbors_successful, execution_time_ms
+        inline: Si True, muestra formato compacto en una línea
+    """
+    console = Console()
+    
+    aggregated = result.get("aggregated_score", 0.0)
+    mean_score = result.get("mean_score", 0.0)
+    std_score = result.get("std_score", 0.0)
+    robust_dsr = result.get("robust_dsr", 0.0)
+    worst_cvar = result.get("worst_case_cvar", 0.0)
+    equity_r2 = result.get("equity_stability_r2", 0.0)
+    n_tested = result.get("n_neighbors_tested", 0)
+    n_success = result.get("n_neighbors_successful", 0)
+    exec_time = result.get("execution_time_ms", 0.0)
+    
+    # Determinar calidad del resultado
+    is_good = std_score < mean_score * 0.3 and n_success >= n_tested * 0.6
+    
+    if inline:
+        status_icon = "●" if is_good else "○"
+        status_color = THEME.SUCCESS if is_good else THEME.TEXT_MUTED
+
+        compact = Table.grid(padding=(0, 2), expand=False)
+        compact.add_column("metric", style=THEME.TEXT_SECONDARY)
+        compact.add_column("value", justify="right")
+        compact.add_row("Aggregated", f"{aggregated:.2f}")
+        compact.add_row("μ / σ", f"{mean_score:.2f} / {std_score:.2f}")
+        compact.add_row("Neighbors", f"{n_success}/{n_tested}")
+        compact.add_row("DSR", f"{robust_dsr:.2f}")
+        compact.add_row("Exec", f"{exec_time:.0f}ms")
+
+        panel = Panel(
+            Align.center(compact),
+            title=f"[{status_color}]{status_icon}[/] [{THEME.TEXT_SECONDARY}]NEIGHBORHOOD[/]",
+            title_align="center",
+            box=THEME.BOX_PANEL,
+            border_style=THEME.BORDER_DARK,
+            padding=(0, 1),
+            width=38,
+        )
+
+        console.print(panel)
+        return
+    
+    # Formato panel completo
+    grid = Table.grid(padding=(0, 2), expand=False)
+    grid.add_column("metric", style=THEME.TEXT_SECONDARY, width=20)
+    grid.add_column("value", justify="right", width=18)
+    
+    # Score agregado
+    grid.add_row("Aggregated Score", f"{aggregated:.2f}")
+    grid.add_row("Mean Score (μ)", f"{mean_score:.2f}")
+    grid.add_row("Std Score (σ)", f"{std_score:.2f}")
+    
+    grid.add_row("", "")  # Separador
+    
+    # Trinidad de objetivos
+    grid.add_row("[bold]TRINITY OBJECTIVES[/]", "")
+    grid.add_row("Robust DSR", f"{robust_dsr:.3f}")
+    grid.add_row("Worst CVaR 95%", f"{worst_cvar:.2f}%")
+    grid.add_row("Equity R²", f"{equity_r2:.3f}")
+    
+    grid.add_row("", "")  # Separador
+    
+    # Estadísticas de vecinos
+    success_pct = (n_success / n_tested * 100) if n_tested > 0 else 0
+    grid.add_row("Neighbors Tested", str(n_tested))
+    grid.add_row("Neighbors Success", f"{n_success} ({success_pct:.0f}%)")
+    grid.add_row("Exec Time", f"{exec_time:.0f}ms")
+    
+    # Construir panel
+    title_color = THEME.SUCCESS if is_good else THEME.TEXT_MUTED
+    title_icon = "●" if is_good else "○"
+    
+    panel = Panel(
+        Align.center(grid),
+        title=f"[{title_color}]{title_icon}[/] [{THEME.TEXT_SECONDARY}]NEIGHBORHOOD FITNESS[/]",
+        title_align="center",
+        box=THEME.BOX_PANEL,
+        border_style=THEME.BORDER_DARK,
+        padding=(0, 2),
+        width=48
+    )
+    
+    console.print()
+    console.print(Align.center(panel))
+
+
+# ============================================================================
 # MODULE EXPORTS
 # ============================================================================
 
 __all__ = [
     "THEME",
     "MetricMapper",
+    "fmt_number",
+    "fmt_styled",
     "mostrar_panel_elegante",
     "mostrar_top_trials",
     "mostrar_fin_optimizacion",
     "mostrar_cabecera_inicio",
     "mostrar_panel_rich",
-    # Nuevas funciones de evolución
+    # Funciones de evolución
     "EstadisticasOptimizacion",
     "resetear_estadisticas",
     "actualizar_estadisticas",
     "mostrar_evolucion_metricas",
+    "mostrar_evolucion_compacta",
+    "mostrar_evolucion_inline",
+    # Vecindario
+    "mostrar_resultado_vecindario",
 ]

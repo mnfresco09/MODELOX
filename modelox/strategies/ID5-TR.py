@@ -17,7 +17,7 @@ class StrategyZlemaFractal(EstrategiaBase):
     # Identidad única en el sistema
     combinacion_id = 5
     name = "ID5 TREND FOLLOW"
-    
+
     # Usamos las salidas globales del motor MODELOX
     SALIDAS_PERSONALIZADAS = False
 

@@ -2,9 +2,11 @@
 MODELOX package - High-Performance Backtesting & Optimization Engine.
 
 Ultra-modular architecture:
-- core: Engine, data, types
+- core: Engine, data, types, neighborhood fitness
 - strategies: Registry of trading strategies
-- reporting: CSV, Excel, Rich console, Plotly charts
+
+Reporters (ExcelReporter, PlotReporter, RichReporter)
+están integrados directamente en ejecutar.py para simplificar la estructura.
 
 Adding new indicators:
 1. Implement in logic/indicators.py

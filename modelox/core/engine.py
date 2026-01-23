@@ -78,10 +78,10 @@ def find_exits_numba(
     time_stop_bars,
 ):
     """Kernel Numba para encontrar salidas con SL/TP basados en % sobre STAKE.
-    
+
     Los porcentajes (sl_pct, tp_pct, etc.) son sobre el STAKE (margen/saldo usado),
     NO sobre el precio de entrada.
-    
+
     Fórmulas:
     - LONG:
       - SL_price = entry_price - (stake × sl_pct / 100) / qty
@@ -89,7 +89,7 @@ def find_exits_numba(
     - SHORT:
       - SL_price = entry_price + (stake × sl_pct / 100) / qty
       - TP_price = entry_price - (stake × tp_pct / 100) / qty
-      
+
     Esto garantiza que al llegar al SL, el PNL sea exactamente -stake × sl_pct%.
     """
     n_entries = len(entry_indices)
@@ -105,7 +105,7 @@ def find_exits_numba(
         side = entry_types[i]
         qty = entry_qty[i]
         stake = entry_stake[i]
-        
+
         if qty <= 0 or stake <= 0:
             continue
 
@@ -153,7 +153,7 @@ def find_exits_numba(
                         exit_prices[i] = sl_price
                         exit_reasons[i] = 1  # SL
                         break
-                    
+
                     # Check activación del trailing
                     if (side == 1 and h >= activation_price) or (side == -1 and low_val <= activation_price):
                         trailing_active = True
@@ -242,12 +242,12 @@ def find_single_exit_numba(
     time_stop_bars: int,
 ) -> Tuple[int, float, int]:
     """Encuentra la salida para un trade individual con SL/TP basados en % sobre STAKE.
-    
+
     Returns: (exit_idx, exit_price, exit_reason)
         exit_reason: 1=SL, 2=TP, 3=Trail, 4=Time, 0=EndOfData
     """
     n_bars = len(close_prices)
-    
+
     if qty <= 0 or stake <= 0:
         return -1, np.nan, 0
 
@@ -287,7 +287,7 @@ def find_single_exit_numba(
                     return curr, sl_price, 1  # SL
                 if side == -1 and h >= sl_price:
                     return curr, sl_price, 1  # SL
-                
+
                 # Check activación del trailing
                 if (side == 1 and h >= activation_price) or (side == -1 and low_val <= activation_price):
                     trailing_active = True
@@ -329,7 +329,7 @@ def find_single_exit_numba(
             final_idx = n_bars - 1
         if final_idx > entry_idx:
             return final_idx, close_prices[final_idx], 4  # Time
-    
+
     # End of data
     final_idx = n_bars - 1
     return final_idx, close_prices[final_idx], 0  # EndOfData
@@ -352,7 +352,7 @@ def calculate_performance_vectorized_numba(
     """
     # Check si la estrategia tiene salidas personalizadas
     bool(getattr(strategy, "SALIDAS_PERSONALIZADAS", False))
-    
+
     # 1) Preparación de datos y cruce de señales (edge trigger)
     df_sig = df.join(signals, on="timestamp", how="left").with_columns(
         [
@@ -393,7 +393,7 @@ def calculate_performance_vectorized_numba(
 
     current_balance = float(params.saldo_inicial)
     last_exit_idx = -1  # Para evitar solapamiento de trades
-    
+
     # Listas para construir el DataFrame
     trade_data = {
         "entry_idx": [],
@@ -415,29 +415,29 @@ def calculate_performance_vectorized_numba(
 
     for i in range(len(entry_indices)):
         entry_idx = int(entry_indices[i])
-        
+
         # Skip si la entrada está antes de la salida del trade anterior (no solapar)
         if entry_idx <= last_exit_idx:
             continue
-        
+
         # STOP: si el saldo ya bajó al mínimo operativo, no seguir operando
         if current_balance <= min_op:
             break
-        
+
         entry_p = float(entry_prices[i])
         side = int(entry_types[i])
-        
+
         # Calcular saldo_usado real (limitado al saldo disponible)
         saldo_usado = min(saldo_usado_cfg, current_balance)
-        
+
         # Calcular qty escalada al saldo disponible
         volumen_max = saldo_usado * apalancamiento_max
         qty_calculated = volumen_max / entry_p if entry_p > 0 else 0.0
         qty = min(qty_max, qty_calculated)
-        
+
         if qty <= 0:
             continue
-        
+
         # Encontrar salida con SL/TP basados en % sobre stake
         exit_idx, exit_p, exit_reason = find_single_exit_numba(
             entry_idx=entry_idx,
@@ -455,36 +455,36 @@ def calculate_performance_vectorized_numba(
             trail_dist_pct=params.exit_trail_dist_pct,
             time_stop_bars=params.time_stop_bars,
         )
-        
+
         if exit_idx < 0:
             continue
-            
+
         last_exit_idx = exit_idx
-        
+
         # PnL bruto
         if side == 1:  # Long
             pnl_bruto = (exit_p - entry_p) * qty
         else:  # Short
             pnl_bruto = (entry_p - exit_p) * qty
-        
+
         # Comisiones
         if int(params.comision_sides) >= 2:
             comision = (entry_p * qty + exit_p * qty) * fee_rate
         else:
             comision = entry_p * qty * fee_rate
-        
+
         pnl_neto = pnl_bruto - comision
         pnl_pct = (pnl_neto / saldo_usado * 100) if saldo_usado > 0 else 0.0
-        
+
         saldo_antes = current_balance
         current_balance += pnl_neto
-        
+
         # Clamp a mínimo operativo (nunca puede bajar de ahí)
         if current_balance < min_op:
             current_balance = min_op
-        
+
         saldo_despues = current_balance
-        
+
         # Agregar trade
         trade_data["entry_idx"].append(entry_idx)
         trade_data["exit_idx"].append(exit_idx)
@@ -507,7 +507,7 @@ def calculate_performance_vectorized_numba(
 
     # 4) Construir DataFrame y añadir timestamps
     trades_df = pl.DataFrame(trade_data)
-    
+
     trades_df = trades_df.with_columns(
         [
             pl.Series(ts_arr.gather(trades_df["entry_idx"])).alias("entry_time"),

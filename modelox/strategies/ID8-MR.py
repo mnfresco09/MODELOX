@@ -13,7 +13,7 @@ class StrategyCandleReversionBoss(EstrategiaBase):
 
     combinacion_id = 8
     name = "ID8.MEANT REVERSION"
-    
+
     SALIDAS_PERSONALIZADAS = False
 
     def suggest_params(self, trial: Any) -> Dict[str, Any]:
@@ -42,10 +42,10 @@ class StrategyCandleReversionBoss(EstrategiaBase):
 
     def generate_signals(self, df: pl.DataFrame, params: Dict[str, Any]) -> pl.DataFrame:
         self._init_params_metadata(params) #
-        
+
         # 1. IDENTIFICACIÓN EXPLÍCITA DE COLUMNAS
         ptf = params.get("pattern_tf", "15m")
-        
+
         # Obtener columnas de forma segura (compatible con DataFrame y LazyFrame)
         # Esto soluciona errores si df es LazyFrame y no tiene el atributo .columns
         if hasattr(df, "collect_schema"):
@@ -57,14 +57,14 @@ class StrategyCandleReversionBoss(EstrategiaBase):
 
         # Se verifica la existencia de sufijos para evitar ambigüedades en el join
         suffix = f"_{ptf}"
-        
+
         # Si la columna con sufijo existe (ej. close_15m), se usa. Si no, se usa la base (close).
         c = f"close{suffix}" if f"close{suffix}" in cols else "close"
         o = f"open{suffix}" if f"open{suffix}" in cols else "open"
         h = f"high{suffix}" if f"high{suffix}" in cols else "high"
         low_col = f"low{suffix}" if f"low{suffix}" in cols else "low"
         v = f"volume{suffix}" if f"volume{suffix}" in cols else "volume"
-            
+
         self._require_columns(df, ["timestamp", c, o, h, low_col, v])
 
         # 2. RECUPERAR PARÁMETROS
@@ -82,7 +82,7 @@ class StrategyCandleReversionBoss(EstrategiaBase):
             (pl.col(v) / pl.col(v).rolling_mean(20)).alias("rvol"),
             (pl.col(h) - pl.col(low_col)).alias("range_total")
         ])
-        
+
         # SOLUCIÓN AL ERROR: Usar pl.col() dentro de funciones horizontales
         # Se pasa *args en lugar de una lista para compatibilidad con versiones de Polars
         q = q.with_columns([
@@ -95,7 +95,7 @@ class StrategyCandleReversionBoss(EstrategiaBase):
         # Hammer / Pin Bar
         is_hammer = (pl.col("lower_wick") >= pl.col("range_total") * m_wick) & \
                     (pl.col("body_size") <= pl.col("range_total") * m_body)
-        
+
         # Shooting Star
         is_star = (pl.col("upper_wick") >= pl.col("range_total") * m_wick) & \
                   (pl.col("body_size") <= pl.col("range_total") * m_body)
@@ -104,7 +104,7 @@ class StrategyCandleReversionBoss(EstrategiaBase):
         is_engulfing_long = (pl.col(c) > pl.col(o).shift(1)) & \
                             (pl.col(o) < pl.col(c).shift(1)) & \
                             (pl.col(c) > pl.col(o))
-                            
+
         is_engulfing_short = (pl.col(c) < pl.col(o).shift(1)) & \
                              (pl.col(o) > pl.col(c).shift(1)) & \
                              (pl.col(c) < pl.col(o))
@@ -117,7 +117,7 @@ class StrategyCandleReversionBoss(EstrategiaBase):
         sig_long = (is_hammer | is_engulfing_long | is_tweezer_bottom) & \
                    (pl.col("z_score") < -z_t) & \
                    (pl.col("rvol") > rv_t)
-        
+
         sig_short = (is_star | is_engulfing_short | is_tweezer_top) & \
                     (pl.col("z_score") > z_t) & \
                     (pl.col("rvol") > rv_t)

@@ -39,7 +39,7 @@ DEFAULT_EXIT_TP_PCT = 14.0       # Salir si PNL_PCT >= +20% (ganancia)
 # Parámetros exclusivos para pnl_trailing
 DEFAULT_EXIT_TRAIL_ACT_PCT = 15.0   # Activar trailing cuando PNL_PCT >= +15%
 DEFAULT_EXIT_TRAIL_DIST_PCT = 3.0  # Trailing retrocede 3% desde máximo PNL
-True
+
 # Optimización con Optuna
 DEFAULT_OPTIMIZE_EXITS = True
 
@@ -93,24 +93,24 @@ def _normalize_exit_values(
     trail_dist_pct: float,
 ) -> tuple:
     """Normaliza y valida valores de exit settings.
-    
+
     Reglas:
     - Todos los valores deben ser positivos (se aplica abs())
     - Si exit_type es 'pnl_trailing', tp_pct puede ser 0 (sin TP)
     - trail_dist_pct no puede ser mayor que trail_act_pct / 2
-    
+
     Returns:
         Tuple de (sl_pct, tp_pct, trail_act_pct, trail_dist_pct) normalizados
     """
     # Valores absolutos con defaults mínimos
     sl_pct = abs(sl_pct) if sl_pct != 0 else 1.0
-    
+
     if exit_type == "pnl_trailing":
         # En trailing permitimos 0 como "sin TP"
         tp_pct = abs(tp_pct) if tp_pct != 0 else 0.0
     else:
         tp_pct = abs(tp_pct) if tp_pct != 0 else 1.0
-    
+
     trail_act_pct = abs(trail_act_pct) if trail_act_pct != 0 else 0.5
     trail_dist_pct = abs(trail_dist_pct) if trail_dist_pct != 0 else 0.25
 
@@ -227,15 +227,15 @@ def exit_settings_from_params(params: Dict[str, Any]) -> ExitSettings:
 
 def calc_pnl_pct(entry_price: float, current_price: float, side: str) -> float:
     """Calcula el PNL_PCT (ROI %) de un trade.
-    
+
     LONG:  PNL_PCT = ((current - entry) / entry) * 100
     SHORT: PNL_PCT = ((entry - current) / entry) * 100
-    
+
     Returns: float (puede ser negativo para pérdidas)
     """
     if entry_price <= 0:
         return 0.0
-    
+
     s = (side or "").upper()
     if s == "LONG":
         return ((current_price - entry_price) / entry_price) * 100.0
@@ -281,16 +281,16 @@ def check_exit_pnl_intrabar(
         # tp_pct = ((tp_price - entry) / entry) * 100
         # tp_price = entry * (1 + tp_pct/100)
         tp_price = entry_price * (1.0 + tp_pct / 100.0)
-        
+
         # Check SL primero (peor caso)
         if low <= sl_price:
             exit_price = o if o <= sl_price else sl_price
             return IntrabarExit(True, "SL", exit_price)
-        
+
         # Check TP
         if h >= tp_price:
             return IntrabarExit(True, "TP", tp_price)
-    
+
     else:  # SHORT
         # SL: queremos salir si PNL_PCT <= -sl_pct
         # -sl_pct = ((entry - sl_price) / entry) * 100
@@ -300,12 +300,12 @@ def check_exit_pnl_intrabar(
         # tp_pct = ((entry - tp_price) / entry) * 100
         # tp_price = entry * (1 - tp_pct/100)
         tp_price = entry_price * (1.0 - tp_pct / 100.0)
-        
+
         # Check SL primero (peor caso)
         if h >= sl_price:
             exit_price = o if o >= sl_price else sl_price
             return IntrabarExit(True, "SL", exit_price)
-        
+
         # Check TP
         if low <= tp_price:
             return IntrabarExit(True, "TP", tp_price)
@@ -460,7 +460,7 @@ def decide_exit_pnl_trailing(
        - Salir si PNL_PCT actual <= (max_pnl - trail_dist_pct)
 
     El trailing NUNCA retrocede el umbral - solo sube para proteger más.
-    
+
     Ejemplo:
     - trail_act_pct = 1%, trail_dist_pct = 0.5%
     - Cuando PNL_PCT alcanza +1%, se activa el trailing
@@ -800,9 +800,9 @@ def decide_exit_for_trade(
         if hasattr(obj, "exit_idx"):
             try:
                 return ExitDecision(
-                    exit_idx=int(getattr(obj, "exit_idx")),
+                    exit_idx=int(obj.exit_idx),
                     reason=str(getattr(obj, "reason", "")),
-                    exit_price=(float(getattr(obj, "exit_price")) if getattr(obj, "exit_price", None) is not None else None),
+                    exit_price=(float(obj.exit_price) if getattr(obj, "exit_price", None) is not None else None),
                 )
             except Exception:
                 return None

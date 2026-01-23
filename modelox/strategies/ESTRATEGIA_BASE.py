@@ -99,7 +99,7 @@ class EstrategiaBase:
 
     # =============================================================================
     # API PUBLICA (CONTRATO)
-    
+
     # =============================================================================
     def suggest_params(self, trial: Any) -> Dict[str, Any]:
         """DEFINE EL ESPACIO DE BUSQUEDA DE OPTUNA.

@@ -162,6 +162,7 @@ if not trades.empty and 'trades_exec' in dir():
             trades_exec,
             saldo_inicial=1000.0,
             equity_curve=equity_curve,
+            timeframe="1h",  # Timeframe para cálculo correcto de Sharpe/Sortino
         )
         times_metrics.append(time.perf_counter() - t0)
     

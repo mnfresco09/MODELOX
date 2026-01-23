@@ -1,6 +1,6 @@
 # ============================================================================
 # MODELOX QUANT STATION - DOCKER COMPOSE v2.0
-# Ultra-portable: Local, Mac, Windows, Cloud, Project IDX
+# Ejecutar desde app/: docker compose up -d
 # ============================================================================
 
 services:
@@ -13,8 +13,8 @@ services:
     ports:
       - "${APP_PORT:-8080}:80"
     volumes:
-      - ./app/nginx/nginx.conf:/etc/nginx/nginx.conf:ro
-      - ./resultados:/app/resultados:ro
+      - ./nginx/nginx.conf:/etc/nginx/nginx.conf:ro
+      - ../resultados:/app/resultados:ro
     depends_on:
       - backend
       - frontend
@@ -32,7 +32,7 @@ services:
   # --------------------------------------------------------------------------
   backend:
     build:
-      context: .
+      context: ..
       dockerfile: app/backend/Dockerfile
     container_name: modelox-backend
     environment:
@@ -40,12 +40,12 @@ services:
       - PYTHONDONTWRITEBYTECODE=1
       - MODELOX_ENV=${MODELOX_ENV:-production}
     volumes:
-      - ./modelox:/app/modelox:ro
-      - ./general:/app/general:ro
-      - ./visual:/app/visual:ro
-      - ./data:/app/data:ro
-      - ./resultados:/app/resultados
-      - ./ejecutar.py:/app/ejecutar.py:ro
+      - ../modelox:/app/modelox:ro
+      - ../general:/app/general:ro
+      - ../visual:/app/visual:ro
+      - ../data:/app/data:ro
+      - ../resultados:/app/resultados
+      - ../ejecutar.py:/app/ejecutar.py:ro
     networks:
       - modelox-network
     restart: unless-stopped
@@ -60,7 +60,7 @@ services:
   # --------------------------------------------------------------------------
   frontend:
     build:
-      context: .
+      context: ..
       dockerfile: app/frontend/Dockerfile
     container_name: modelox-frontend
     networks:

@@ -68,9 +68,11 @@ class TrialArtifacts:
     trades: TradesDF  # Acepta Polars o Pandas
     equity_curve: List[float]
     indicators_used: List[str]
-    # Nuevos campos para tracking de robustez
+    # Tracking de perturbación de datos
     perturbado: bool = False
     perturb_seed: Optional[int] = None
+    # Resultado del análisis de vecindario (si se ejecutó)
+    neighborhood_result: Optional[Dict[str, Any]] = None
 
 
 class Reporter(Protocol):
@@ -241,3 +243,41 @@ def align_signals_to_base(
             out = out.with_columns(pl.col(col).fill_null(False).cast(pl.Boolean))
 
     return out
+
+
+# =============================================================================
+# GESTIÓN DE MEMORIA (fusionado desde memory.py)
+# =============================================================================
+import gc
+import platform
+import ctypes
+
+
+def nuclear_cleanup():
+    """
+    Realiza una limpieza agresiva de memoria.
+    1. Fuerza la recolección de basura de Python (Generaciones 0, 1 y 2).
+    2. En Linux, fuerza a la librería C (malloc) a devolver la RAM al sistema operativo.
+    """
+    gc.collect()
+
+    if platform.system() == "Linux":
+        try:
+            libc = ctypes.CDLL("libc.so.6")
+            libc.malloc_trim(0)
+        except Exception:
+            pass
+
+
+def clean_trial_variables(*vars_to_delete):
+    """
+    Borra variables específicas y ejecuta limpieza.
+    Uso: clean_trial_variables(df, signals, trades)
+    """
+    for v in vars_to_delete:
+        try:
+            del v
+        except (UnboundLocalError, NameError):
+            pass
+
+    nuclear_cleanup()

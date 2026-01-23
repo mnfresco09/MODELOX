@@ -39,26 +39,73 @@ TIMEFRAMES = [1]  # COMPATIBILIDAD (NO MODIFICAR)
 # EL PERIODO 2020-2024 SE DIVIDE EN 3 FASES DE MERCADO DISTINTAS.
 # SELECCIONA EL NÚMERO CORRESPONDIENTE PARA ENFOCAR EL BACKTEST.
 #
-#   [1] : 2020-01-01 -> 2021-07-28 (PANDEMIA + INICIO BULL RUN)
-#   [2] : 2021-07-29 -> 2023-02-23 (ATH 69K + BEAR MARKET CRASH)
-#   [3] : 2023-02-24 -> 2024-09-18 (RECUPERACIÓN + INSTITUCIONAL/ETF)
-# ["ALL"]: 2020-01-01 -> 2024-09-18 (CICLO COMPLETO)
+#   "1"       : 2020-01-01 -> 2021-07-28 (PANDEMIA + INICIO BULL RUN)
+#   "2"       : 2021-07-29 -> 2023-02-23 (ATH 69K + BEAR MARKET CRASH)
+#   "3"       : 2023-02-24 -> 2024-09-18 (RECUPERACIÓN + INSTITUCIONAL/ETF)
+#   "all"     : 2020-01-01 -> 2024-09-18 (CICLO COMPLETO)
+#   "1,2"     : Combina rangos 1 y 2 (2020-01-01 -> 2023-02-23)
+#   "2,3"     : Combina rangos 2 y 3 (2021-07-29 -> 2024-09-18)
 #
-SELECCION_RANGO = "ALL"  # <--- ¡MODIFICA AQUÍ! (1, 2, 3 o "ALL")
+SELECCION_RANGO = "1"  # <--- ¡MODIFICA AQUÍ! ("1", "2", "3", "all", "1,2", "2,3")
 
 _RANGOS_FECHAS = {
     1:     ("2020-01-01", "2021-07-28"),
     2:     ("2021-07-29", "2023-02-23"),
     3:     ("2023-02-24", "2024-09-18"),
-    "ALL": ("2020-01-01", "2024-09-18"),
+    "all": ("2020-01-01", "2024-09-18"),
 }
 
-# VALIDACIÓN DE SEGURIDAD PARA EL RANGO
-if SELECCION_RANGO not in _RANGOS_FECHAS:
-    print(f"⚠️ [CONFIG] RANGO '{SELECCION_RANGO}' NO RECONOCIDO. USANDO OPCIÓN 3 POR DEFECTO.")
-    SELECCION_RANGO = 3
+# NORMALIZACIÓN Y VALIDACIÓN DEL RANGO
+def _normalizar_rango(seleccion):
+    """Normaliza SELECCION_RANGO a formato válido."""
+    # Si es string, convertir a minúsculas y limpiar
+    if isinstance(seleccion, str):
+        seleccion = seleccion.strip().lower()
+        
+        # Caso "all"
+        if seleccion == "all":
+            return "all"
+        
+        # Caso combinación "1,2" o "2,3"
+        if "," in seleccion:
+            partes = [p.strip() for p in seleccion.split(",")]
+            try:
+                nums = sorted([int(p) for p in partes])
+                if all(n in _RANGOS_FECHAS for n in nums):
+                    # Combinar: fecha inicio del primero, fecha fin del último
+                    fecha_inicio = _RANGOS_FECHAS[nums[0]][0]
+                    fecha_fin = _RANGOS_FECHAS[nums[-1]][1]
+                    return ("_combo", fecha_inicio, fecha_fin)
+            except ValueError:
+                pass
+            return None
+        
+        # Caso número como string "1", "2", "3"
+        try:
+            return int(seleccion)
+        except ValueError:
+            return None
+    
+    # Si es int, devolverlo directamente (compatibilidad)
+    if isinstance(seleccion, int):
+        return seleccion
+    
+    return None
 
-FECHA_INICIO, FECHA_FIN = _RANGOS_FECHAS[SELECCION_RANGO]
+_rango_normalizado = _normalizar_rango(SELECCION_RANGO)
+
+# Validación
+if _rango_normalizado is None:
+    print(f"⚠️ [CONFIG] RANGO '{SELECCION_RANGO}' NO RECONOCIDO. USANDO OPCIÓN 3 POR DEFECTO.")
+    FECHA_INICIO, FECHA_FIN = _RANGOS_FECHAS[3]
+elif isinstance(_rango_normalizado, tuple) and _rango_normalizado[0] == "_combo":
+    # Rango combinado
+    FECHA_INICIO, FECHA_FIN = _rango_normalizado[1], _rango_normalizado[2]
+elif _rango_normalizado in _RANGOS_FECHAS:
+    FECHA_INICIO, FECHA_FIN = _RANGOS_FECHAS[_rango_normalizado]
+else:
+    print(f"⚠️ [CONFIG] RANGO '{SELECCION_RANGO}' NO RECONOCIDO. USANDO OPCIÓN 3 POR DEFECTO.")
+    FECHA_INICIO, FECHA_FIN = _RANGOS_FECHAS[3]
 
 # FECHAS PARA GENERACIÓN DE GRÁFICOS (VISUALIZACIÓN DETALLADA)
 FECHA_INICIO_PLOT = "2021-01-01"
@@ -67,61 +114,39 @@ FECHA_FIN_PLOT = "2021-03-15"
 # ----------------------------------------------------------------------------
 # 1.4 MOTOR DE OPTIMIZACIÓN (OPTUNA - MÁXIMA POTENCIA VM)
 # ----------------------------------------------------------------------------
-N_TRIALS = 5000    # NÚMERO DE PRUEBAS (AUMENTAR SI TIENES BUENA CPU)
+N_TRIALS = 25    # NÚMERO DE PRUEBAS (AUMENTAR SI TIENES BUENA CPU)
 OPTUNA_N_JOBS = -1      # -1 = USAR TODOS LOS NÚCLEOS DISPONIBLES
 OPTUNA_SEED = None      # SEMILLA ALEATORIA (NONE PARA VARIEDAD)
 OPTUNA_STORAGE = None   # NONE = EJECUCIÓN EN RAM (MÁS RÁPIDO)
 
 # ----------------------------------------------------------------------------
-# 1.4.1 MODO DE EJECUCIÓN (¡IMPORTANTE!)
+# 1.4.1 PERTURBACIÓN DE DATOS (ANTI-OVERFITTING)
 # ----------------------------------------------------------------------------
-# SELECCIONA EL MODO DE EJECUCIÓN:
+# ACTIVA LA PERTURBACIÓN DE DATOS DURANTE LA OPTIMIZACIÓN:
 #
-#   1 = "OPTIMIZACION"  : Optimización estándar con Optuna
-#                         - Database FIJO (datos históricos reales)
-#                         - Busca mejores parámetros
-#                         - Más rápido, resultados directos
+#   False = OPTIMIZACIÓN NORMAL (sin perturbación)
+#           - Datos históricos reales
+#           - Busca mejores parámetros directamente
+#           - Más rápido, resultados directos
 #
-#   2 = "MONTECARLO"    : Monte Carlo + Optimización
-#                         - Database DIFERENTE en cada trial
-#                         - Cada trial usa mercado sintético distinto
-#                         - Valida robustez (imposible overfitting)
-#                         - Los mejores params funcionan EN PROMEDIO
+#   True  = OPTIMIZACIÓN CON PERTURBACIÓN
+#           - Cada trial usa datos ligeramente diferentes
+#           - Valida robustez (detecta overfitting)
+#           - Los mejores params funcionan EN PROMEDIO
 #
-#   3 = "BACKTESTING"   : Un solo trial con database FIJO
-#                         - Para validar una estrategia específica
-#                         - Requiere definir PARAMETROS_BACKTESTING
-#                         - Genera reporte detallado
-#
-MODO_EJECUCION = 1  # <--- ¡MODIFICA AQUÍ! (1, 2 o 3)
+PERTURBACION_ACTIVAR = True  # <--- ¡MODIFICA AQUÍ! (True o False)
 
-# Alias para compatibilidad (se calculará automáticamente)
-_MODOS_MAP = {1: "OPTIMIZACION", 2: "MONTECARLO", 3: "BACKTESTING"}
-MODO_OPTIMIZACION = _MODOS_MAP.get(MODO_EJECUCION, "OPTIMIZACION")
-
-# PARÁMETROS PARA BACKTESTING (MODO 3)
-# Define aquí los parámetros exactos para el backtest
-PARAMETROS_BACKTESTING = {
-    # Ejemplo: añadir los parámetros de tu estrategia
-    # "rsi_periodo": 14,
-    # "rsi_sobreventa": 30,
-    # etc.
-}
-
-# CONFIGURACIÓN MONTE CARLO (MODO 2)
-# CONCEPTO: N_TRIALS = número de mercados sintéticos únicos
-# Cada trial de Optuna evalúa parámetros en un mercado diferente
-# Los mejores parámetros son los que funcionan bien EN PROMEDIO
-MC_NOISE_PCT = 0.5        # Porcentaje de ruido gaussiano (legacy, para method="noise")
-MC_NOISE_RANGE = 100.0    # Variación en unidades monetarias (legacy, para method="monetary")
-MC_BLOCK_SIZE = 100       # Tamaño PROMEDIO de bloque (para stationary_bootstrap)
-MC_METHOD = "stationary_bootstrap"  # MÉTODOS PROFESIONALES:
-                                    # "stationary_bootstrap" = Politis&Romano 1994 (RECOMENDADO - INDUSTRIA)
-                                    # "block_returns" = Block bootstrap sobre retornos
-                                    # "returns_shuffle" = Shuffle simple de retornos
-                                    # Legacy: "monetary", "noise", "mixed"
-MC_SEED = 42              # Semilla base para reproducibilidad
-MC_USE_NSGA2 = True       # True = NSGA-II Multi-Objetivo (Quality↑ + DD↓), False = TPE Single-Objetivo
+# CONFIGURACIÓN DE PERTURBACIÓN (solo aplica si PERTURBACION_ACTIVAR = True)
+# La perturbación añade ruido calibrado a los datos para detectar overfitting
+PERTURBACION_METHOD = "returns_perturbation"  # MÉTODOS DISPONIBLES:
+                                               # "returns_perturbation" = Ruido gaussiano calibrado (RECOMENDADO)
+                                               # "block_bootstrap" = Block bootstrap sobre retornos
+                                               # "stationary_bootstrap" = Politis&Romano 1994
+                                               # "returns_shuffle" = Shuffle simple de retornos
+PERTURBACION_NOISE_SCALE = 0.5   # Escala del ruido (0.5 = 50% de la volatilidad)
+PERTURBACION_BLOCK_SIZE = 360    # Tamaño de bloque para bootstrap
+PERTURBACION_SEED = 42           # Semilla base para reproducibilidad
+PERTURBACION_VERIFY = True       # Verificar coherencia OHLCV después de perturbar
 
 # ----------------------------------------------------------------------------
 # 1.5 ESTRATEGIAS A EJECUTAR
@@ -153,7 +178,7 @@ QTY_MAX_MAP = {
 }
 
 # RANGOS PARA QUE LA IA OPTIMICE EL TAMAÑO (SI SE ACTIVA)
-OPTIMIZAR_QTY_ACTIVO = True
+OPTIMIZAR_QTY_ACTIVO = False
 QTY_MAX_RANGE_MAP = {
     "BTC": (0.01, 0.08, 0.005),
     "GOLD": (0.5, 2.5, 0.5),
@@ -183,10 +208,43 @@ EXIT_TRAIL_DIST_PCT_RANGE = DEFAULT_EXIT_TRAIL_DIST_PCT_RANGE
 # ----------------------------------------------------------------------------
 # 1.9 RESULTADOS Y LIMPIEZA
 # ----------------------------------------------------------------------------
-MAX_ARCHIVOS_GUARDAR = 5
+MAX_ARCHIVOS_GUARDAR = 3
 GENERAR_PLOTS = True       # Generar gráficos HTML interactivos
 USAR_EXCEL = True          # Generar archivos Excel con resumen y trades
 PURGE_PYCACHE_ON_EXIT = True
+
+# ----------------------------------------------------------------------------
+# 1.10 SISTEMA DE AGREGACIÓN DE FITNESS VECINAL (NEIGHBORHOOD FITNESS)
+# ----------------------------------------------------------------------------
+# Sistema avanzado basado en el paper de optimización robusta que evalúa
+# la TOPOLOGÍA LOCAL alrededor de los parámetros propuestos.
+#
+# FILOSOFÍA:
+# - En lugar de evaluar un parámetro aislado, evalúa la "meseta" alrededor
+# - Genera K vecinos con ruido gaussiano y ejecuta K+1 backtests por trial
+# - Penaliza "picos de aguja" (alta ganancia pero vecinos malos)
+# - Recompensa "mesetas" (rendimiento estable en todo el vecindario)
+#
+# FÓRMULA: Score = μ_M - λ·σ_M
+# - μ_M: Media del rendimiento de todos los vecinos
+# - σ_M: Desviación estándar (variabilidad entre vecinos)
+# - λ: Factor de penalización por inestabilidad
+#
+# TRINIDAD DE OBJETIVOS (para NSGA-II):
+# 1. Robust_DSR: Sharpe ajustado por vecindario y número de trials (MAXIMIZAR)
+# 2. Worst_Case_CVaR: El peor CVaR entre todos los vecinos (MINIMIZAR)
+# 3. Equity_Stability_R2: R² promedio de la curva de equity (MAXIMIZAR)
+#
+# NOTA: Si VECINDARIO_ACTIVAR=True, se desactiva automáticamente el sistema
+# de robustez legacy (ROBUSTEZ_*) para evitar duplicación de esfuerzos.
+
+VECINDARIO_ACTIVAR = True             # ✓ ACTIVADO - Sistema de Neighborhood Fitness
+VECINDARIO_N_NEIGHBORS = 10           # Número de vecinos a generar (K) → K+1 backtests por trial
+VECINDARIO_PERTURBATION_STD = 0.05    # Desviación estándar del ruido gaussiano (5%)
+VECINDARIO_LAMBDA_PENALTY = 1.5       # Factor de penalización por varianza (Score = μ - λ·σ)
+VECINDARIO_SEED = 42                  # Semilla base para reproducibilidad
+VECINDARIO_EXCEL = True               # Generar Excel con detalle de vecinos
+VECINDARIO_GUARDAR_MEJORES = 5        # Guardar los N mejores trials en Excel
 
 
 # =============================================================================
@@ -237,13 +295,13 @@ def _normalize_timeframes(v):
         raw = v
     else:
         raw = str(v).split(",")
-    
+
     out = []
     for item in raw:
         m = _parse_single(item)
         if m is not None and m > 0:
             out.append(m)
-    
+
     return sorted(list(set(out))) or [15]
 
 TIMEFRAMES_NORM = _normalize_timeframes(TIMEFRAMES)
@@ -294,15 +352,19 @@ CONFIG = {
     "EXIT_TRAIL_ACT_PCT_RANGE": EXIT_TRAIL_ACT_PCT_RANGE, "EXIT_TRAIL_DIST_PCT_RANGE": EXIT_TRAIL_DIST_PCT_RANGE,
     "MAX_ARCHIVOS_GUARDAR": MAX_ARCHIVOS_GUARDAR, "GENERAR_PLOTS": GENERAR_PLOTS,
     "USAR_EXCEL": USAR_EXCEL, "PURGE_PYCACHE_ON_EXIT": PURGE_PYCACHE_ON_EXIT,
-    # MODO DE EJECUCIÓN (1=Optimización, 2=MonteCarlo, 3=Backtesting)
-    "MODO_EJECUCION": MODO_EJECUCION,
-    "MODO_OPTIMIZACION": MODO_OPTIMIZACION,
-    "PARAMETROS_BACKTESTING": PARAMETROS_BACKTESTING,
-    # CONFIGURACIÓN MONTE CARLO
-    "MC_NOISE_PCT": MC_NOISE_PCT,
-    "MC_NOISE_RANGE": MC_NOISE_RANGE,
-    "MC_BLOCK_SIZE": MC_BLOCK_SIZE,
-    "MC_METHOD": MC_METHOD,
-    "MC_SEED": MC_SEED,
-    "MC_USE_NSGA2": MC_USE_NSGA2,
+    # CONFIGURACIÓN DE PERTURBACIÓN
+    "PERTURBACION_ACTIVAR": PERTURBACION_ACTIVAR,
+    "PERTURBACION_METHOD": PERTURBACION_METHOD,
+    "PERTURBACION_NOISE_SCALE": PERTURBACION_NOISE_SCALE,
+    "PERTURBACION_BLOCK_SIZE": PERTURBACION_BLOCK_SIZE,
+    "PERTURBACION_SEED": PERTURBACION_SEED,
+    "PERTURBACION_VERIFY": PERTURBACION_VERIFY,
+    # Vecindario (Neighborhood Fitness Aggregation)
+    "VECINDARIO_ACTIVAR": VECINDARIO_ACTIVAR,
+    "VECINDARIO_N_NEIGHBORS": VECINDARIO_N_NEIGHBORS,
+    "VECINDARIO_PERTURBATION_STD": VECINDARIO_PERTURBATION_STD,
+    "VECINDARIO_LAMBDA_PENALTY": VECINDARIO_LAMBDA_PENALTY,
+    "VECINDARIO_SEED": VECINDARIO_SEED,
+    "VECINDARIO_EXCEL": VECINDARIO_EXCEL,
+    "VECINDARIO_GUARDAR_MEJORES": VECINDARIO_GUARDAR_MEJORES,
 }

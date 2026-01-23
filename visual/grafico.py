@@ -88,7 +88,7 @@ try:
             obj,
             option=orjson.OPT_SERIALIZE_NUMPY | orjson.OPT_NON_STR_KEYS
         ).decode("utf-8")
-    
+
     def _dumps_bytes(obj: dict) -> bytes:
         """Return raw bytes for streaming write (avoids decode overhead)."""
         return orjson.dumps(obj, option=orjson.OPT_SERIALIZE_NUMPY | orjson.OPT_NON_STR_KEYS)
@@ -108,7 +108,7 @@ except ImportError:
 
     def _dumps(obj: dict) -> str:
         return json.dumps(obj, separators=(",", ":"), cls=_NumpyEncoder)
-    
+
     def _dumps_bytes(obj: dict) -> bytes:
         return _dumps(obj).encode("utf-8")
 
@@ -208,7 +208,7 @@ def _is_overlay_heuristic(series: "pd.Series", price_range: tuple) -> bool:
     within_min = (ind_min >= (min_p - 0.15 * price_span))
     within_max = (ind_max <= (max_p + 0.15 * price_span))
     span_ok = ind_span >= 0.1 * price_span and ind_span <= 1.5 * price_span
-    
+
     return within_min and within_max and span_ok
   except Exception:
     return False
@@ -260,7 +260,7 @@ def _detect_indicators(
       for c in df.columns
       if isinstance(c, str) and c not in skip_cols and not c.startswith("_")
     ]
-  
+
   # Filtrar columnas que están en skip_cols (case-insensitive)
   skip_lower = {s.lower() for s in skip_cols}
   candidate_cols = [c for c in candidate_cols if c.lower() not in skip_lower]
@@ -380,10 +380,10 @@ def _prepare_ohlcv_vectorized(
     closes = np.nan_to_num(closes, nan=0.0, posinf=0.0, neginf=0.0)
     if volumes is not None:
         volumes = np.nan_to_num(volumes, nan=0.0, posinf=0.0, neginf=0.0)
-    
+
     # Normalize timestamps to Unix seconds using central function
     timestamps = _normalize_timestamps_to_unix(timestamps)
-    
+
     # Remove duplicates and ensure strict ordering
     unique_ts, unique_indices = np.unique(timestamps, return_index=True)
     if len(unique_ts) < len(timestamps):
@@ -394,7 +394,7 @@ def _prepare_ohlcv_vectorized(
         closes = closes[unique_indices]
         if volumes is not None:
             volumes = volumes[unique_indices]
-    
+
     # Ensure sorted (should already be, but guarantee it)
     sort_indices = np.argsort(timestamps)
     if not np.all(sort_indices == np.arange(len(timestamps))):
@@ -405,17 +405,17 @@ def _prepare_ohlcv_vectorized(
         closes = closes[sort_indices]
         if volumes is not None:
             volumes = volumes[sort_indices]
-    
+
     # Quantize prices
     factor = 10 ** price_precision
     opens = np.round(opens * factor).astype(np.int64)
     highs = np.round(highs * factor).astype(np.int64)
     lows = np.round(lows * factor).astype(np.int64)
     closes = np.round(closes * factor).astype(np.int64)
-    
+
     if volumes is not None:
         volumes = np.round(volumes).astype(np.int64)
-    
+
     return timestamps, opens, highs, lows, closes, volumes, factor
 
 
@@ -436,7 +436,7 @@ class StrictAlignmentMapper:
     3. This class creates a mapping: indicator_ts -> ts_q indices using binary search
     4. Result: indicator values aligned to ts_q with None for gaps
     """
-    
+
     def __init__(self, authoritative_timestamps: np.ndarray):
         """
         Initialize with the authoritative timestamp array (ts_q from candles).
@@ -448,7 +448,7 @@ class StrictAlignmentMapper:
         self.n = len(authoritative_timestamps)
         # Keep dict for backwards compatibility with count methods
         self.ts_to_idx = {int(ts): i for i, ts in enumerate(authoritative_timestamps)}
-    
+
     def align(self, indicator_timestamps: np.ndarray, indicator_values: np.ndarray) -> list:
         """
         VECTORIZED alignment using np.searchsorted.
@@ -462,43 +462,43 @@ class StrictAlignmentMapper:
         """
         if self.n == 0:
             return []
-        
+
         # Ensure timestamps are Unix seconds (int64)
         if not np.issubdtype(indicator_timestamps.dtype, np.integer):
             indicator_timestamps = _normalize_timestamps_to_unix(indicator_timestamps)
         else:
             indicator_timestamps = indicator_timestamps.astype(np.int64)
-        
+
         # Initialize result array with NaN (will be converted to None)
         aligned = np.full(self.n, np.nan, dtype=np.float64)
-        
+
         # VECTORIZED: Use searchsorted to find insertion points
         # searchsorted returns the index where each indicator_ts would be inserted
         indices = np.searchsorted(self.ts_q, indicator_timestamps)
-        
+
         # Create mask for exact matches (indicator_ts exists in ts_q)
         # indices could be == self.n (past end), so clamp first
         indices_clamped = np.clip(indices, 0, self.n - 1)
         exact_match_mask = (self.ts_q[indices_clamped] == indicator_timestamps)
-        
+
         # Also need to handle indices that are within bounds
         in_bounds_mask = (indices < self.n)
         valid_match_mask = exact_match_mask & in_bounds_mask
-        
+
         # Create mask for valid values (not NaN/Inf)
         valid_values_mask = np.isfinite(indicator_values)
-        
+
         # Combined mask: exact timestamp match AND valid value
         final_mask = valid_match_mask & valid_values_mask
-        
+
         # Assign values at matched positions
         matched_indices = indices_clamped[final_mask]
         matched_values = indicator_values[final_mask]
         aligned[matched_indices] = matched_values
-        
+
         # Convert to list with None for NaN
         return [None if np.isnan(v) else float(v) for v in aligned]
-    
+
     def quantize(self, aligned_values: list, precision: int = 4) -> tuple:
         """
         Quantize aligned values for JSON serialization.
@@ -512,11 +512,11 @@ class StrictAlignmentMapper:
         """
         factor = 10 ** precision
         quantized = [
-            int(round(v * factor)) if v is not None else None 
+            int(round(v * factor)) if v is not None else None
             for v in aligned_values
         ]
         return quantized, factor
-    
+
     def align_quantized(self, indicator_timestamps: np.ndarray, indicator_values: np.ndarray, precision: int = 4) -> tuple:
         """
         OPTIMIZED: Align and quantize in a single pass (avoids intermediate list).
@@ -526,32 +526,32 @@ class StrictAlignmentMapper:
         """
         if self.n == 0:
             return [], 1, 0
-        
+
         factor = 10 ** precision
-        
+
         # Ensure timestamps are Unix seconds (int64)
         if not np.issubdtype(indicator_timestamps.dtype, np.integer):
             indicator_timestamps = _normalize_timestamps_to_unix(indicator_timestamps)
         else:
             indicator_timestamps = indicator_timestamps.astype(np.int64)
-        
+
         # Initialize with NaN marker
         aligned = np.full(self.n, np.nan, dtype=np.float64)
-        
+
         # Vectorized searchsorted alignment
         indices = np.searchsorted(self.ts_q, indicator_timestamps)
         indices_clamped = np.clip(indices, 0, self.n - 1)
         exact_match = (self.ts_q[indices_clamped] == indicator_timestamps) & (indices < self.n)
         valid_vals = np.isfinite(indicator_values)
         final_mask = exact_match & valid_vals
-        
+
         matched_indices = indices_clamped[final_mask]
         matched_values = indicator_values[final_mask]
         aligned[matched_indices] = matched_values
-        
+
         # Quantize in numpy (faster than list comprehension)
         valid_count = int(np.sum(np.isfinite(aligned)))
-        
+
         # Convert to quantized list with None for NaN
         quantized = []
         for v in aligned:
@@ -559,9 +559,9 @@ class StrictAlignmentMapper:
                 quantized.append(None)
             else:
                 quantized.append(int(round(v * factor)))
-        
+
         return quantized, factor, valid_count
-    
+
     def count_valid(self, aligned_values: list) -> int:
         """Count non-None values in aligned list."""
         return sum(1 for v in aligned_values if v is not None)
@@ -580,29 +580,29 @@ def _prepare_indicator_vectorized_aligned(
     """
     if len(indicator_values) == 0:
         return None, None, None
-    
+
     # Ensure arrays have same length
     if len(candle_timestamps) != len(indicator_values):
         min_len = min(len(candle_timestamps), len(indicator_values))
         candle_timestamps = candle_timestamps[:min_len]
         indicator_values = indicator_values[:min_len]
-    
+
     factor = 10 ** precision
-    
+
     # Convert values: NaN -> None, valid -> quantized int
     values_list = []
     valid_count = 0
-    
+
     for val in indicator_values:
         if np.isnan(val) or np.isinf(val):
             values_list.append(None)
         else:
             values_list.append(int(np.round(val * factor)))
             valid_count += 1
-    
+
     if valid_count == 0:
         return None, None, None
-    
+
     return candle_timestamps, values_list, factor
 
 
@@ -618,13 +618,13 @@ def _prepare_indicator_vectorized(
     mask = ~np.isnan(values)
     ts_clean = timestamps[mask]
     vals_clean = values[mask]
-    
+
     if len(vals_clean) == 0:
         return None, None, None
-    
+
     factor = 10 ** precision
     vals_quantized = np.round(vals_clean * factor).astype(np.int64)
-    
+
     return ts_clean, vals_quantized, factor
 
 
@@ -666,10 +666,10 @@ def _detect_max_warmup_period(params: Optional[Dict[str, Any]], min_warmup: int 
           return max(min_warmup, ov)
     except (ValueError, TypeError):
       pass
-    
+
     period_suffixes = ('_period', '_length', '_len', '_window')
     max_period = min_warmup
-    
+
     for key, value in params.items():
         key_lower = key.lower()
         # Check if key ends with a period-related suffix
@@ -680,7 +680,7 @@ def _detect_max_warmup_period(params: Optional[Dict[str, Any]], min_warmup: int 
                     max_period = period_val
             except (ValueError, TypeError):
                 pass
-    
+
     return max_period
 
 
@@ -700,14 +700,14 @@ def _apply_warmup_mask(aligned_values: list, warmup_period: int) -> list:
     """
     if warmup_period <= 0:
         return aligned_values
-    
+
     # Create a copy to avoid modifying the original
     masked = aligned_values.copy()
-    
+
     # Mask the first `warmup_period` values
     for i in range(min(warmup_period, len(masked))):
         masked[i] = None
-    
+
     return masked
 
 
@@ -720,10 +720,10 @@ def _extract_indicator_params_from_optuna(params: Optional[Dict[str, Any]], indi
 
     if not params:
         return {}
-    
+
     result: Dict[str, Any] = {}
     ind_lower = indicator_name.lower()
-    
+
     # === PERIOD DETECTION (solo para nombre del panel, opcional) ===
     period_patterns = [
         f"{ind_lower}_period", f"period_{ind_lower}", f"{ind_lower}_length",
@@ -737,7 +737,7 @@ def _extract_indicator_params_from_optuna(params: Optional[Dict[str, Any]], indi
                 break
             except (ValueError, TypeError):
                 pass
-    
+
     # === HI/LO DETECTION ===
     overbought_patterns = [
       f"{ind_lower}_overbought",
@@ -759,7 +759,7 @@ def _extract_indicator_params_from_optuna(params: Optional[Dict[str, Any]], indi
       f"lo_{ind_lower}",
       f"{ind_lower}_threshold_lo",
     ]
-    
+
     for key in overbought_patterns:
         if key in params and params[key] is not None:
             try:
@@ -767,7 +767,7 @@ def _extract_indicator_params_from_optuna(params: Optional[Dict[str, Any]], indi
                 break
             except (ValueError, TypeError):
                 pass
-    
+
     for key in oversold_patterns:
         if key in params and params[key] is not None:
             try:
@@ -775,7 +775,7 @@ def _extract_indicator_params_from_optuna(params: Optional[Dict[str, Any]], indi
                 break
             except (ValueError, TypeError):
                 pass
-    
+
     # === ENTRY/EXIT LEVELS (opcionales) ===
     # Entry Long: when indicator reaches this level, enter long
     entry_long_patterns = [
@@ -794,7 +794,7 @@ def _extract_indicator_params_from_optuna(params: Optional[Dict[str, Any]], indi
         f"exit_short_{ind_lower}", f"{ind_lower}_exit_short", "exit_short",
         f"short_exit_{ind_lower}", f"{ind_lower}_short_exit", "exit_level_short"
     ]
-    
+
     for key in entry_long_patterns:
         if key in params and params[key] is not None:
             try:
@@ -802,7 +802,7 @@ def _extract_indicator_params_from_optuna(params: Optional[Dict[str, Any]], indi
                 break
             except (ValueError, TypeError):
                 pass
-    
+
     for key in entry_short_patterns:
         if key in params and params[key] is not None:
             try:
@@ -810,7 +810,7 @@ def _extract_indicator_params_from_optuna(params: Optional[Dict[str, Any]], indi
                 break
             except (ValueError, TypeError):
                 pass
-    
+
     for key in exit_long_patterns:
         if key in params and params[key] is not None:
             try:
@@ -818,7 +818,7 @@ def _extract_indicator_params_from_optuna(params: Optional[Dict[str, Any]], indi
                 break
             except (ValueError, TypeError):
                 pass
-    
+
     for key in exit_short_patterns:
         if key in params and params[key] is not None:
             try:
@@ -826,14 +826,14 @@ def _extract_indicator_params_from_optuna(params: Optional[Dict[str, Any]], indi
                 break
             except (ValueError, TypeError):
                 pass
-    
+
     # mid opcional: si no viene dado, calcularlo si tenemos hi/lo.
     if 'mid' not in result and 'hi' in result and 'lo' in result:
         try:
             result['mid'] = (float(result['hi']) + float(result['lo'])) / 2.0
         except (ValueError, TypeError):
             pass
-    
+
     return result
 
 
@@ -848,19 +848,19 @@ def _generate_dynamic_combo(params: Optional[Dict[str, Any]], strategy_name: str
     """
     if not params:
         return strategy_name or "TRIAL"
-    
+
     parts = []
-    
+
     # Strategy name first
     if strategy_name:
         parts.append(strategy_name.upper())
-    
+
     # Extract key parameters
     period_keys = [k for k in params.keys() if 'period' in k.lower() or 'length' in k.lower()]
     level_keys = [k for k in params.keys() if any(x in k.lower() for x in ['overbought', 'oversold', 'ob', 'os', 'entry', 'exit', 'threshold'])]
-    
+
     param_parts = []
-    
+
     # Periods (P:)
     for key in sorted(period_keys)[:2]:  # Max 2 periods
         val = params[key]
@@ -868,7 +868,7 @@ def _generate_dynamic_combo(params: Optional[Dict[str, Any]], strategy_name: str
             # Extract indicator name from key
             ind_name = key.replace('_period', '').replace('period_', '').replace('_length', '').upper()[:3]
             param_parts.append(f"{ind_name}:{int(val)}")
-    
+
     # Levels (OB/OS/Entry/Exit)
     for key in sorted(level_keys)[:4]:  # Max 4 levels
         val = params[key]
@@ -886,10 +886,10 @@ def _generate_dynamic_combo(params: Optional[Dict[str, Any]], strategy_name: str
                 param_parts.append(f"XL:{val:.0f}" if isinstance(val, float) else f"XL:{val}")
             elif 'exit_short' in key_lower:
                 param_parts.append(f"XS:{val:.0f}" if isinstance(val, float) else f"XS:{val}")
-    
+
     if param_parts:
         parts.append(' '.join(param_parts[:6]))  # Max 6 params for readability
-    
+
     return ' | '.join(parts) if parts else strategy_name or "TRIAL"
 
 
@@ -933,7 +933,7 @@ def _write_html_streaming(
     
     Result: Near-zero RAM overhead for 50MB+ chart files.
     """
-    
+
     activo = str(config.get("activo", ""))
     combo = str(config.get("combo", ""))
     total_trades = int(config.get("total_trades", 0))
@@ -941,7 +941,7 @@ def _write_html_streaming(
     pnl_neto = float(config.get("pnl_neto", 0))
     pnl_class = "pos" if pnl_neto >= 0 else "neg"
     score = float(config.get("score", 0))
-    
+
     with open(filepath, "wb") as f:
         # ============ CHUNK 1: HTML Header + CSS ============
         header = f'''<!DOCTYPE html>
@@ -1035,18 +1035,18 @@ try {{
 
 const D='''.encode('utf-8')
         f.write(header)
-        
+
         # ============ CHUNK 2: Candle Data JSON (streaming) ============
         f.write(_dumps_bytes(candle_data))
-        
+
         # ============ CHUNK 3: Indicators JSON ============
         f.write(b';\nconst I=')
         f.write(_dumps_bytes(indicators))
-        
+
         # ============ CHUNK 4: Trades JSON ============
         f.write(b';\nconst T=')
         f.write(_dumps_bytes(trades))
-        
+
         # ============ CHUNK 5: JavaScript Logic ============
         js_logic = _get_chart_js_logic()
         f.write(js_logic.encode('utf-8'))
@@ -2034,11 +2034,11 @@ def _generate_hft_html(
     """
     import tempfile
     import os
-    
+
     # Create temp file, write with streaming, read back
     with tempfile.NamedTemporaryFile(mode='wb', suffix='.html', delete=False) as tmp:
         tmp_path = tmp.name
-    
+
     try:
         _write_html_streaming(tmp_path, candle_data, indicators, trades, config)
         with open(tmp_path, 'r', encoding='utf-8') as f:
@@ -2074,7 +2074,7 @@ def plot_trades(
     Automatically detects indicators from DataFrame columns and generates
     appropriate panels (overlays on price, oscillators as sub-panels).
     """
-    
+
     # ================== EXTRACT NUMPY ARRAYS ==================
     if HAS_POLARS and isinstance(df, pl.DataFrame):
         timestamps = df["timestamp"].to_numpy() if "timestamp" in df.columns else df.to_pandas().index.values
@@ -2096,18 +2096,18 @@ def plot_trades(
         closes = df_pd["close"].values.astype(np.float64)
         volumes = df_pd["volume"].values.astype(np.float64) if "volume" in df_pd.columns else None
         set(df_pd.columns)
-    
+
     # ================== DATE FILTERING ==================
     start_pd = pd.to_datetime(fecha_inicio_plot, utc=True)
     end_pd = pd.to_datetime(fecha_fin_plot, utc=True)
     start = np.datetime64(start_pd.tz_localize(None))
     end = np.datetime64(end_pd.tz_localize(None))
-    
+
     if np.issubdtype(timestamps.dtype, np.datetime64):
         ts_compare = timestamps
     else:
         ts_compare = timestamps.astype('datetime64[ns]')
-    
+
     # Guardar copia por si el rango configurado no cruza el dataset.
     timestamps_all = timestamps
     opens_all = opens
@@ -2135,7 +2135,7 @@ def plot_trades(
       lows = lows_all
       closes = closes_all
       volumes = volumes_all
-    
+
     # ================== BANKRUPTCY CUTOFF ==================
     saldo_minimo_operativo = 5.0
     if equity_curve and len(equity_curve) > 0:
@@ -2154,23 +2154,23 @@ def plot_trades(
                 if volumes is not None:
                     volumes = volumes[:candle_cutoff]
                 equity_curve = equity_curve[:bankruptcy_idx + 1]
-    
+
     # ================== PREPARE OHLCV ==================
     ts_q_full, o_q_full, h_q_full, l_q_full, c_q_full, vol_q_full, price_factor = _prepare_ohlcv_vectorized(
         timestamps, opens, highs, lows, closes, volumes
     )
-    
+
     # ================== GLOBAL WARM-UP PERIOD (v6.1) ==================
     # Detect the maximum period from all *_period params BEFORE slicing data
     # This ensures candles + indicators + markers all start at the same point
     max_warmup = _detect_max_warmup_period(params, min_warmup=1)
-    
+
     # Clamp warmup to valid range (leave at least 10 candles visible)
     max_warmup = min(max_warmup, len(ts_q_full) - 10)
     max_warmup = max(0, max_warmup)  # Ensure non-negative
-    
+
     # (debug print removed)
-    
+
     # SLICE ALL DATA FROM WARMUP POINT - Everything synchronized
     # Start on the *next* candle after warmup so indicator values are based on
     # completed history only (reduces 1-bar visual desync vs trade execution).
@@ -2183,10 +2183,10 @@ def plot_trades(
     l_q = l_q_full[start_idx:]
     c_q = c_q_full[start_idx:]
     vol_q = vol_q_full[start_idx:] if vol_q_full is not None else None
-    
+
     # Get the warmup threshold timestamp for trade marker filtering
     warmup_threshold_ts = int(ts_q[0]) if len(ts_q) > 0 else 0
-    
+
     candle_data = {
         "t": ts_q.tolist(),
         "o": o_q.tolist(),
@@ -2197,67 +2197,67 @@ def plot_trades(
     }
     if vol_q is not None:
         candle_data["vol"] = vol_q.tolist()
-    
+
     # ================== ZERO-LAG INDICATOR ALIGNMENT (v6.0) ==================
     # Architecture: Single Authoritative Timestamp Array (SATA)
     # ts_q is the ONLY source of truth for all timestamp alignment.
     # All indicator values are mapped to ts_q indices using StrictAlignmentMapper.
-    
+
     # Step 1: Convert source DataFrame to pandas with UTC index
     if HAS_POLARS and isinstance(df, pl.DataFrame):
         df_pd_full = df.to_pandas()
     else:
         df_pd_full = df if isinstance(df, pd.DataFrame) else pd.DataFrame(df)
-    
+
     if not isinstance(df_pd_full.index, pd.DatetimeIndex):
         if "timestamp" in df_pd_full.columns:
             df_pd_full = df_pd_full.set_index("timestamp")
-    
+
     # Ensure index is UTC-aware for consistent timestamp conversion
     if df_pd_full.index.tz is None:
         df_pd_full.index = df_pd_full.index.tz_localize("UTC")
     elif str(df_pd_full.index.tz) != 'UTC':
         df_pd_full.index = df_pd_full.index.tz_convert("UTC")
-    
+
     # Step 2: Extract source timestamps as Unix seconds
     # Use the centralized _normalize_timestamps_to_unix for consistency
     source_ts_raw = df_pd_full.index.tz_localize(None).values  # Remove TZ for datetime64 conversion
     source_timestamps = _normalize_timestamps_to_unix(source_ts_raw)
-    
+
     # Step 3: Initialize the StrictAlignmentMapper with authoritative timestamps
     # This is the KEY component for zero-lag alignment
     aligner = StrictAlignmentMapper(ts_q)
-    
+
     # Step 4: Create aligned source mask (which source rows exist in ts_q)
     source_mask = np.array([int(ts) in aligner.ts_to_idx for ts in source_timestamps])
     df_aligned = df_pd_full[source_mask].copy()
     aligned_source_ts = source_timestamps[source_mask]
-    
+
     # Verify alignment
     alignment_match = len(df_aligned) == len(ts_q)
     # print(f"[PLOT v6.0] Candles: {len(ts_q)}, Aligned Source: {len(df_aligned)}, Perfect Match: {alignment_match}")
-    
+
     if not alignment_match:
         # Detailed debug for misalignment
         missing_in_source = len(ts_q) - len(df_aligned)
         print(f"[PLOT WARN] Missing {missing_in_source} timestamps in source DataFrame. Using mapping fallback.")
-    
+
     # Detect indicators (strategy-driven via __indicators_used/__indicator_specs/__indicator_bounds)
     price_range = (float(closes.min()), float(closes.max()))
     detected = _detect_indicators(df_aligned, price_range, params)
-    
+
     indicators = {"overlays": [], "sub_panels": []}
-    
+
     # ================== PROCESS OVERLAYS (ZERO-LAG, PRE-SLICED) ==================
     for overlay_cfg in detected["overlays"]:
         col = overlay_cfg["col"]
         if col not in df_aligned.columns:
             continue
-        
+
         # Extract values and align using the mapper
         vals = df_aligned[col].values.astype(np.float64)
         aligned_vals = aligner.align(aligned_source_ts, vals)
-        
+
         # Only add if we have valid data
         valid_count = aligner.count_valid(aligned_vals)
         if valid_count > 0:
@@ -2270,17 +2270,17 @@ def plot_trades(
                 "f": int(factor),
                 "color": overlay_cfg["color"]
             })
-    
+
     # ================== PROCESS SUB-PANELS / OSCILLATORS (ZERO-LAG, PRE-SLICED) ==================
     for panel_cfg in detected["sub_panels"]:
         col = panel_cfg["col"]
         if col not in df_aligned.columns:
             continue
-        
+
         # Extract values and align using the mapper
         vals = df_aligned[col].values.astype(np.float64)
         aligned_vals = aligner.align(aligned_source_ts, vals)
-        
+
         # Only add if we have valid data
         valid_count = aligner.count_valid(aligned_vals)
         if valid_count > 0:
@@ -2302,7 +2302,7 @@ def plot_trades(
                     "f": int(factor)
                 }
             })
-    
+
     # ================== TRADE MARKERS (Temporal Snapping + Warmup Filter) ==================
     # Use np.searchsorted to snap trade timestamps to exact candle timestamps
     # This prevents marker disappearance during scroll/zoom
@@ -2315,10 +2315,10 @@ def plot_trades(
     # xm: exit markers for the exit series (white dots)
     trades = {"m": [], "ee": [], "em": [], "i": [], "xe": [], "xm": []}
     max_valid_ts = int(ts_q[-1]) if len(ts_q) > 0 else None
-    
+
     # Build efficient lookup structure for candle timestamps
     candle_ts_set = set(ts_q.tolist()) if len(ts_q) > 0 else set()
-    
+
     def _snap_to_candle(trade_ts: int, candle_timestamps: np.ndarray) -> int:
         """
         Vectorized temporal snapping using binary search.
@@ -2329,45 +2329,45 @@ def plot_trades(
         """
         if len(candle_timestamps) == 0:
             return trade_ts
-        
+
         # Find insertion point (index where trade_ts would be inserted to maintain order)
         idx = np.searchsorted(candle_timestamps, trade_ts, side='right')
-        
+
         # Clamp to valid range and get the candle at or before trade time
         idx = max(0, min(idx - 1, len(candle_timestamps) - 1))
-        
+
         return int(candle_timestamps[idx])
-    
+
     if df_trades is not None:
         if HAS_POLARS and isinstance(df_trades, pl.DataFrame):
             trades_df = df_trades.to_pandas()
         else:
             trades_df = df_trades.copy() if isinstance(df_trades, pd.DataFrame) else pd.DataFrame(df_trades)
-        
+
         if not trades_df.empty:
             entry_times_dt = pd.to_datetime(trades_df["entry_time"], utc=True, errors="coerce")
             exit_times_dt = pd.to_datetime(trades_df["exit_time"], utc=True, errors="coerce")
-            
+
             valid_mask = entry_times_dt.notna()
             trades_df = trades_df[valid_mask].copy()
             entry_times_dt = entry_times_dt[valid_mask]
             exit_times_dt = exit_times_dt[valid_mask]
-            
+
             if len(trades_df) > 0 and len(ts_q) > 0:
                 # Robust epoch seconds (UTC) for tz-aware timestamps
                 # NOTE: Polars returns datetime64[us] (microseconds), Pandas may return [ns]
                 # Use .apply(lambda x: x.timestamp()) for robust conversion
                 entry_timestamps = entry_times_dt.apply(lambda x: int(x.timestamp()) if pd.notna(x) else 0)
                 exit_timestamps = exit_times_dt.apply(lambda x: int(x.timestamp()) if pd.notna(x) else 0)
-                
+
                 start_ts = int(start_pd.timestamp())
                 end_ts = max_valid_ts if max_valid_ts else int(end_pd.timestamp())
                 mask = (entry_timestamps >= start_ts) & (entry_timestamps <= end_ts)
-                
+
                 trades_df = trades_df[mask].copy()
                 entry_timestamps = entry_timestamps[mask]
                 exit_timestamps = exit_timestamps[mask]
-                
+
                 # Vectorized snapping: snap to the NEAREST candle timestamp.
                 # This avoids 1-bar lag when timestamps have minor rounding offsets.
                 def _snap_nearest(candle_ts: np.ndarray, trade_ts: np.ndarray) -> np.ndarray:
@@ -2383,19 +2383,19 @@ def plot_trades(
 
                 snapped_entry_ts = _snap_nearest(ts_q, entry_timestamps)
                 snapped_exit_ts = _snap_nearest(ts_q, exit_timestamps)
-                
+
                 # ============================================================
                 # VECTORIZED TRADE PROCESSING (v7.0 - NO iterrows)
                 # Extract all columns as numpy arrays for 100x faster processing
                 # ============================================================
                 n_trades = len(trades_df)
-                
+
                 # Extract columns to numpy arrays (zero-copy when possible)
                 types_arr = trades_df["type"].values if "type" in trades_df.columns else np.array([""] * n_trades)
                 entry_price_arr = trades_df["entry_price"].values.astype(np.float64) if "entry_price" in trades_df.columns else np.zeros(n_trades)
                 exit_price_arr = trades_df["exit_price"].values if "exit_price" in trades_df.columns else np.array([None] * n_trades)
                 pnl_arr = trades_df["pnl_neto"].values.astype(np.float64) if "pnl_neto" in trades_df.columns else np.zeros(n_trades)
-                
+
                 # Handle optional columns with fallbacks
                 if "comision_total" in trades_df.columns:
                     comm_arr = trades_df["comision_total"].values
@@ -2403,7 +2403,7 @@ def plot_trades(
                     comm_arr = trades_df["comision"].values
                 else:
                     comm_arr = np.zeros(n_trades)
-                
+
                 if "qty" in trades_df.columns:
                     qty_arr = trades_df["qty"].values
                 elif "cantidad" in trades_df.columns:
@@ -2412,18 +2412,18 @@ def plot_trades(
                     qty_arr = trades_df["size"].values
                 else:
                     qty_arr = np.zeros(n_trades)
-                
+
                 tipo_salida_arr = trades_df["tipo_salida"].values if "tipo_salida" in trades_df.columns else np.array([None] * n_trades)
                 exit_ts_valid = exit_timestamps.values if hasattr(exit_timestamps, 'values') else np.array(exit_timestamps)
-                
+
                 # Vectorized masks
                 warmup_mask = snapped_entry_ts >= warmup_threshold_ts
                 candle_mask = np.isin(snapped_entry_ts, ts_q)
                 valid_trade_mask = warmup_mask & candle_mask
-                
+
                 # Process only valid trades
                 valid_indices = np.where(valid_trade_mask)[0]
-                
+
                 for i in valid_indices:
                     et = int(snapped_entry_ts[i])
                     trade_type = str(types_arr[i]).upper() if types_arr[i] else ""
@@ -2432,13 +2432,13 @@ def plot_trades(
                     xp = float(xp_raw) if pd.notna(xp_raw) else None
                     pnl = float(pnl_arr[i])
                     xt = int(snapped_exit_ts[i]) if pd.notna(exit_ts_valid[i]) else None
-                    
+
                     comm_raw = comm_arr[i]
                     comm = float(comm_raw) if pd.notna(comm_raw) else 0.0
                     qty_raw = qty_arr[i]
                     qty = float(qty_raw) if pd.notna(qty_raw) else 0.0
                     tipo_salida = tipo_salida_arr[i]
-                    
+
                     trade_info = {
                         "type": trade_type,
                         "ep": round(ep, 2),
@@ -2447,10 +2447,10 @@ def plot_trades(
                         "comm": round(comm, 2),
                         "qty": round(qty, 6)
                     }
-                    
+
                     if tipo_salida is not None and pd.notna(tipo_salida):
                         trade_info["xs"] = str(tipo_salida)
-                    
+
                     # DOT-STYLE CENTERED MARKERS (circles, inBar for precision)
                     # Deduplicate: only one entry marker per timestamp
                     entry_color = "#3b82f6" if trade_type == "LONG" else "#a855f7"
@@ -2463,7 +2463,7 @@ def plot_trades(
                             "text": "",
                             "size": 2
                         })
-                    
+
                     # Entry points at real price (deduplicated)
                     if not any(x["time"] == et for x in trades["ee"]):
                         trades["ee"].append({"time": et, "value": ep})
@@ -2475,9 +2475,9 @@ def plot_trades(
                             "text": "",
                             "size": 2,
                         })
-                    
+
                     trades["i"].append({"time": et, **trade_info})
-                    
+
                     # Exit points at real price (deduplicated - only one marker per exit timestamp)
                     if xt is not None and xp is not None and xt in candle_ts_set:
                         # Check if we already have an exit at this timestamp
@@ -2492,19 +2492,19 @@ def plot_trades(
                                 "size": 2,
                             })
                             trades["i"].append({"time": xt, **trade_info})
-                
+
                 trades["m"].sort(key=lambda x: x["time"])
                 trades["ee"].sort(key=lambda x: x["time"])
                 trades["em"].sort(key=lambda x: x["time"])
                 trades["i"].sort(key=lambda x: x["time"])
                 trades["xe"].sort(key=lambda x: x["time"])
                 trades["xm"].sort(key=lambda x: x["time"])
-    
+
     # ================== CONFIG ==================
     total_trades = 0
     winrate = 0.0
     pnl_neto = 0.0
-    
+
     if metrics:
         total_trades = int(metrics.get("total_trades", metrics.get("num_trades", 0)))
         winrate = float(metrics.get("win_rate", metrics.get("winrate", 0))) * 100 if metrics.get("win_rate", metrics.get("winrate", 0)) <= 1 else float(metrics.get("win_rate", metrics.get("winrate", 0)))
@@ -2525,7 +2525,7 @@ def plot_trades(
                 pnl_neto = float(trades_df_for_stats[pnl_col].sum())
                 wins = (trades_df_for_stats[pnl_col] > 0).sum()
                 winrate = (wins / total_trades * 100) if total_trades > 0 else 0
-    
+
     config = {
         "activo": str(activo).upper() if activo else "",
         "combo": _generate_dynamic_combo(params, combo) if params else combo,
@@ -2535,18 +2535,18 @@ def plot_trades(
         "winrate": winrate,
         "pnl_neto": pnl_neto
     }
-    
+
     # ================== SAVE FILE (STREAMING - v7.0) ==================
     os.makedirs(plot_base, exist_ok=True)
-    
+
     # Sanitize combo name for filename (remove special chars, limit length)
     combo_safe = re.sub(r"[^a-zA-Z0-9_-]", "_", combo or "STRATEGY")[:30]
     filename = f"TRIAL-{trial_number}_SCORE-{score:.2f}_{combo_safe}.html"
     filepath = os.path.join(plot_base, filename)
-    
+
     # Direct streaming write - zero RAM overhead for large charts
     _write_html_streaming(filepath, candle_data, indicators, trades, config)
-    
+
     # ================== CLEANUP ==================
     if max_archivos > 0:
         _cleanup_old_plots(plot_base, max_archivos)

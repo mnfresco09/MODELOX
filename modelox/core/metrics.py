@@ -229,13 +229,13 @@ if NUMBA_METRICS_AVAILABLE:
         std_ret = np.sqrt(var_ret * n / (n - 1)) if n > 1 else 0.0
         sharpe = mean_ret / std_ret if std_ret > 0 else 0.0
 
-        neg_var = sum_neg_returns_sq / n_neg_returns if n_neg_returns > 1 else 0.0
-        neg_std = (
-            np.sqrt(neg_var * n_neg_returns / (n_neg_returns - 1))
-            if n_neg_returns > 1
-            else 0.0
-        )
-        sortino = mean_ret / neg_std if neg_std > 0 else 0.0
+        # Sortino: usa downside deviation (desviación de retornos negativos respecto a 0)
+        # La fórmula correcta es: sqrt(mean(min(r, 0)^2)) - esto da la "semi-desviación"
+        # Pero aquí usamos solo los retornos negativos: sqrt(sum(r_neg^2) / n_total)
+        # para ser consistentes con la práctica común en trading
+        downside_var = sum_neg_returns_sq / n if n > 0 else 0.0
+        downside_std = np.sqrt(downside_var) if downside_var > 0 else 0.0
+        sortino = mean_ret / downside_std if downside_std > 0 else 0.0
 
         profit_factor = sum_wins / sum_losses if sum_losses > 0 else np.nan
         avg_win = sum_wins / n_wins if n_wins > 0 else 0.0
@@ -467,7 +467,7 @@ def sqn(trades: TradesDF) -> float:
     """System Quality Number (SQN).
 
     Fórmula:
-        $SQN = \sqrt{N} \times (\bar{R} / \sigma_R)$
+        $SQN = \\sqrt{N} \times (\bar{R} / \\sigma_R)$
 
     Donde R es el resultado por trade. Aquí usamos `pnl_neto` (PnL neto por trade)
     porque ya incluye comisiones y es consistente con el resto de métricas.
@@ -511,9 +511,9 @@ def racha_maxima(trades: TradesDF) -> Tuple[int, int]:
 
     if _empty(trades):
         return 0, 0
-    
+
     pnl = _to_numpy(trades, "pnl_neto")
-    
+
     def max_streak_np(arr: np.ndarray) -> int:
         """Calcula racha máxima usando numpy puro."""
         if len(arr) == 0:
@@ -531,10 +531,10 @@ def racha_maxima(trades: TradesDF) -> Tuple[int, int]:
                 else:
                     counts[i] = counts[i-1] + 1
         return int(counts.max()) if len(counts) > 0 else 0
-    
+
     gan = (pnl > 0).astype(int)
     per = (pnl < 0).astype(int)
-    
+
     return max_streak_np(gan), max_streak_np(per)
 
 
@@ -553,7 +553,7 @@ def _extract_times_polars(trades: TradesDF) -> Tuple[pl.Series, pl.Series]:
     if isinstance(trades, pl.DataFrame):
         entry_times = trades["entry_time"]
         exit_times = trades["exit_time"]
-        
+
         # Asegurar tipo Datetime
         if entry_times.dtype != pl.Datetime:
             entry_times = entry_times.cast(pl.Datetime("us"))
@@ -598,14 +598,14 @@ def trades_por_dia(
     # Calcular días usando Polars temporal
     if start is None or end is None:
         return 0.0
-    
+
     # Extraer fecha (día) y calcular diferencia usando el DataFrame
     dates_df = pl.DataFrame({"ts": [min_ts, max_ts]})
     dates_result = dates_df.select(pl.col("ts").dt.date())
     start_date = dates_result["ts"][0]
     end_date = dates_result["ts"][1]
     days = (end_date - start_date).days + 1
-    
+
     n_trades = trades.height if isinstance(trades, pl.DataFrame) else len(trades)
     return float(n_trades) / float(days) if days > 0 else 0.0
 
@@ -656,7 +656,7 @@ def pnl_neto_por_dia_operado(
         events_df = events_df.filter(
             (pl.col("ts") >= start) & (pl.col("ts") <= end)
         )
-    
+
     if events_df.is_empty():
         return 0.0
 
@@ -664,7 +664,7 @@ def pnl_neto_por_dia_operado(
     dias_operados = events_df.select(
         pl.col("ts").dt.date().n_unique()
     ).item()
-    
+
     if dias_operados <= 0:
         return 0.0
 
@@ -692,7 +692,7 @@ def _returns_series(trades: TradesDF) -> np.ndarray:
     Prefer `pnl_pct` if present; otherwise derive from pnl/stake.
     """
     cols = trades.columns if isinstance(trades, pl.DataFrame) else list(trades.columns)
-    
+
     if "pnl_pct" in cols:
         r = _to_numpy(trades, "pnl_pct") / 100.0
     elif "stake" in cols:
@@ -711,11 +711,78 @@ def _returns_series(trades: TradesDF) -> np.ndarray:
     return r
 
 
-def sharpe(trades: TradesDF, *, annualize: bool = False) -> float:
-    """
-    Sharpe-like ratio using per-trade returns (NOT dollar pnl).
-    """
+# Factor de anualización por timeframe (observaciones por año)
+TIMEFRAME_ANNUAL_FACTOR = {
+    "1m": 525600,   # 60 * 24 * 365.25
+    "5m": 105120,   # 12 * 24 * 365.25
+    "15m": 35040,   # 4 * 24 * 365.25
+    "30m": 17520,   # 2 * 24 * 365.25
+    "1h": 8760,     # 24 * 365.25
+    "4h": 2190,     # 6 * 365.25
+    "1d": 365.25,   # días por año
+    "1w": 52.18,    # semanas por año
+}
 
+
+def _get_annualization_factor(timeframe: Optional[str] = None, trades: Optional[TradesDF] = None) -> float:
+    """
+    Obtiene el factor de anualización para Sharpe/Sortino basado en frecuencia de trading.
+    
+    IMPORTANTE: El Sharpe Ratio se anualiza según la frecuencia de observaciones (trades),
+    no según el timeframe de las velas. Sin embargo, para estrategias con alta frecuencia
+    en timeframes cortos, usar el timeframe como proxy es aceptable.
+    
+    La anualización se hace multiplicando por sqrt(N) donde N es el número de
+    observaciones por año.
+    
+    Para trading:
+    - Si tenemos trades_por_dia, usamos: N = tpd * 252 (días de trading)
+    - Si tenemos timeframe, estimamos basándose en horas de mercado
+    - Default: 252 (asumiendo ~1 trade por día)
+    """
+    # Prioridad 1: Calcular basado en trades reales
+    if trades is not None and not _empty(trades):
+        tpd = trades_por_dia(trades)
+        if tpd > 0:
+            # Usar 365.25 para crypto (24/7) o 252 para mercados tradicionales
+            # Por defecto asumimos mercados tradicionales
+            return tpd * 252.0
+    
+    # Prioridad 2: Usar timeframe como estimación
+    # NOTA: Esto asume que se hace ~1 trade por vela, lo cual puede no ser cierto
+    if timeframe and timeframe in TIMEFRAME_ANNUAL_FACTOR:
+        # Ajustar por horas de mercado (8h/día para tradicionales vs 24h para crypto)
+        # Para ser conservadores, dividimos por 3 (asumiendo mercado abierto 8h/día)
+        return float(TIMEFRAME_ANNUAL_FACTOR[timeframe]) / 3.0
+
+    # Default: asumir trading diario en mercado tradicional
+    return 252.0
+
+
+def sharpe(
+    trades: TradesDF,
+    *,
+    annualize: bool = True,
+    timeframe: Optional[str] = None
+) -> float:
+    """
+    Sharpe Ratio anualizado comparable entre timeframes.
+
+    El Sharpe Ratio mide el exceso de retorno por unidad de riesgo.
+    Para comparar estrategias en diferentes timeframes, se anualiza
+    usando la raíz cuadrada del número de observaciones por año.
+
+    Fórmula:
+        Sharpe = (mean_return / std_return) * sqrt(N_annual)
+
+    Args:
+        trades: DataFrame con los trades
+        annualize: Si True (default), anualiza el ratio
+        timeframe: Timeframe para cálculo preciso ('1m', '5m', '15m', '1h', etc.)
+
+    Returns:
+        Sharpe Ratio (anualizado si annualize=True)
+    """
     if _empty(trades):
         return 0.0
     r = _returns_series(trades)
@@ -727,28 +794,61 @@ def sharpe(trades: TradesDF, *, annualize: bool = False) -> float:
         return 0.0
     ratio = mean / std
     if annualize:
-        tpd = trades_por_dia(trades)
-        ratio *= float(np.sqrt(max(tpd * 365.25, 0.0)))
+        ann_factor = _get_annualization_factor(timeframe, trades)
+        ratio *= float(np.sqrt(ann_factor))
     return float(ratio)
 
 
-def sortino(trades: TradesDF, *, annualize: bool = False) -> float:
-    """Sortino-like ratio using downside deviation of per-trade returns."""
+def sortino(
+    trades: TradesDF,
+    *,
+    annualize: bool = True,
+    timeframe: Optional[str] = None
+) -> float:
+    """
+    Sortino Ratio anualizado comparable entre timeframes.
 
+    Similar al Sharpe pero usa solo la desviación de retornos negativos
+    (downside deviation), siendo más sensible al riesgo de pérdida.
+
+    La downside deviation se calcula como:
+        sqrt(sum(min(r, 0)^2) / N)
+    
+    Esto penaliza la volatilidad a la baja pero no la volatilidad al alza.
+
+    Fórmula:
+        Sortino = (mean_return / downside_std) * sqrt(N_annual)
+
+    Args:
+        trades: DataFrame con los trades
+        annualize: Si True (default), anualiza el ratio
+        timeframe: Timeframe para cálculo preciso ('1m', '5m', '15m', '1h', etc.)
+
+    Returns:
+        Sortino Ratio (anualizado si annualize=True)
+    """
     if _empty(trades):
         return 0.0
     r = _returns_series(trades)
     if r.size == 0:
         return 0.0
-    downside = r[r < 0]
-    neg_std = float(np.std(downside, ddof=1)) if downside.size > 1 else 0.0
-    if neg_std == 0:
+    
+    mean_ret = float(np.mean(r))
+    
+    # Downside deviation: sqrt(mean(min(r, 0)^2))
+    # Usamos todos los retornos pero solo contamos los negativos al cuadrado
+    downside_sq = np.where(r < 0, r**2, 0.0)
+    downside_var = float(np.mean(downside_sq))
+    downside_std = float(np.sqrt(downside_var)) if downside_var > 0 else 0.0
+    
+    if downside_std == 0:
         return 0.0
-    ratio = float(np.mean(r) / neg_std)
+    
+    ratio = mean_ret / downside_std
     if annualize:
-        tpd = trades_por_dia(trades)
-        ratio *= float(np.sqrt(max(tpd * 365.25, 0.0)))
-    return ratio
+        ann_factor = _get_annualization_factor(timeframe, trades)
+        ratio *= float(np.sqrt(ann_factor))
+    return float(ratio)
 
 
 def profit_factor(trades: TradesDF) -> float:
@@ -780,13 +880,13 @@ def calmar(trades: TradesDF, equity_curve: List[float]) -> float:
         return 0.0
 
     entry_times, exit_times = _extract_times_polars(trades)
-    
+
     # Calcular días usando Polars temporal
     start = entry_times.min()
     end = exit_times.max()
     if start is None or end is None:
         return 0.0
-    
+
     # Calcular diferencia en días
     diff_df = pl.DataFrame({"start": [start], "end": [end]})
     diff_result = diff_df.select(
@@ -838,30 +938,39 @@ def resumen_metricas(
     equity_curve: Optional[List[float]] = None,
     period_start: Optional[pd.Timestamp] = None,
     period_end: Optional[pd.Timestamp] = None,
+    timeframe: Optional[str] = None,
 ) -> Dict[str, Any]:
     """
     Main metrics dictionary used by scoring and reporting.
-    
+
     Acepta tanto Polars como Pandas DataFrame.
+
+    Args:
+        trades: DataFrame con los trades
+        saldo_inicial: Saldo inicial de la cuenta
+        equity_curve: Curva de equity opcional
+        period_start: Inicio del periodo
+        period_end: Fin del periodo
+        timeframe: Timeframe para cálculo correcto de Sharpe/Sortino ('1m', '5m', '15m', '1h', etc.)
     """
     if _empty(trades):
         return _empty_metrics_dict(saldo_inicial)
-    
+
     # =========================================================================
     # RUTA RÁPIDA: Usar Numba si está disponible
     # =========================================================================
     if USE_NUMBA_METRICS and NUMBA_METRICS_AVAILABLE:
         try:
             return _resumen_metricas_numba_wrapper(
-                trades, saldo_inicial, equity_curve, period_start, period_end
+                trades, saldo_inicial, equity_curve, period_start, period_end, timeframe
             )
         except Exception:
             pass
-    
+
     # =========================================================================
     # RUTA ESTÁNDAR: Cálculo Python tradicional
     # =========================================================================
-    return _resumen_metricas_python(trades, saldo_inicial, equity_curve, period_start, period_end)
+    return _resumen_metricas_python(trades, saldo_inicial, equity_curve, period_start, period_end, timeframe)
 
 
 def _empty_metrics_dict(saldo_inicial: float) -> Dict[str, Any]:
@@ -906,18 +1015,19 @@ def _resumen_metricas_numba_wrapper(
     equity_curve: Optional[List[float]],
     period_start: Optional[pd.Timestamp],
     period_end: Optional[pd.Timestamp],
+    timeframe: Optional[str] = None,
 ) -> Dict[str, Any]:
     """Wrapper que prepara datos para la versión Numba y completa métricas faltantes."""
-    
+
     # Extraer arrays numpy (compatible Polars/Pandas)
     pnl_neto = _to_numpy(trades, "pnl_neto")
     cols = trades.columns if isinstance(trades, pl.DataFrame) else list(trades.columns)
     pnl_pct = _to_numpy(trades, "pnl_pct") if "pnl_pct" in cols else np.zeros_like(pnl_neto)
     saldo_despues = _to_numpy(trades, "saldo_despues")
     saldo_antes = _to_numpy(trades, "saldo_antes") if "saldo_antes" in cols else np.zeros_like(saldo_despues)
-    
+
     eq_arr = np.asarray(equity_curve if equity_curve else list(saldo_despues), dtype=np.float64)
-    
+
     # Contar trades por tipo
     if isinstance(trades, pl.DataFrame):
         type_arr = trades["type"].to_list() if "type" in trades.columns else []
@@ -933,40 +1043,48 @@ def _resumen_metricas_numba_wrapper(
         else:
             n_trades_long = 0
             n_trades_short = 0
-    
+
     # Llamar a Numba
     metrics = resumen_metricas_fast(
         pnl_neto, pnl_pct, saldo_despues, saldo_antes, eq_arr, saldo_inicial,
         n_trades_long, n_trades_short
     )
-    
+
     # Completar métricas que requieren timestamps (Python)
-    metrics["trades_por_dia"] = trades_por_dia(trades, period_start=period_start, period_end=period_end)
-    metrics["pnl_neto_por_dia_operado"] = pnl_neto_por_dia_operado(trades, period_start=period_start, period_end=period_end)
+    metrics["trades_por_dia"] = trades_por_dia(
+        trades, period_start=period_start, period_end=period_end
+    )
+    metrics["pnl_neto_por_dia_operado"] = pnl_neto_por_dia_operado(
+        trades, period_start=period_start, period_end=period_end
+    )
     metrics["calmar"] = calmar(trades, list(eq_arr))
-    
+
     # Duración y comisiones (compatible Polars/Pandas)
     if "duracion_min" in cols:
         metrics["duration_mean_min"] = float(np.mean(_to_numpy(trades, "duracion_min")))
     else:
         metrics["duration_mean_min"] = 0.0
-        
+
     if "comision" in cols:
         metrics["comisiones_total"] = float(np.sum(_to_numpy(trades, "comision")))
     else:
         metrics["comisiones_total"] = 0.0
-    
+
     # Estabilidad (simple, no crítica)
     if len(eq_arr) >= 2:
         cambios = np.diff(eq_arr)
         mean_eq = float(np.mean(eq_arr))
         metrics["estabilidad"] = float(1.0 - (np.std(cambios) / mean_eq)) if mean_eq != 0 else 0.0
-    
+
+    # Recalcular Sharpe y Sortino con anualización correcta por timeframe
+    metrics["sharpe"] = sharpe(trades, annualize=True, timeframe=timeframe)
+    metrics["sortino"] = sortino(trades, annualize=True, timeframe=timeframe)
+
     # Saldo sin comisiones
     if "pnl" in cols:
         pnl_bruto = _to_numpy(trades, "pnl")
         metrics["saldo_sin_comisiones"] = float(saldo_antes[0]) + float(pnl_bruto.sum())
-    
+
     return metrics
 
 
@@ -976,9 +1094,10 @@ def _resumen_metricas_python(
     equity_curve: Optional[List[float]],
     period_start: Optional[pd.Timestamp],
     period_end: Optional[pd.Timestamp],
+    timeframe: Optional[str] = None,
 ) -> Dict[str, Any]:
     """Versión Python de resumen_metricas (compatible Polars/Pandas)."""
-    
+
     if _empty(trades):
         return _empty_metrics_dict(saldo_inicial)
 
@@ -986,7 +1105,7 @@ def _resumen_metricas_python(
     saldo_despues = _to_numpy(trades, "saldo_despues")
     pnl_neto = _to_numpy(trades, "pnl_neto")
     cols = trades.columns if isinstance(trades, pl.DataFrame) else list(trades.columns)
-    
+
     equity_curve = list(saldo_despues) if equity_curve is None else equity_curve
     _, max_dd_pct = max_drawdown(equity_curve)
     racha_g, racha_p = racha_maxima(trades)
@@ -1018,7 +1137,7 @@ def _resumen_metricas_python(
     saldo_min = float(np.min(saldo_despues))
     saldo_max = float(np.max(saldo_despues))
     saldo_mean = float(np.mean(saldo_despues))
-    
+
     # Duración y comisiones
     duracion_min = _to_numpy(trades, "duracion_min") if "duracion_min" in cols else np.array([0.0])
     comision = _to_numpy(trades, "comision") if "comision" in cols else np.array([0.0])
@@ -1050,8 +1169,8 @@ def _resumen_metricas_python(
         "count_shorts": n_trades_short,
         "num_shorts": n_trades_short,
         "riesgo_beneficio": riesgo_beneficio(trades),
-        "sharpe": sharpe(trades, annualize=False),
-        "sortino": sortino(trades, annualize=False),
+        "sharpe": sharpe(trades, annualize=True, timeframe=timeframe),
+        "sortino": sortino(trades, annualize=True, timeframe=timeframe),
         "profit_factor": profit_factor(trades),
         "payoff_ratio": payoff_ratio(trades),
         "calmar": calmar(trades, equity_curve),
