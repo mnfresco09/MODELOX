@@ -96,9 +96,8 @@ def has_local_changes() -> bool:
     return bool(output.strip())
 
 
-def get_commits_behind() -> int:
-    """Retorna cuántos commits está detrás del remoto."""
-    run_command(["git", "fetch", "origin"], check=False, silent=True)
+def get_commits_behind() -> Tuple[int, bool]:
+    """Retorna (cuántos commits está detrás del remoto, si pudo verificar)."""
     branch = get_current_branch()
     success, output = run_command(
         ["git", "rev-list", "--count", f"HEAD..origin/{branch}"],
@@ -106,9 +105,9 @@ def get_commits_behind() -> int:
         silent=True
     )
     try:
-        return int(output.strip()) if success else 0
+        return (int(output.strip()), True) if success else (0, False)
     except ValueError:
-        return 0
+        return (0, False)
 
 
 def get_commits_ahead() -> int:
@@ -177,12 +176,15 @@ Ejemplos:
     # =========================================================================
     print(f"\n{Colors.YELLOW}📊 Paso 2: Analizando estado...{Colors.RESET}")
     
-    behind = get_commits_behind()
+    behind, could_check = get_commits_behind()
     ahead = get_commits_ahead()
     has_changes = has_local_changes()
     
     print(f"\n   {Colors.CYAN}Estado:{Colors.RESET}")
-    print(f"   • Commits detrás de GitHub: {Colors.GREEN if behind == 0 else Colors.YELLOW}{behind}{Colors.RESET}")
+    if could_check:
+        print(f"   • Commits detrás de GitHub: {Colors.GREEN if behind == 0 else Colors.YELLOW}{behind}{Colors.RESET}")
+    else:
+        print(f"   • Commits detrás de GitHub: {Colors.YELLOW}(no se pudo verificar){Colors.RESET}")
     print(f"   • Commits adelante de GitHub: {Colors.GREEN if ahead == 0 else Colors.YELLOW}{ahead}{Colors.RESET}")
     print(f"   • Cambios locales sin commit: {Colors.RED if has_changes else Colors.GREEN}{'Sí' if has_changes else 'No'}{Colors.RESET}")
     
@@ -191,7 +193,9 @@ Ejemplos:
     # =========================================================================
     if args.check:
         print(f"\n{Colors.CYAN}{'─' * 50}{Colors.RESET}")
-        if behind == 0:
+        if not could_check:
+            print(f"{Colors.YELLOW}⚠️  No se pudo verificar el estado. Ejecuta sin --check para intentar actualizar.{Colors.RESET}")
+        elif behind == 0:
             print(f"{Colors.GREEN}✅ Tu sistema está actualizado{Colors.RESET}")
         else:
             print(f"{Colors.YELLOW}📥 Hay {behind} commit(s) nuevos disponibles{Colors.RESET}")
@@ -199,11 +203,14 @@ Ejemplos:
         return 0
     
     # =========================================================================
-    # Verificar si hay algo que actualizar
+    # Verificar si hay algo que actualizar (pero si no pudimos verificar, intentar igual)
     # =========================================================================
-    if behind == 0:
+    if behind == 0 and could_check:
         print(f"\n{Colors.GREEN}✅ Tu sistema ya está actualizado con GitHub{Colors.RESET}")
         return 0
+    
+    if not could_check:
+        print(f"\n{Colors.YELLOW}⚠️  No se pudo verificar commits. Intentando pull de todas formas...{Colors.RESET}")
     
     # =========================================================================
     # PASO 3: Manejar cambios locales
@@ -239,7 +246,10 @@ Ejemplos:
     # =========================================================================
     # PASO 4: Actualizar (Pull)
     # =========================================================================
-    print(f"\n{Colors.YELLOW}📥 Paso 3: Descargando {behind} commit(s) de GitHub...{Colors.RESET}")
+    if behind > 0:
+        print(f"\n{Colors.YELLOW}📥 Paso 3: Descargando {behind} commit(s) de GitHub...{Colors.RESET}")
+    else:
+        print(f"\n{Colors.YELLOW}📥 Paso 3: Sincronizando con GitHub...{Colors.RESET}")
     
     if args.rebase:
         success, output = run_command(["git", "pull", "--rebase", "origin", branch])
@@ -282,7 +292,6 @@ Ejemplos:
 ╚══════════════════════════════════════════════════════════════════╝{Colors.RESET}
 
    • Rama:                 {Colors.CYAN}{branch}{Colors.RESET}
-   • Commits descargados:  {Colors.GREEN}{behind}{Colors.RESET}
    • Estado:               {Colors.GREEN}Sincronizado con GitHub{Colors.RESET}
 """)
     
