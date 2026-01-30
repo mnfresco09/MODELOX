@@ -2817,8 +2817,37 @@ def main():
     # PASO 7: PDF
     console.print(UI.section("PASO 7: GENERACIÓN PDF"))
     base = Path(analyzer.filepath).stem
-    pdf_path = Prompt.ask("  [white]ARCHIVO PDF[/white]", default=f"reporte_gpr_{base}.pdf")
-    pdf_result = analyzer.generate_pdf_report(pdf_path)
+    
+    # Preguntar tipo de PDF
+    pdf_type = Prompt.ask(
+        "  [white]TIPO DE REPORTE[/white]",
+        choices=["profesional", "simple"],
+        default="profesional"
+    )
+    
+    if pdf_type == "profesional":
+        pdf_path = Prompt.ask("  [white]ARCHIVO PDF[/white]", default=f"reporte_gpr_profesional_{base}.pdf")
+        try:
+            from visual.pdf_profesional import generate_professional_report
+            pdf_result = generate_professional_report(
+                gpr_results=analyzer.gpr_results,
+                gpr_models=analyzer.gpr_models,
+                df=analyzer.df,
+                param_columns=analyzer.param_columns,
+                filepath=analyzer.filepath,
+                output_path=pdf_path
+            )
+        except ImportError as e:
+            console.print(f"[yellow]⚠ Error importando PDF profesional: {e}[/yellow]")
+            console.print("[yellow]  Usando generador simple...[/yellow]")
+            pdf_result = analyzer.generate_pdf_report(pdf_path)
+        except Exception as e:
+            console.print(f"[red]❌ Error generando PDF profesional: {e}[/red]")
+            console.print("[yellow]  Usando generador simple...[/yellow]")
+            pdf_result = analyzer.generate_pdf_report(pdf_path)
+    else:
+        pdf_path = Prompt.ask("  [white]ARCHIVO PDF[/white]", default=f"reporte_gpr_{base}.pdf")
+        pdf_result = analyzer.generate_pdf_report(pdf_path)
     
     # PASO 8: Excel
     if Confirm.ask("\n[white]  ¿EXPORTAR EXCEL?[/white]", default=True):
