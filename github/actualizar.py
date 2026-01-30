@@ -10,7 +10,8 @@ otro colaborador ha subido código.
 
 USO:
     python github/actualizar.py           # Pull normal
-    python github/actualizar.py --force   # Descartar cambios locales y actualizar
+    python github/actualizar.py --force   # Descartar cambios no commiteados y actualizar
+    python github/actualizar.py --hard    # REEMPLAZAR TODO con lo de GitHub (reset --hard)
     python github/actualizar.py --stash   # Guardar cambios locales, actualizar, restaurar
     python github/actualizar.py --check   # Solo verificar si hay actualizaciones
 
@@ -140,13 +141,16 @@ def main(argv: Optional[List[str]] = None) -> int:
         epilog="""
 Ejemplos:
   python github/actualizar.py           # Pull normal
-  python github/actualizar.py --force   # Descartar cambios locales y actualizar
+  python github/actualizar.py --hard    # Reemplazar TODO con GitHub (recomendado para VMs)
+  python github/actualizar.py --force   # Descartar cambios no commiteados y actualizar
   python github/actualizar.py --stash   # Guardar cambios, actualizar, restaurar
   python github/actualizar.py --check   # Solo verificar actualizaciones
         """
     )
+    parser.add_argument("--hard", "-H", action="store_true",
+                        help="REEMPLAZAR TODO el sistema local con lo de GitHub (git reset --hard)")
     parser.add_argument("--force", "-f", action="store_true",
-                        help="Descartar cambios locales y forzar actualización")
+                        help="Descartar cambios no commiteados y forzar actualización")
     parser.add_argument("--stash", "-s", action="store_true",
                         help="Guardar cambios locales (stash), actualizar, y restaurarlos")
     parser.add_argument("--check", "-c", action="store_true",
@@ -172,7 +176,43 @@ Ejemplos:
         return 1
     
     # =========================================================================
+    # MODO HARD: Reemplazar TODO con lo de GitHub (git reset --hard)
+    # =========================================================================
+    if args.hard:
+        print(f"\n{Colors.RED}{Colors.BOLD}⚠️  MODO HARD: Reemplazando TODO el sistema local con GitHub{Colors.RESET}")
+        print(f"{Colors.DIM}   Esto descartará TODOS los cambios locales (commiteados y no commiteados){Colors.RESET}")
+        
+        # Reset hard al estado del remoto
+        print(f"\n{Colors.YELLOW}🔄 Ejecutando reset --hard...{Colors.RESET}")
+        success, output = run_command(["git", "reset", "--hard", f"origin/{branch}"])
+        
+        if not success:
+            print(f"\n{Colors.RED}❌ Error durante el reset{Colors.RESET}")
+            return 1
+        
+        # Limpiar archivos no trackeados que puedan quedar
+        print(f"\n{Colors.YELLOW}🧹 Limpiando archivos residuales...{Colors.RESET}")
+        run_command(["git", "clean", "-fd"], check=False)
+        
+        # Mostrar resultado
+        print(f"""
+{Colors.GREEN}{Colors.BOLD}╔══════════════════════════════════════════════════════════════════╗
+║              ✅ SISTEMA REEMPLAZADO CON GITHUB                   ║
+╚══════════════════════════════════════════════════════════════════╝{Colors.RESET}
+
+   • Rama:    {Colors.CYAN}{branch}{Colors.RESET}
+   • Estado:  {Colors.GREEN}Idéntico a GitHub (origin/{branch}){Colors.RESET}
+""")
+        
+        # Mostrar últimos commits
+        print(f"{Colors.DIM}   Últimos commits en el sistema:{Colors.RESET}")
+        run_command(["git", "log", "--oneline", "-5"], check=False)
+        
+        return 0
+    
+    # =========================================================================
     # PASO 2: Verificar estado
+    # =========================================================================
     # =========================================================================
     print(f"\n{Colors.YELLOW}📊 Paso 2: Analizando estado...{Colors.RESET}")
     
