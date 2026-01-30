@@ -61,7 +61,16 @@ from optuna.samplers import NSGAIISampler, TPESampler
 
 from .engine import BacktestParams, calculate_performance_vectorized_numba
 from .metrics import resumen_metricas
-from .scoring import score_optuna, nsga2_objectives, score_quality_only
+# v7.0: Scoring unificado - todo está en scoring.py ahora
+from .scoring import (
+    score_optuna, 
+    nsga2_objectives, 
+    score_quality_only,
+    run_neighborhood_analysis,
+    NeighborhoodConfig,
+    NeighborhoodResult,
+    DEFAULT_NEIGHBORHOOD_CONFIG,
+)
 from .types import (
     BacktestConfig,
     Reporter,
@@ -71,12 +80,6 @@ from .types import (
 )
 from .data import load_data, prepare_multitimeframe_data
 from .exits import resolve_exit_settings_for_trial
-from .neighborhood_fitness import (
-    run_neighborhood_analysis,
-    NeighborhoodConfig,
-    NeighborhoodResult,
-    DEFAULT_NEIGHBORHOOD_CONFIG,
-)
 
 # Silenciar warnings experimentales de Optuna
 warnings.filterwarnings("ignore", category=ExperimentalWarning)
@@ -86,6 +89,72 @@ optuna.logging.set_verbosity(optuna.logging.WARNING)
 _TIMINGS_VERBOSE = os.environ.get("MODELOX_TIMINGS_VERBOSE", "0") in {"1", "true", "True", "YES", "yes"}
 _TIMINGS_PRINT_EVERY = int(os.environ.get("MODELOX_TIMINGS_PRINT_EVERY", "1"))
 
+# =============================================================================
+# OPTIMIZACIÓN: Cache de señales base para vecinos
+# =============================================================================
+_SIGNALS_CACHE: Dict[str, pl.DataFrame] = {}
+_SIGNALS_CACHE_MAX = 8
+
+# Intervalo de limpieza periódica (cada N trials)
+_CLEANUP_INTERVAL = int(os.environ.get("MODELOX_CLEANUP_INTERVAL", "100"))
+
+
+def _cache_signals(key: str, signals: pl.DataFrame) -> None:
+    """Cachea señales para reutilización en vecinos."""
+    global _SIGNALS_CACHE
+    if len(_SIGNALS_CACHE) >= _SIGNALS_CACHE_MAX:
+        _SIGNALS_CACHE.pop(next(iter(_SIGNALS_CACHE)))
+    _SIGNALS_CACHE[key] = signals
+
+
+def _get_cached_signals(key: str) -> Optional[pl.DataFrame]:
+    """Obtiene señales cacheadas."""
+    return _SIGNALS_CACHE.get(key)
+
+
+def clear_all_caches() -> None:
+    """Limpia todos los caches del sistema."""
+    global _SIGNALS_CACHE
+    _SIGNALS_CACHE.clear()
+    gc.collect()
+
+
+def periodic_cleanup(trial_number: int, force: bool = False) -> None:
+    """
+    Limpieza periódica cada N trials para mantener velocidad constante.
+    
+    Ejecuta:
+    1. Limpia cachés de señales
+    2. Fuerza garbage collection
+    3. En macOS, intenta liberar memoria comprimida
+    
+    Args:
+        trial_number: Número del trial actual
+        force: Si True, ejecuta limpieza sin importar el intervalo
+    """
+    if not force and trial_number % _CLEANUP_INTERVAL != 0:
+        return
+    
+    if trial_number == 0:
+        return  # Skip primer trial
+    
+    # Limpiar cachés
+    clear_all_caches()
+    
+    # Triple GC para liberar referencias cíclicas
+    gc.collect()
+    gc.collect()
+    gc.collect()
+    
+    # En macOS, liberar memoria si es posible
+    import platform
+    if platform.system() == "Darwin":
+        try:
+            import subprocess
+            subprocess.run(['purge'], capture_output=True, timeout=2)
+        except:
+            pass
+
 
 # =============================================================================
 # CONFIGURACIÓN
@@ -93,9 +162,26 @@ _TIMINGS_PRINT_EVERY = int(os.environ.get("MODELOX_TIMINGS_PRINT_EVERY", "1"))
 
 @dataclass(frozen=True)
 class OptunaConfig:
-    """Configuración de Optuna."""
+    """
+    Configuración de Optuna.
+    
+    PARALELIZACIÓN:
+    ===============
+    n_jobs controla el número de trials paralelos de Optuna.
+    
+    - n_jobs=1: Secuencial (default, más estable)
+    - n_jobs=2+: Paralelo (más rápido, requiere más RAM)
+    - n_jobs=-1: Usar todos los cores disponibles
+    
+    IMPORTANTE: Si usas n_jobs>1, asegúrate de que tu sistema
+    tenga suficiente RAM (~500MB por worker extra).
+    
+    VARIABLES DE ENTORNO RELACIONADAS:
+    - MODELOX_NEIGHBORHOOD_PARALLEL=1: Paralelizar análisis de vecinos (default ON)
+    - MODELOX_NEIGHBORHOOD_WORKERS=6: Workers para vecinos (default 6)
+    """
     seed: Optional[int] = None
-    n_jobs: int = 1
+    n_jobs: int = 1  # Número de trials paralelos de Optuna
     storage: Optional[str] = None
     study_name_prefix: str = "MODELOX"
     sampler: str = "tpe"  # "tpe" o "nsga2"
@@ -206,6 +292,42 @@ def _ensure_ohlcv_coherence(
     return open_arr, high_arr, low_arr, close_arr
 
 
+# =============================================================================
+# KERNEL NUMBA PARA PERTURBACIÓN RÁPIDA
+# =============================================================================
+try:
+    from numba import njit
+    
+    @njit(cache=True, fastmath=True)
+    def _perturb_returns_numba(
+        close_arr: np.ndarray,
+        noise: np.ndarray,
+    ) -> np.ndarray:
+        """Kernel Numba para reconstruir precios desde retornos perturbados."""
+        n = len(close_arr)
+        log_returns = np.empty(n - 1, dtype=np.float64)
+        
+        # Calcular log returns
+        for i in range(n - 1):
+            log_returns[i] = np.log(close_arr[i + 1] / close_arr[i])
+        
+        # Añadir ruido y reconstruir
+        perturbed_returns = log_returns + noise
+        
+        new_close = np.empty(n, dtype=np.float64)
+        new_close[0] = close_arr[0]
+        cumsum = 0.0
+        for i in range(n - 1):
+            cumsum += perturbed_returns[i]
+            new_close[i + 1] = close_arr[0] * np.exp(cumsum)
+        
+        return new_close
+    
+    _NUMBA_PERTURB_AVAILABLE = True
+except Exception:
+    _NUMBA_PERTURB_AVAILABLE = False
+
+
 def perturb_returns_professional(
     df: pl.DataFrame,
     noise_factor: float = 0.3,
@@ -214,77 +336,47 @@ def perturb_returns_professional(
     """
     PERTURBACIÓN PROFESIONAL DE RETORNOS (Método Quant Estándar)
     
-    Este método:
-    1. Calcula retornos logarítmicos del close original
-    2. Calcula la volatilidad real del activo
-    3. Añade ruido gaussiano proporcional a la volatilidad
-    4. Reconstruye precios manteniendo la estructura de velas
-    
-    El ruido es CALIBRADO a la volatilidad del activo:
-    - Activos volátiles (BTC, crypto): ruido mayor en términos absolutos
-    - Activos estables (bonds): ruido menor
-    
-    noise_factor: Proporción de la volatilidad real a usar como ruido
-                  0.3 = 30% de la volatilidad como desviación estándar del ruido
-                  
-    Resultado: Mercado sintético que:
-    - Mantiene características estadísticas similares
-    - Diverge gradualmente del original
-    - Permite validar robustez sin destruir la estructura
+    OPTIMIZADO: Usa kernel Numba para cálculos intensivos.
     """
     rng = np.random.default_rng(seed)
     
-    # Extraer arrays originales
-    open_arr = df["open"].to_numpy().astype(np.float64)
-    high_arr = df["high"].to_numpy().astype(np.float64)
-    low_arr = df["low"].to_numpy().astype(np.float64)
-    close_arr = df["close"].to_numpy().astype(np.float64)
+    # Extraer arrays originales (views, no copias)
+    close_arr = df["close"].to_numpy()
     n = len(close_arr)
     
     if n < 10:
-        return df  # No perturbar si hay muy pocos datos
+        return df
     
-    # =========================================================================
-    # PASO 1: Calcular retornos logarítmicos y volatilidad
-    # =========================================================================
+    # Calcular volatilidad
     log_returns = np.diff(np.log(np.maximum(close_arr, 1e-10)))
     volatility = np.std(log_returns)
     
     if volatility < 1e-10:
-        return df  # No perturbar si no hay volatilidad
+        return df
     
-    # =========================================================================
-    # PASO 2: Generar ruido calibrado a la volatilidad
-    # =========================================================================
+    # Generar ruido
     noise_std = volatility * noise_factor
     noise = rng.normal(0, noise_std, len(log_returns))
     
-    # Retornos perturbados
-    perturbed_returns = log_returns + noise
+    # Reconstruir close (usar Numba si disponible)
+    if _NUMBA_PERTURB_AVAILABLE:
+        new_close = _perturb_returns_numba(close_arr.astype(np.float64), noise)
+    else:
+        perturbed_returns = log_returns + noise
+        new_close = np.zeros(n)
+        new_close[0] = close_arr[0]
+        new_close[1:] = close_arr[0] * np.exp(np.cumsum(perturbed_returns))
     
-    # =========================================================================
-    # PASO 3: Reconstruir precios CLOSE
-    # =========================================================================
-    initial_price = close_arr[0]
-    new_close = np.zeros(n)
-    new_close[0] = initial_price
-    new_close[1:] = initial_price * np.exp(np.cumsum(perturbed_returns))
-    
-    # =========================================================================
-    # PASO 4: Reconstruir OHLC manteniendo la FORMA de cada vela
-    # =========================================================================
-    # La forma de la vela (proporciones) se preserva
+    # Escalar OHLC
     scale = new_close / np.maximum(close_arr, 1e-10)
     
-    new_open = open_arr * scale
-    new_high = high_arr * scale
-    new_low = low_arr * scale
+    open_arr = df["open"].to_numpy() * scale
+    high_arr = df["high"].to_numpy() * scale
+    low_arr = df["low"].to_numpy() * scale
     
-    # =========================================================================
-    # PASO 5: Asegurar coherencia OHLCV
-    # =========================================================================
+    # Asegurar coherencia
     new_open, new_high, new_low, new_close = _ensure_ohlcv_coherence(
-        new_open, new_high, new_low, new_close
+        open_arr, high_arr, low_arr, new_close
     )
     
     result = df.with_columns([
@@ -634,9 +726,11 @@ class SignalGenerator:
         
         signals_df = strategy.generate_signals(df, params)
         
-        if "signal_long" not in signals_df.columns:
+        # OPTIMIZACIÓN: Solo añadir columnas si no existen
+        cols = signals_df.columns
+        if "signal_long" not in cols:
             signals_df = signals_df.with_columns(pl.lit(False).alias("signal_long"))
-        if "signal_short" not in signals_df.columns:
+        if "signal_short" not in cols:
             signals_df = signals_df.with_columns(pl.lit(False).alias("signal_short"))
         
         return signals_df
@@ -645,6 +739,9 @@ class SignalGenerator:
 @dataclass
 class BacktestEngine:
     """Ejecuta backtest y retorna métricas."""
+    
+    # Cache de BacktestParams para evitar recreación
+    _params_cache: Dict[int, BacktestParams] = field(default_factory=dict)
     
     @staticmethod
     def run_backtest(
@@ -876,6 +973,9 @@ class OptimizationRunner:
         """
         
         def objective(trial: optuna.trial.Trial) -> Tuple[float, ...]:
+            # LIMPIEZA PERIÓDICA para mantener velocidad constante
+            periodic_cleanup(trial.number)
+            
             params_rt = self._prepare_params(trial, strategy, base_tf)
             entry_tf = params_rt["__timeframe_entry"]
             df_entry = df_map.get(entry_tf, df_base)
@@ -912,7 +1012,11 @@ class OptimizationRunner:
                 
                 self._perturbation_stats["trials_perturbed"] += 1
                 if "mean_diff_pct" in perturb_info:
-                    self._perturbation_stats["mean_diff_pcts"].append(perturb_info["mean_diff_pct"])
+                    # Limitar a últimos 100 valores para evitar memory bloat
+                    diffs = self._perturbation_stats["mean_diff_pcts"]
+                    diffs.append(perturb_info["mean_diff_pct"])
+                    if len(diffs) > 100:
+                        self._perturbation_stats["mean_diff_pcts"] = diffs[-100:]
             
             # Generar señales (usa df_map_perturbed para multi-timeframe)
             signals_df = SignalGenerator.generate_signals(df_trial, strategy, params_rt, df_map_perturbed)
@@ -1047,6 +1151,9 @@ class OptimizationRunner:
         def objective(trial: optuna.trial.Trial) -> float:
             t0_total = time.perf_counter()
             
+            # LIMPIEZA PERIÓDICA para mantener velocidad constante
+            periodic_cleanup(trial.number)
+            
             params_rt = self._prepare_params(trial, strategy, base_tf)
             entry_tf = params_rt["__timeframe_entry"]
             df_entry = df_map.get(entry_tf, df_base)
@@ -1083,7 +1190,11 @@ class OptimizationRunner:
                 
                 self._perturbation_stats["trials_perturbed"] += 1
                 if "mean_diff_pct" in perturb_info:
-                    self._perturbation_stats["mean_diff_pcts"].append(perturb_info["mean_diff_pct"])
+                    # Limitar a últimos 100 valores para evitar memory bloat
+                    diffs = self._perturbation_stats["mean_diff_pcts"]
+                    diffs.append(perturb_info["mean_diff_pct"])
+                    if len(diffs) > 100:
+                        self._perturbation_stats["mean_diff_pcts"] = diffs[-100:]
             
             # Generar señales (usa df_map_perturbed para multi-timeframe)
             t1_signals = time.perf_counter()
@@ -1254,6 +1365,27 @@ class OptimizationRunner:
             pass  # No fallar si Rich no está disponible
 
 
+# =============================================================================
+# FUNCIONES DE LIMPIEZA DE RECURSOS
+# =============================================================================
+
+def cleanup_parallel_resources():
+    """
+    Limpia todos los recursos de paralelización.
+    
+    Llamar al final de la optimización para liberar:
+    - Pool de threads de análisis de vecindario
+    - Caches de señales
+    - Garbage collector
+    """
+    try:
+        from .scoring import shutdown_neighbor_pool
+        shutdown_neighbor_pool()
+    except Exception:
+        pass
+    
+    clear_all_caches()
+    gc.collect()
 # =============================================================================
 # ALIAS DE COMPATIBILIDAD
 # =============================================================================

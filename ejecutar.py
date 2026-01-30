@@ -30,7 +30,7 @@ from copy import deepcopy
 from dataclasses import dataclass, field
 from datetime import datetime
 from pathlib import Path
-from typing import Any, Dict, List, Optional, Protocol
+from typing import Any, Dict, List, Optional, Protocol, Tuple
 import re
 
 # CAPTURA SEGURA DE LA RUTA RAÍZ AL INICIO (EVITA ERROR EN ATEXIT)
@@ -79,20 +79,27 @@ from general.configuracion import (
     # Neighborhood Fitness Aggregation
     VECINDARIO_ACTIVAR, VECINDARIO_N_NEIGHBORS, VECINDARIO_PERTURBATION_STD,
     VECINDARIO_LAMBDA_PENALTY, VECINDARIO_SEED, VECINDARIO_EXCEL, VECINDARIO_GUARDAR_MEJORES,
+    VECINDARIO_MAX_DISPERSION,
+    # Limpieza periódica
+    CLEANUP_INTERVAL,
 )
 from modelox.core.data import load_data
 from modelox.core.runner import OptimizationRunner, OptunaConfig
-from modelox.core.neighborhood_fitness import NeighborhoodConfig
-from modelox.core.types import normalize_timeframe_to_suffix, BacktestConfig, filter_by_date, nuclear_cleanup, TrialArtifacts
+# v7.0: NeighborhoodConfig ahora está en scoring.py unificado
+from modelox.core.scoring import NeighborhoodConfig
+from modelox.core.types import normalize_timeframe_to_suffix, BacktestConfig, filter_by_date, nuclear_cleanup, full_system_cleanup, TrialArtifacts
 from modelox.strategies.registry import instantiate_strategies
 from visual.excel import exportar_trades_excel_rapido, convertir_resumen_csv_a_excel
 from visual.grafico import plot_trades
 from visual.rich import (
     mostrar_cabecera_inicio, mostrar_fin_optimizacion,
     mostrar_panel_elegante, mostrar_top_trials, actualizar_estadisticas,
-    mostrar_evolucion_metricas, mostrar_evolucion_compacta,
+    mostrar_evolucion_metricas,
     resetear_estadisticas, mostrar_resultado_vecindario,
 )
+
+# Configurar intervalo de limpieza desde configuracion.py
+os.environ["MODELOX_CLEANUP_INTERVAL"] = str(CLEANUP_INTERVAL)
 
 # ============================================================================
 # REPORTERS INTEGRADOS (fusionados de modelox/reporting/)
@@ -450,7 +457,7 @@ class ElegantRichReporter(BaseReporter):
     saldo_inicial: float = 300.0
     activo: str = ""
     mostrar_evolucion_cada: int = 50
-    mostrar_evolucion_inline: bool = True
+    mostrar_evolucion_inline: bool = False  # Disabled - averages now shown in panel
     _best_score: float = field(default=float("-inf"), init=False, repr=False)
     _initialized: bool = field(default=False, init=False, repr=False)
 
@@ -515,17 +522,10 @@ class ElegantRichReporter(BaseReporter):
         if neighborhood_result:
             mostrar_resultado_vecindario(neighborhood_result, inline=True)
 
-        if self.mostrar_evolucion_inline:
-            from rich.console import Console
-            evol_line = mostrar_evolucion_compacta()
-            if evol_line:
-                Console().print(evol_line)
-
-        mostrar_evolucion_metricas(mostrar_cada_n=self.mostrar_evolucion_cada)
-
     def on_strategy_end(self, strategy_name: str, study) -> None:
         self._initialized = False
         if study and hasattr(study, 'trials') and study.trials:
+            mostrar_evolucion_metricas(forzar=True)  # SUMMARY solo al final
             mostrar_top_trials(study, n=5)
 
 
@@ -534,11 +534,13 @@ class NeighborhoodReporter(BaseReporter):
     """
     Genera Excel con resultados detallados del análisis de vecindario.
     
-    Muestra para cada trial:
-    - Métricas del trial original
-    - Métricas de cada vecino generado
-    - Estadísticas del vecindario (μ, σ, score agregado)
-    - Trinidad de objetivos (Robust_DSR, Worst_CVaR, Equity_R2)
+    SOLO guarda trials APROBADOS (robustez verificada).
+    Escribe Excel INMEDIATAMENTE durante el trial (no al final).
+    
+    Formato similar al RESUMEN.xlsx de trials:
+    - Trial original + todos los vecinos (subtrials)
+    - Métricas completas de cada uno
+    - Parámetros usados en cada subtrial
     """
     
     output_dir: str = "resultados/vecindario"
@@ -546,24 +548,19 @@ class NeighborhoodReporter(BaseReporter):
     activo: str = ""
     timeframe: str = "1m"
     
-    _candidates: List[Dict[str, Any]] = field(default_factory=list, init=False, repr=False)
-    _min_candidate_score: float = field(default=float("-inf"), init=False, repr=False)
-    _run_id: str = field(default="", init=False, repr=False)
-    
     def __post_init__(self):
         os.makedirs(self.output_dir, exist_ok=True)
         self._run_id = datetime.now().strftime("%Y%m%d_%H%M%S")
+        # Inicializar lista de archivos guardados (importante: lista de instancia, no de clase)
+        self._saved_files: List[Tuple[float, str]] = []
     
     def needs_dataframe(self, score: float) -> bool:
         return False
     
-    def _update_min_score(self):
-        if self._candidates:
-            self._min_candidate_score = min(c["score"] for c in self._candidates)
-        else:
-            self._min_candidate_score = float("-inf")
-    
     def on_trial_end(self, artifacts: TrialArtifacts) -> None:
+        """
+        Procesa trial: si está APROBADO, escribe Excel inmediatamente.
+        """
         neighborhood_result = getattr(artifacts, "neighborhood_result", None)
         if not neighborhood_result:
             return
@@ -573,166 +570,304 @@ class NeighborhoodReporter(BaseReporter):
         else:
             neigh_dict = dict(neighborhood_result)
         
+        # =====================================================================
+        # VERIFICAR SI ESTÁ APROBADO
+        # =====================================================================
+        n_tested = neigh_dict.get("n_neighbors_tested", 0)
+        
+        # Códigos especiales: -1 = skip por mal ROI, -2 = skip por baja frecuencia
+        if n_tested <= 0:
+            return  # No se hizo test o suspenso por requisitos
+        
+        # Verificar aprobación de robustez
+        aprobado = neigh_dict.get("robustness_approved", False)
+        avg_dispersion = neigh_dict.get("avg_dispersion", 1.0)
+        stability_score = max(0.0, 1.0 - avg_dispersion)  # Inverso de dispersión
+        
+        if not aprobado:
+            return  # Test hecho pero no aprobado
+        
         score = artifacts.score if artifacts.score is not None else 0.0
         
-        # Verificar si es candidato para TOP N
-        is_candidate = (
-            len(self._candidates) < self.max_guardar or 
-            score > self._min_candidate_score
-        )
-        
-        if not is_candidate:
-            return
-        
+        # =====================================================================
+        # APROBADO: Escribir Excel INMEDIATAMENTE
+        # =====================================================================
         record = {
             "trial": artifacts.trial_number,
             "strategy": artifacts.strategy_name,
             "score": score,
-            "metrics": deepcopy(artifacts.metrics) if artifacts.metrics else {},
+            "stability_score": stability_score,
+            "metrics": deepcopy(artifacts.metrics or {}),
             "params": deepcopy(artifacts.params) if artifacts.params else {},
             "neighborhood_info": deepcopy(neigh_dict),
         }
         
-        self._candidates.append(record)
+        # Escribir archivo Excel
+        filepath = self._write_trial_neighborhood_excel(record)
         
-        # Mantener solo TOP N
-        if len(self._candidates) > self.max_guardar:
-            self._candidates.sort(key=lambda x: x["score"], reverse=True)
-            removed = self._candidates.pop()
-            del removed
-        
-        self._update_min_score()
+        if filepath:
+            # Añadir a tracking
+            self._saved_files.append((score, filepath))
+            
+            # Mantener solo TOP N (eliminar los peores si hay más)
+            while len(self._saved_files) > self.max_guardar:
+                self._saved_files.sort(key=lambda x: x[0], reverse=True)  # Mayor score primero
+                worst_score, worst_file = self._saved_files.pop()  # Eliminar el peor
+                try:
+                    if os.path.exists(worst_file):
+                        os.remove(worst_file)
+                        print(f"    [ROBUSTEZ] Eliminado archivo con score {worst_score:.0f}: {Path(worst_file).name}")
+                except Exception as e:
+                    print(f"    [ROBUSTEZ] Error eliminando {worst_file}: {e}")
     
     def on_strategy_end(self, strategy_name: str, study) -> None:
-        """Escribe Excel para los TOP N candidatos."""
-        if not self._candidates:
-            return
-        
-        self._candidates.sort(key=lambda x: x["score"], reverse=True)
-        
-        # Guardar directamente en output_dir (sin subcarpeta trials)
-        out_path = Path(self.output_dir)
-        out_path.mkdir(parents=True, exist_ok=True)
-        
-        for record in self._candidates[:self.max_guardar]:
-            try:
-                self._write_trial_neighborhood_excel(record, out_path)
-            except Exception as e:
-                logger.warning(f"Error guardando vecindario trial {record['trial']}: {e}")
-        
-        self._candidates = []
-        self._min_candidate_score = float("-inf")
+        """Reset al finalizar estrategia."""
+        self._saved_files = []
     
-    def _write_trial_neighborhood_excel(self, record: Dict[str, Any], trial_dir: Path) -> None:
+    def _write_trial_neighborhood_excel(self, record: Dict[str, Any]) -> Optional[str]:
+        """
+        Escribe Excel para un trial aprobado con formato mejorado.
+        
+        Estructura del Excel:
+        - Fila 1: Trial original (ORIGINAL)
+        - Filas 2-N+1: Vecinos (VECINO_1, VECINO_2, ...)
+        - Fila N+2: DISPERSIÓN (con max permitida en paréntesis)
+        - Fila N+3: RESUMEN
+        
+        Columnas de dispersión: disp_ROI (50%), disp_SQN (50%), etc.
+        Donde (50%) es la dispersión máxima permitida.
+        """
+        import pandas as pd
+        import numpy as np
+        from openpyxl.styles import PatternFill, Font, Alignment, Border, Side
+        
         trial_num = record["trial"]
         strategy = str(record.get("strategy", "STRATEGY")).replace(" ", "_").replace("/", "_")
+        score = record["score"]
+        stability = record.get("stability_score", 0.0)
         
-        base_name = f"VECINDARIO_TRIAL{trial_num}_{self._run_id}"
-        csv_path = trial_dir / f"{base_name}.csv"
-        
-        rows = []
+        # Nombre de archivo con score
+        score_str = f"{score:.0f}"
+        base_name = f"ROBUSTEZ_T{trial_num}_S{score_str}"
+        excel_path = Path(self.output_dir) / f"{base_name}.xlsx"
         
         neigh_info = record.get("neighborhood_info", {}) or {}
         original_metrics = record.get("metrics", {}) or {}
         original_params = record.get("params", {}) or {}
         
-        clean_params = {
+        # Importar configuración
+        try:
+            from general.configuracion import VECINDARIO_MAX_DISPERSION
+        except ImportError:
+            VECINDARIO_MAX_DISPERSION = 0.50
+        
+        # =====================================================================
+        # HELPER PARA VALORES SEGUROS
+        # =====================================================================
+        def safe_float(val, default=0.0):
+            try:
+                f = float(val) if val is not None else default
+                return default if (f != f) else f  # NaN check
+            except:
+                return default
+        
+        # =====================================================================
+        # CONSTRUIR FILAS
+        # =====================================================================
+        rows = []
+        
+        # Limpiar parámetros del original
+        clean_original_params = {
             k: v for k, v in original_params.items() 
             if not str(k).startswith("__") and not str(k).startswith("exit_")
         }
         
-        # Fila del ORIGINAL
+        # ---- FILA ORIGINAL ----
         original_row = {
-            "trial": f"{trial_num}_ORIGINAL",
-            "tipo": "ORIGINAL",
-            "score": neigh_info.get("original_score", record.get("score", 0.0)),
-            "sharpe": neigh_info.get("original_sharpe", 0.0),
-            "cvar_95": neigh_info.get("original_cvar", 0.0),
-            "equity_r2": neigh_info.get("original_r2", 0.0),
-            "estrategia": strategy,
-            **{k: v for k, v in original_metrics.items()},
-            **{f"param_{k}": v for k, v in clean_params.items()},
+            "SUBTRIAL": f"T{trial_num}_ORIGINAL",
+            "TIPO": "ORIGINAL",
+            "SCORE": safe_float(neigh_info.get("original_score", score)),
+            "ROI": safe_float(original_metrics.get("roi")),
+            "SQN": safe_float(original_metrics.get("sqn")),
+            "SHARPE": safe_float(original_metrics.get("sharpe")),
+            "DRAWDOWN": safe_float(original_metrics.get("drawdown") or original_metrics.get("max_drawdown"), 50.0),
+            "N_TRADES": int(safe_float(original_metrics.get("n_trades") or original_metrics.get("total_trades"), 0)),
+            "TRADES_DIA": safe_float(original_metrics.get("trades_por_dia") or original_metrics.get("trades_dia")),
+            "PROFIT_FACTOR": safe_float(original_metrics.get("profit_factor"), 1.0),
+            "WIN_RATE": safe_float(original_metrics.get("win_rate") or original_metrics.get("porc_ganadoras")),
         }
+        # Añadir parámetros
+        for k, v in clean_original_params.items():
+            original_row[f"P_{k.upper()}"] = v
         rows.append(original_row)
         
-        # Filas de VECINOS
+        # ---- FILAS DE VECINOS ----
         neighbor_scores = neigh_info.get("neighbor_scores", []) or []
-        neighbor_sharpes = neigh_info.get("neighbor_sharpes", []) or []
-        neighbor_cvars = neigh_info.get("neighbor_cvars", []) or []
-        neighbor_r2s = neigh_info.get("neighbor_r2s", []) or []
         neighbor_metrics_list = neigh_info.get("neighbor_metrics", []) or []
+        neighbor_params_list = neigh_info.get("neighbor_params", []) or []
         
         for i, n_score in enumerate(neighbor_scores):
             n_metrics = neighbor_metrics_list[i] if i < len(neighbor_metrics_list) else {}
+            n_params = neighbor_params_list[i] if i < len(neighbor_params_list) else {}
+            
             neighbor_row = {
-                "trial": f"{trial_num}_VECINO_{i+1}",
-                "tipo": f"VECINO_{i+1}",
-                "score": n_score,
-                "sharpe": neighbor_sharpes[i] if i < len(neighbor_sharpes) else 0.0,
-                "cvar_95": neighbor_cvars[i] if i < len(neighbor_cvars) else 0.0,
-                "equity_r2": neighbor_r2s[i] if i < len(neighbor_r2s) else 0.0,
-                "estrategia": strategy,
-                **{k: v for k, v in n_metrics.items()},
+                "SUBTRIAL": f"T{trial_num}_V{i+1}",
+                "TIPO": f"VECINO_{i+1}",
+                "SCORE": safe_float(n_score),
+                "ROI": safe_float(n_metrics.get("roi")),
+                "SQN": safe_float(n_metrics.get("sqn")),
+                "SHARPE": safe_float(n_metrics.get("sharpe")),
+                "DRAWDOWN": safe_float(n_metrics.get("drawdown") or n_metrics.get("max_drawdown"), 50.0),
+                "N_TRADES": int(safe_float(n_metrics.get("n_trades") or n_metrics.get("total_trades"), 0)),
+                "TRADES_DIA": safe_float(n_metrics.get("trades_por_dia") or n_metrics.get("trades_dia")),
+                "PROFIT_FACTOR": safe_float(n_metrics.get("profit_factor"), 1.0),
+                "WIN_RATE": safe_float(n_metrics.get("win_rate") or n_metrics.get("porc_ganadoras")),
             }
+            # Añadir parámetros del vecino
+            for k, v in n_params.items():
+                if not str(k).startswith("__") and not str(k).startswith("exit_"):
+                    neighbor_row[f"P_{k.upper()}"] = v
             rows.append(neighbor_row)
         
-        # Fila RESUMEN DEL VECINDARIO
-        summary_row = {
-            "trial": f"{trial_num}_RESUMEN",
-            "tipo": "RESUMEN_VECINDARIO",
-            "score": neigh_info.get("aggregated_score", 0.0),
-            "sharpe": neigh_info.get("mean_sharpe", 0.0),
-            "cvar_95": neigh_info.get("worst_case_cvar", 0.0),
-            "equity_r2": neigh_info.get("equity_stability_r2", 0.0),
-            "estrategia": strategy,
-            "mean_score": neigh_info.get("mean_score", 0.0),
-            "std_score": neigh_info.get("std_score", 0.0),
-            "robust_dsr": neigh_info.get("robust_dsr", 0.0),
-            "n_neighbors_tested": neigh_info.get("n_neighbors_tested", 0),
-            "n_neighbors_successful": neigh_info.get("n_neighbors_successful", 0),
-            "execution_time_ms": neigh_info.get("execution_time_ms", 0.0),
+        # =====================================================================
+        # USAR DISPERSIONES PRE-CALCULADAS (de neighborhood_fitness.py)
+        # Para garantizar consistencia con robustness_approved
+        # =====================================================================
+        metricas_eval = ["ROI", "SQN", "SHARPE", "DRAWDOWN"]
+        
+        # Las dispersiones ya vienen calculadas en neigh_info
+        dispersiones_precalc = neigh_info.get("dispersions", {})
+        
+        # Mapear nombres (neighborhood usa minúsculas)
+        dispersiones = {
+            "ROI": dispersiones_precalc.get("roi", 0.0),
+            "SQN": dispersiones_precalc.get("sqn", 0.0),
+            "SHARPE": dispersiones_precalc.get("sharpe", 0.0),
+            "DRAWDOWN": dispersiones_precalc.get("drawdown", 0.0),
         }
-        rows.append(summary_row)
+        
+        # Verificar aprobación por métrica
+        aprobaciones = {m: dispersiones[m] <= VECINDARIO_MAX_DISPERSION for m in metricas_eval}
+        
+        # ---- FILA DISPERSIÓN ----
+        max_disp_pct = int(VECINDARIO_MAX_DISPERSION * 100)
+        disp_row = {
+            "SUBTRIAL": "DISPERSIÓN",
+            "TIPO": "CV%",
+        }
+        for m in metricas_eval:
+            cv_pct = dispersiones[m] * 100
+            tick = "✓" if aprobaciones[m] else "✗"
+            disp_row[m] = f"{cv_pct:.1f}% {tick} (máx {max_disp_pct}%)"
+        
+        # Resultado global - DEBE coincidir con robustness_approved de neigh_info
+        todas_aprueban = neigh_info.get("robustness_approved", all(aprobaciones.values()))
+        disp_row["SCORE"] = "APROBADO ✓" if todas_aprueban else "SUSPENSO ✗"
+        rows.append(disp_row)
+        
+        # ---- FILA RESUMEN ----
+        avg_disp = neigh_info.get("avg_dispersion", np.mean(list(dispersiones.values())))
+        resumen_row = {
+            "SUBTRIAL": "RESUMEN",
+            "TIPO": "ESTADÍSTICAS",
+            "SCORE": safe_float(neigh_info.get("aggregated_score", score)),
+            "ROI": f"μ={neigh_info.get('mean_score', 0):.2f}",
+            "SQN": f"σ={neigh_info.get('std_score', 0):.2f}",
+            "SHARPE": f"μ_sh={neigh_info.get('mean_sharpe', 0):.3f}",
+            "DRAWDOWN": f"disp={avg_disp*100:.1f}%",
+            "N_TRADES": f"n={neigh_info.get('n_neighbors_successful', 0)}/{neigh_info.get('n_neighbors_tested', 0)}",
+            "TRADES_DIA": f"t={neigh_info.get('execution_time_ms', 0):.0f}ms",
+        }
+        rows.append(resumen_row)
         
         if not rows:
-            return
+            return None
         
-        all_keys = set()
-        for r in rows:
-            all_keys.update(r.keys())
+        # =====================================================================
+        # CREAR DATAFRAME
+        # =====================================================================
+        df = pd.DataFrame(rows)
         
-        base_cols = ["trial", "tipo", "score", "sharpe", "cvar_95", "equity_r2", "estrategia"]
-        summary_cols = ["mean_score", "std_score", "robust_dsr", "n_neighbors_tested", 
-                       "n_neighbors_successful", "execution_time_ms"]
-        metric_cols = sorted([
-            k for k in all_keys 
-            if k not in base_cols and k not in summary_cols 
-            and not k.startswith("param_")
-        ])
-        param_cols = sorted([k for k in all_keys if k.startswith("param_")])
+        # Ordenar columnas: SUBTRIAL, TIPO, SCORE, métricas, parámetros
+        priority_cols = ["SUBTRIAL", "TIPO", "SCORE", "ROI", "SQN", "SHARPE", "DRAWDOWN",
+                        "N_TRADES", "TRADES_DIA", "PROFIT_FACTOR", "WIN_RATE"]
+        param_cols = sorted([c for c in df.columns if c.startswith("P_")])
+        other_cols = [c for c in df.columns if c not in priority_cols and c not in param_cols]
         
-        columns = base_cols + summary_cols + metric_cols + param_cols
-        columns = [c for c in columns if c in all_keys]
+        final_cols = [c for c in priority_cols if c in df.columns]
+        final_cols += other_cols
+        final_cols += param_cols
         
-        with open(csv_path, "w", newline="", encoding="utf-8") as f:
-            writer = csv.DictWriter(f, fieldnames=columns, extrasaction="ignore")
-            writer.writeheader()
-            writer.writerows(rows)
+        df = df[[c for c in final_cols if c in df.columns]]
         
+        # =====================================================================
+        # ESCRIBIR EXCEL CON FORMATO
+        # =====================================================================
         try:
-            convertir_resumen_csv_a_excel(
-                csv_path=str(csv_path),
-                strategy_name=f"VECINDARIO_TRIAL{trial_num}",
-                activo=str(self.activo),
-                timeframe=str(self.timeframe),
-                output_dir=str(trial_dir),
-            )
-            try:
-                csv_path.unlink()
-            except Exception:
-                pass
-        except Exception:
-            pass
+            with pd.ExcelWriter(excel_path, engine='openpyxl') as writer:
+                df.to_excel(writer, sheet_name='Robustez', index=False)
+                worksheet = writer.sheets['Robustez']
+                
+                # Estilos
+                header_fill = PatternFill(start_color="1A5276", end_color="1A5276", fill_type="solid")
+                header_font = Font(color="FFFFFF", bold=True)
+                original_fill = PatternFill(start_color="D5F5E3", end_color="D5F5E3", fill_type="solid")
+                vecino_fill = PatternFill(start_color="EBF5FB", end_color="EBF5FB", fill_type="solid")
+                disp_fill = PatternFill(start_color="FCF3CF", end_color="FCF3CF", fill_type="solid")
+                resumen_fill = PatternFill(start_color="FADBD8", end_color="FADBD8", fill_type="solid")
+                border = Border(
+                    left=Side(style='thin', color='BDC3C7'),
+                    right=Side(style='thin', color='BDC3C7'),
+                    top=Side(style='thin', color='BDC3C7'),
+                    bottom=Side(style='thin', color='BDC3C7')
+                )
+                center_align = Alignment(horizontal='center', vertical='center')
+                
+                # Aplicar estilos al header
+                for col in range(1, len(df.columns) + 1):
+                    cell = worksheet.cell(row=1, column=col)
+                    cell.fill = header_fill
+                    cell.font = header_font
+                    cell.alignment = center_align
+                    cell.border = border
+                
+                # Aplicar estilos a las filas de datos
+                for row_idx in range(2, len(df) + 2):
+                    tipo_cell = worksheet.cell(row=row_idx, column=2)
+                    tipo_val = str(tipo_cell.value or "").upper()
+                    
+                    # Determinar fill según tipo
+                    if "ORIGINAL" in tipo_val:
+                        fill = original_fill
+                    elif "VECINO" in tipo_val:
+                        fill = vecino_fill
+                    elif "CV" in tipo_val or "DISPERSIÓN" in tipo_val:
+                        fill = disp_fill
+                    else:
+                        fill = resumen_fill
+                    
+                    for col in range(1, len(df.columns) + 1):
+                        cell = worksheet.cell(row=row_idx, column=col)
+                        cell.fill = fill
+                        cell.alignment = center_align
+                        cell.border = border
+                
+                # Ajustar ancho de columnas
+                for idx, col in enumerate(df.columns, 1):
+                    max_len = max(
+                        len(str(col)),
+                        df[col].astype(str).str.len().max() if len(df) > 0 else 0
+                    )
+                    worksheet.column_dimensions[worksheet.cell(1, idx).column_letter].width = min(max_len + 3, 30)
+                
+                worksheet.freeze_panes = 'A2'
+            
+            print(f"    [ROBUSTEZ] ✓ Guardado: {Path(excel_path).name}")
+            return str(excel_path)
+            
+        except Exception as e:
+            logger.warning(f"Error escribiendo Excel vecindario trial {trial_num}: {e}")
+            return None
 
 
 # nuclear_cleanup ya importado desde types arriba
@@ -850,16 +985,25 @@ def run_single_exit_type(
     # ========================================================================
     if VECINDARIO_ACTIVAR:
         runner.neighborhood_enabled = True
+        # Obtener min_trades_per_day (para skip de neighborhood en trials con baja frecuencia)
+        try:
+            from general.configuracion import VECINDARIO_MIN_TRADES_DIA
+            min_trades_day_cfg = float(VECINDARIO_MIN_TRADES_DIA)
+        except (ImportError, AttributeError):
+            min_trades_day_cfg = 0.25
         runner.neighborhood_config = NeighborhoodConfig(
             n_neighbors=int(VECINDARIO_N_NEIGHBORS),
+            max_dispersion=float(VECINDARIO_MAX_DISPERSION),
             perturbation_std=float(VECINDARIO_PERTURBATION_STD),
             lambda_penalty=float(VECINDARIO_LAMBDA_PENALTY),
             seed=int(VECINDARIO_SEED) if VECINDARIO_SEED is not None else None,
             enabled=True,
+            min_trades_per_day=min_trades_day_cfg,
         )
         logger.info(
             f"[NEIGHBORHOOD] Activado: {VECINDARIO_N_NEIGHBORS} vecinos, "
-            f"σ={VECINDARIO_PERTURBATION_STD}, λ={VECINDARIO_LAMBDA_PENALTY}"
+            f"σ={VECINDARIO_PERTURBATION_STD}, λ={VECINDARIO_LAMBDA_PENALTY}, "
+            f"min_trades/día={min_trades_day_cfg}, max_dispersion={VECINDARIO_MAX_DISPERSION}"
         )
     else:
         runner.neighborhood_enabled = False
@@ -1111,6 +1255,9 @@ def main() -> None:
         pass
     finally:
         HealthGuard.final_cleanup()
+        # LIMPIEZA TOTAL AL FINALIZAR
+        full_system_cleanup()
+        print("\n✅ [CLEANUP] Memoria y recursos liberados correctamente.")
 
 if __name__ == "__main__":
     main()

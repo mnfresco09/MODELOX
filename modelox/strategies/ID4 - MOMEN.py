@@ -18,8 +18,8 @@ class StrategyKineticMomentumValidator(EstrategiaBase):
     - Optimización: RANGOS INDEPENDIENTES (Fast y Slow libres).
     """
 
-    combinacion_id = 15
-    name = "prueba1"
+    combinacion_id = 4
+    name = "lasttry"
     SALIDAS_PERSONALIZADAS = False
 
     def suggest_params(self, trial: Any) -> Dict[str, Any]:
@@ -30,8 +30,8 @@ class StrategyKineticMomentumValidator(EstrategiaBase):
 
         # 1. DEFINICIÓN DE RANGOS INDEPENDIENTES
         # "Mandamelo normal entre rangos todos"
-        raw_fast = trial.suggest_int("zlema_fast_len", 70, 200, step=1)
-        raw_slow = trial.suggest_int("zlema_slow_len", 400, 800, step=1)
+        raw_fast = trial.suggest_int("zlema_fast_len", 1, 400, step=1)
+        raw_slow = trial.suggest_int("zlema_slow_len", 400, 2500, step=1)
 
         # 2. VALIDACIÓN LÓGICA (SWAP)
         # Aunque los rangos son libres, para que la lógica de cruce funcione
@@ -46,15 +46,15 @@ class StrategyKineticMomentumValidator(EstrategiaBase):
 
         # Caso borde: si son iguales (muy raro), separamos la lenta un poco
         if fast_len == slow_len:
-            slow_len += 5
+            slow_len += 150
 
         return {
             "zlema_fast_len": fast_len,
             "zlema_slow_len": slow_len,
 
             # --- FILTRO DE MOMENTUM ---
-            "lookbar": trial.suggest_int("lookbar", 50, 140, step=5),
-            "req_dist_pct": trial.suggest_float("req_dist_pct", 0.85, 1.9, step=0.05),
+            "lookbar": trial.suggest_int("lookbar", 0, 500, step=1),
+            "req_dist_pct": trial.suggest_float("req_dist_pct", 0.00, 3.00, step=0.01),
         }
 
     def generate_signals(self, df: pl.DataFrame, params: Dict[str, Any]) -> pl.DataFrame:
@@ -70,7 +70,7 @@ class StrategyKineticMomentumValidator(EstrategiaBase):
         req_dist_pct = params["req_dist_pct"]
 
         # Configuración de Metadata
-        params["__warmup_bars"] = s_len + 50
+        params["__warmup_bars"] = s_len + 120
         params["__indicators_used"] = ["fast_ma", "slow_ma"]
         params["__indicator_specs"] = {
             "fast_ma": {"color": "#00FFFF", "type": "line"},

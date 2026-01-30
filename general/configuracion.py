@@ -46,7 +46,7 @@ TIMEFRAMES = [1]  # COMPATIBILIDAD (NO MODIFICAR)
 #   "1,2"     : Combina rangos 1 y 2 (2020-01-01 -> 2023-02-23)
 #   "2,3"     : Combina rangos 2 y 3 (2021-07-29 -> 2024-09-18)
 #
-SELECCION_RANGO = "1"  # <--- ¡MODIFICA AQUÍ! ("1", "2", "3", "all", "1,2", "2,3")
+SELECCION_RANGO = "2,3"  # <--- ¡MODIFICA AQUÍ! ("1", "2", "3", "all", "1,2", "2,3")
 
 _RANGOS_FECHAS = {
     1:     ("2020-01-01", "2021-07-28"),
@@ -114,10 +114,17 @@ FECHA_FIN_PLOT = "2021-03-15"
 # ----------------------------------------------------------------------------
 # 1.4 MOTOR DE OPTIMIZACIÓN (OPTUNA - MÁXIMA POTENCIA VM)
 # ----------------------------------------------------------------------------
-N_TRIALS = 25    # NÚMERO DE PRUEBAS (AUMENTAR SI TIENES BUENA CPU)
+N_TRIALS = 50000   # NÚMERO DE PRUEBAS (AUMENTAR SI TIENES BUENA CPU)
 OPTUNA_N_JOBS = -1      # -1 = USAR TODOS LOS NÚCLEOS DISPONIBLES
 OPTUNA_SEED = None      # SEMILLA ALEATORIA (NONE PARA VARIEDAD)
 OPTUNA_STORAGE = None   # NONE = EJECUCIÓN EN RAM (MÁS RÁPIDO)
+
+# ----------------------------------------------------------------------------
+# 1.4.0 LIMPIEZA PERIÓDICA DE MEMORIA (ANTI-SLOWDOWN)
+# ----------------------------------------------------------------------------
+# Cada N trials se limpia la memoria para mantener velocidad constante.
+# Si notas que el sistema se ralentiza con muchos trials, reduce este valor.
+CLEANUP_INTERVAL = 100  # Limpiar memoria cada 100 trials (50-200 recomendado)
 
 # ----------------------------------------------------------------------------
 # 1.4.1 PERTURBACIÓN DE DATOS (ANTI-OVERFITTING)
@@ -152,7 +159,7 @@ PERTURBACION_VERIFY = True       # Verificar coherencia OHLCV después de pertur
 # 1.5 ESTRATEGIAS A EJECUTAR
 # ----------------------------------------------------------------------------
 # LISTA DE IDs DE LAS ESTRATEGIAS QUE SE VAN A PROBAR.
-COMBINACION_A_EJECUTAR = [15]
+COMBINACION_A_EJECUTAR = [4]
 
 # ----------------------------------------------------------------------------
 # 1.6 GESTIÓN DE CAPITAL Y COSTES
@@ -208,43 +215,65 @@ EXIT_TRAIL_DIST_PCT_RANGE = DEFAULT_EXIT_TRAIL_DIST_PCT_RANGE
 # ----------------------------------------------------------------------------
 # 1.9 RESULTADOS Y LIMPIEZA
 # ----------------------------------------------------------------------------
-MAX_ARCHIVOS_GUARDAR = 3
+MAX_ARCHIVOS_GUARDAR = 5
 GENERAR_PLOTS = True       # Generar gráficos HTML interactivos
 USAR_EXCEL = True          # Generar archivos Excel con resumen y trades
 PURGE_PYCACHE_ON_EXIT = True
 
 # ----------------------------------------------------------------------------
-# 1.10 SISTEMA DE AGREGACIÓN DE FITNESS VECINAL (NEIGHBORHOOD FITNESS)
+# 1.10 SISTEMA DE SCORING UNIFICADO v7.0 (NEIGHBORHOOD ROBUSTNESS)
 # ----------------------------------------------------------------------------
-# Sistema avanzado basado en el paper de optimización robusta que evalúa
-# la TOPOLOGÍA LOCAL alrededor de los parámetros propuestos.
+# Sistema de evaluación que combina CALIDAD × ACTIVIDAD × ROBUSTEZ
 #
-# FILOSOFÍA:
-# - En lugar de evaluar un parámetro aislado, evalúa la "meseta" alrededor
-# - Genera K vecinos con ruido gaussiano y ejecuta K+1 backtests por trial
-# - Penaliza "picos de aguja" (alta ganancia pero vecinos malos)
-# - Recompensa "mesetas" (rendimiento estable en todo el vecindario)
+# FÓRMULA: Score = Calidad_Raw × Factor_Actividad × Factor_Robustez
 #
-# FÓRMULA: Score = μ_M - λ·σ_M
-# - μ_M: Media del rendimiento de todos los vecinos
-# - σ_M: Desviación estándar (variabilidad entre vecinos)
-# - λ: Factor de penalización por inestabilidad
+# COMPONENTE DE CALIDAD (Calidad_Raw):
+# - Rango: [0, 1000]
+# - Normaliza Sharpe, SQN, ROI, Drawdown usando funciones tanh (sigmoides)
+# - Rendimientos decrecientes: mejorar Sharpe de 2→3 da más que 5→6
 #
-# TRINIDAD DE OBJETIVOS (para NSGA-II):
-# 1. Robust_DSR: Sharpe ajustado por vecindario y número de trials (MAXIMIZAR)
-# 2. Worst_Case_CVaR: El peor CVaR entre todos los vecinos (MINIMIZAR)
-# 3. Equity_Stability_R2: R² promedio de la curva de equity (MAXIMIZAR)
+# COMPONENTE DE ACTIVIDAD (Factor_Actividad):
+# - Sigmoide logística centrada en 0.25 trades/día
+# - Si trades/día < 0.25 → factor cae hacia 0
+# - Si trades/día >= 0.5 → factor ~1.0
 #
-# NOTA: Si VECINDARIO_ACTIVAR=True, se desactiva automáticamente el sistema
-# de robustez legacy (ROBUSTEZ_*) para evitar duplicación de esfuerzos.
+# COMPONENTE DE ROBUSTEZ (Factor_Robustez) - "TECHO DE CRISTAL":
+# - SIN TEST: Factor = 0.30 → Score máximo = 300 puntos
+#   Para superar 300, el optimizador DEBE buscar configs que activen el test
+#
+# - CON TEST: Factor = e^(-3.0 × Incertidumbre)
+#   - Incertidumbre = dispersión agregada (ROI, Sharpe, Drawdown)
+#   - Dispersión 0% → Factor = 1.0 (se liberan los 1000 puntos)
+#   - Dispersión ~23% → Factor = 0.5 (~500 puntos)
+#   - Dispersión ~40% → Factor = 0.30 (igual que sin test)
+#   - Dispersión >40% → Factor < 0.30 (PEOR que sin test)
 
 VECINDARIO_ACTIVAR = True             # ✓ ACTIVADO - Sistema de Neighborhood Fitness
-VECINDARIO_N_NEIGHBORS = 10           # Número de vecinos a generar (K) → K+1 backtests por trial
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# PARÁMETROS PRINCIPALES DE VECINDARIO (AJUSTAR AQUÍ)
+# ═══════════════════════════════════════════════════════════════════════════════
+VECINDARIO_N_NEIGHBORS = 10            # Número de vecinos a generar (K) → K+1 backtests por trial
+VECINDARIO_MAX_DISPERSION = 0.3     # Dispersión máxima permitida (CV) para aprobar robustez
+                                      # v7.0: Límite suavizado a 40% (antes 15%)
+                                      # El decaimiento exponencial ya penaliza la alta dispersión
+                                      # Más bajo = más estricto (ej: 0.25 = 25%)
+                                      # Más alto = más permisivo (ej: 0.50 = 50%)
+# ═══════════════════════════════════════════════════════════════════════════════
+
 VECINDARIO_PERTURBATION_STD = 0.05    # Desviación estándar del ruido gaussiano (5%)
 VECINDARIO_LAMBDA_PENALTY = 1.5       # Factor de penalización por varianza (Score = μ - λ·σ)
 VECINDARIO_SEED = 42                  # Semilla base para reproducibilidad
 VECINDARIO_EXCEL = True               # Generar Excel con detalle de vecinos
 VECINDARIO_GUARDAR_MEJORES = 5        # Guardar los N mejores trials en Excel
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# CRITERIOS PARA HACER TEST DE VECINDARIO (v7.1)
+# Un trial SOLO recibe test de robustez si cumple TODOS estos criterios:
+# ═══════════════════════════════════════════════════════════════════════════════
+VECINDARIO_MIN_TRADES_DIA = 0.25      # Trades/día > 0.25
+VECINDARIO_MIN_PROFIT_FACTOR = 1.1    # Profit Factor > 1.1
+VECINDARIO_MIN_SHARPE = 1.25          # Sharpe > 1.25
 
 
 # =============================================================================
@@ -362,6 +391,7 @@ CONFIG = {
     # Vecindario (Neighborhood Fitness Aggregation)
     "VECINDARIO_ACTIVAR": VECINDARIO_ACTIVAR,
     "VECINDARIO_N_NEIGHBORS": VECINDARIO_N_NEIGHBORS,
+    "VECINDARIO_MAX_DISPERSION": VECINDARIO_MAX_DISPERSION,
     "VECINDARIO_PERTURBATION_STD": VECINDARIO_PERTURBATION_STD,
     "VECINDARIO_LAMBDA_PENALTY": VECINDARIO_LAMBDA_PENALTY,
     "VECINDARIO_SEED": VECINDARIO_SEED,

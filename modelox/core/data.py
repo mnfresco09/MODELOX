@@ -7,6 +7,7 @@ Este módulo unifica:
 1. Carga de datos (Parquet, Feather, CSV)
 2. Normalización temporal (UTC, microsegundos)
 3. Multi-Timeframe Blending (resampleo con anti-lookahead)
+4. Caché de datos MTF para evitar recálculos
 
 SEGURIDAD ANTI-LOOKAHEAD:
   Los datos resampleados usan .shift(1) para evitar mirar al futuro.
@@ -18,12 +19,62 @@ SEGURIDAD ANTI-LOOKAHEAD:
 
 from __future__ import annotations
 
+import hashlib
+from functools import lru_cache
 from pathlib import Path
-from typing import Dict, List, Optional, Tuple
+from typing import Dict, FrozenSet, List, Optional, Tuple
 
 import polars as pl
 
 from modelox.core.types import normalize_timeframe_to_suffix
+
+
+# ==============================================================================
+# CACHÉ DE DATOS MTF
+# ==============================================================================
+
+# Caché global para DataFrames MTF (key: hash de datos + timeframes)
+_MTF_CACHE: Dict[str, pl.DataFrame] = {}
+_MTF_CACHE_MAX_SIZE = 8  # Máximo de entradas en caché
+
+
+def _compute_df_hash(df: pl.DataFrame, timeframes: FrozenSet[str]) -> str:
+    """Calcula hash único para un DataFrame y sus timeframes requeridos."""
+    # Usar shape + primeras/últimas filas + timeframes para hash rápido
+    n_rows = df.height
+    if n_rows > 0:
+        first_ts = str(df["timestamp"][0]) if "timestamp" in df.columns else ""
+        last_ts = str(df["timestamp"][-1]) if "timestamp" in df.columns else ""
+        first_close = str(df["close"][0]) if "close" in df.columns else ""
+        last_close = str(df["close"][-1]) if "close" in df.columns else ""
+    else:
+        first_ts = last_ts = first_close = last_close = ""
+    
+    key_str = f"{n_rows}|{first_ts}|{last_ts}|{first_close}|{last_close}|{sorted(timeframes)}"
+    return hashlib.md5(key_str.encode()).hexdigest()[:16]
+
+
+def _get_cached_mtf(cache_key: str) -> Optional[pl.DataFrame]:
+    """Obtiene DataFrame MTF desde caché si existe."""
+    return _MTF_CACHE.get(cache_key)
+
+
+def _set_cached_mtf(cache_key: str, df: pl.DataFrame) -> None:
+    """Guarda DataFrame MTF en caché con límite de tamaño."""
+    global _MTF_CACHE
+    
+    # Si caché está llena, eliminar la entrada más antigua
+    if len(_MTF_CACHE) >= _MTF_CACHE_MAX_SIZE:
+        oldest_key = next(iter(_MTF_CACHE))
+        del _MTF_CACHE[oldest_key]
+    
+    _MTF_CACHE[cache_key] = df
+
+
+def clear_mtf_cache() -> None:
+    """Limpia el caché de datos MTF."""
+    global _MTF_CACHE
+    _MTF_CACHE.clear()
 
 
 # ==============================================================================
@@ -289,6 +340,7 @@ def prepare_multitimeframe_data(
     base_tf: Optional[str] = None,
     ts_col: str = "timestamp",
     anti_lookahead: bool = True,
+    use_cache: bool = True,
 ) -> pl.DataFrame:
     """
     Prepara DataFrame con múltiples timeframes para estrategias MTF.
@@ -299,6 +351,7 @@ def prepare_multitimeframe_data(
         base_tf: Timeframe del df_base (auto-detectado si None)
         ts_col: Nombre de la columna de timestamp
         anti_lookahead: Aplicar shift(1) para seguridad (default=True)
+        use_cache: Usar caché para evitar recálculos (default=True)
 
     Returns:
         DataFrame base enriquecido con columnas de TFs superiores:
@@ -306,6 +359,17 @@ def prepare_multitimeframe_data(
     """
     if not required_timeframes:
         return df_base
+
+    # =========================================================================
+    # CACHÉ: Verificar si ya tenemos este resultado cacheado
+    # =========================================================================
+    tf_set = frozenset(required_timeframes)
+    cache_key = _compute_df_hash(df_base, tf_set) if use_cache else ""
+    
+    if use_cache:
+        cached = _get_cached_mtf(cache_key)
+        if cached is not None:
+            return cached
 
     if base_tf is None:
         base_tf = _detect_base_timeframe(df_base)
@@ -342,6 +406,12 @@ def prepare_multitimeframe_data(
             df_resampled,
             ts_col=ts_col,
         )
+
+    # =========================================================================
+    # CACHÉ: Guardar resultado para futuros trials
+    # =========================================================================
+    if use_cache:
+        _set_cached_mtf(cache_key, result)
 
     return result
 

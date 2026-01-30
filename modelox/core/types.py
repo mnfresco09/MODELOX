@@ -251,22 +251,108 @@ def align_signals_to_base(
 import gc
 import platform
 import ctypes
+import sys
 
 
 def nuclear_cleanup():
     """
-    Realiza una limpieza agresiva de memoria.
+    Realiza una limpieza agresiva de memoria (compatible macOS/Linux).
     1. Fuerza la recolección de basura de Python (Generaciones 0, 1 y 2).
     2. En Linux, fuerza a la librería C (malloc) a devolver la RAM al sistema operativo.
+    3. En macOS, libera caché de módulos y fuerza GC completo.
     """
-    gc.collect()
+    # Triple GC para asegurar limpieza completa de referencias cíclicas
+    for _ in range(3):
+        gc.collect()
 
-    if platform.system() == "Linux":
+    system = platform.system()
+    
+    if system == "Linux":
         try:
             libc = ctypes.CDLL("libc.so.6")
             libc.malloc_trim(0)
         except Exception:
             pass
+    elif system == "Darwin":  # macOS
+        # Liberar caches internos de Python
+        try:
+            # Limpiar interned strings cache parcialmente
+            if hasattr(sys, '_clear_type_cache'):
+                sys._clear_type_cache()
+        except Exception:
+            pass
+
+
+def full_system_cleanup():
+    """
+    Limpieza completa del sistema al finalizar ejecución.
+    Libera RAM, cierra conexiones, limpia cachés.
+    """
+    import atexit
+    
+    # 1. Limpiar cachés de módulos numéricos si están cargados
+    modules_to_clear = ['numpy', 'pandas', 'polars', 'torch', 'numba']
+    
+    for mod_name in modules_to_clear:
+        if mod_name in sys.modules:
+            mod = sys.modules[mod_name]
+            # Numpy: limpiar buffers
+            if mod_name == 'numpy' and hasattr(mod, 'finfo'):
+                try:
+                    mod.finfo.cache.clear() if hasattr(mod.finfo, 'cache') else None
+                except:
+                    pass
+            # Torch: limpiar caché CUDA/MPS si existe
+            if mod_name == 'torch':
+                try:
+                    if hasattr(mod, 'cuda') and mod.cuda.is_available():
+                        mod.cuda.empty_cache()
+                    if hasattr(mod, 'mps') and hasattr(mod.mps, 'empty_cache'):
+                        mod.mps.empty_cache()  # Apple Silicon
+                except:
+                    pass
+            # Numba: limpiar caché de compilación en memoria
+            if mod_name == 'numba':
+                try:
+                    from numba.core import caching
+                    if hasattr(caching, '_CacheImpl'):
+                        caching._CacheImpl._cache.clear() if hasattr(caching._CacheImpl, '_cache') else None
+                except:
+                    pass
+    
+    # 2. Cerrar matplotlib figures si existen
+    if 'matplotlib.pyplot' in sys.modules:
+        try:
+            import matplotlib.pyplot as plt
+            plt.close('all')
+        except:
+            pass
+    
+    # 3. Limpiar joblib cache en memoria
+    if 'joblib' in sys.modules:
+        try:
+            from joblib import Memory
+            # No borramos disco, solo liberamos refs
+        except:
+            pass
+    
+    # 4. Forzar GC agresivo
+    gc.collect()
+    gc.collect()
+    gc.collect()
+    
+    # 5. Liberar memoria del sistema
+    nuclear_cleanup()
+    
+    # 6. En macOS, sugerir liberación de memoria comprimida (no invasivo)
+    if platform.system() == "Darwin":
+        try:
+            import subprocess
+            # Solo si tenemos permisos, intentar purgar memoria inactiva
+            # Esto es seguro y no afecta al sistema
+            subprocess.run(['purge'], capture_output=True, timeout=5)
+        except:
+            pass  # Si falla, no pasa nada
 
 
 def clean_trial_variables(*vars_to_delete):

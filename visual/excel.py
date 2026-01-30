@@ -165,12 +165,33 @@ def _normalizar_nombres(df: pd.DataFrame, strategy_name: str) -> pd.DataFrame:
     # Mapeo a nombres estándar de MODELOX
     # Mapeamos variaciones comunes a las claves de METRICS_ORDER
     rename_map = {
+        # ID columns
+        "STRATEGY": "ESTRATEGIA",
+        
+        # Sharpe
         "SHARPE_RATIO": "SHARPE",
+        
+        # Trades por día
         "TRADES_POR_DIA": "TRADES_DIA",
+        
+        # Total trades
+        "N_TRADES": "TOTAL_TRADES",
+        "NUM_TRADES": "TOTAL_TRADES",
+        "COUNT_TRADES": "TOTAL_TRADES",
+        
+        # Duración/Avg Trade
         "AVG_TRADE_DURATION": "AVG_TRADE",
+        "DURATION_MEAN_MIN": "AVG_TRADE",
+        "RETORNO_PROMEDIO": "AVG_TRADE",
+        
+        # Winrate
         "WIN_RATE_PCT": "WINRATE_PCT",
         "WINRATE": "WINRATE_PCT",
         "PORC_GANADORAS": "WINRATE_PCT",
+        
+        # Rachas / Streaks
+        "RACHA_GANADORA": "WIN_STREAK",
+        "RACHA_PERDEDORA": "LOSS_STREAK",
 
         # Variantes de Drawdown (CRÍTICO: Capturar todas)
         "MAX_DRAWDOWN_PCT": "MAX_DD_PCT",
@@ -180,13 +201,20 @@ def _normalizar_nombres(df: pd.DataFrame, strategy_name: str) -> pd.DataFrame:
         "DD_PCT": "MAX_DD_PCT",
         "MAX_DD": "MAX_DD_PCT",
 
+        # ROI
         "RETURN_PCT": "ROI_PCT",
         "ROI": "ROI_PCT",
+        
+        # Saldo
         "NET_PROFIT": "SALDO_ACTUAL",
         "PNL_NETO": "SALDO_ACTUAL",
+        "NET_PNL": "SALDO_ACTUAL",
+        
         # Estandarización de longs/shorts
         "COUNT_LONGS": "NUM_LONGS", "N_LONGS": "NUM_LONGS", "LONGS": "NUM_LONGS",
+        "N_TRADES_LONG": "NUM_LONGS",
         "COUNT_SHORTS": "NUM_SHORTS", "N_SHORTS": "NUM_SHORTS", "SHORTS": "NUM_SHORTS",
+        "N_TRADES_SHORT": "NUM_SHORTS",
     }
 
     # Renombrar solo si el destino no existe
@@ -197,8 +225,13 @@ def _normalizar_nombres(df: pd.DataFrame, strategy_name: str) -> pd.DataFrame:
             # Si ambas existen, borramos la vieja
             df.drop(columns=[old], inplace=True)
 
+    # Asegurar columna ESTRATEGIA
     if "ESTRATEGIA" not in df.columns:
         df.insert(0, "ESTRATEGIA", strategy_name.upper())
+    
+    # Asegurar columna TRIAL si no existe
+    if "TRIAL" not in df.columns and df.index.name != "TRIAL":
+        df.insert(0, "TRIAL", range(len(df)))
 
     # Limpieza visual de prefijos
     new_cols = []
