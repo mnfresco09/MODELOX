@@ -76,8 +76,16 @@ from rich import box
 from rich.traceback import install as install_rich_traceback
 import time
 
-# Import del sistema de limpieza de MODELOX
-from modelox.core.types import full_system_cleanup
+# Import del sistema de limpieza de MODELOX (condicional para compatibilidad)
+try:
+    from modelox.core.types import full_system_cleanup
+except ImportError:
+    # Fallback si el types.py no tiene full_system_cleanup
+    def full_system_cleanup():
+        import gc
+        gc.collect()
+        gc.collect()
+        gc.collect()
 
 install_rich_traceback(show_locals=False)
 
@@ -264,7 +272,33 @@ torch.set_num_interop_threads(max(1, mp.cpu_count() // 2))
 torch.set_grad_enabled(False)
 
 # torch.compile disponible en PyTorch 2.0+
-USE_TORCH_COMPILE = hasattr(torch, 'compile') and torch.__version__ >= '2.0'
+# NOTA: torch.compile puede fallar en entornos sin compilador C++ (Nix, containers, etc.)
+# Desactivar con: export MODELOX_DISABLE_TORCH_COMPILE=1
+_TORCH_COMPILE_DISABLED = os.environ.get("MODELOX_DISABLE_TORCH_COMPILE", "0") in ("1", "true", "True")
+
+# Auto-detectar entornos problemáticos (Nix, Replit, etc.)
+def _detect_problematic_env():
+    """Detecta entornos donde torch.compile suele fallar."""
+    # Nix environment
+    if "/nix/store" in os.environ.get("PATH", ""):
+        return True
+    # Replit
+    if os.environ.get("REPL_ID") or os.environ.get("REPLIT_DB_URL"):
+        return True
+    # Verificar si cc/g++ están disponibles
+    import shutil
+    if not shutil.which("cc") and not shutil.which("gcc") and not shutil.which("clang"):
+        return True
+    return False
+
+_IN_PROBLEMATIC_ENV = _detect_problematic_env()
+
+USE_TORCH_COMPILE = (
+    hasattr(torch, 'compile') and 
+    torch.__version__ >= '2.0' and 
+    not _TORCH_COMPILE_DISABLED and
+    not _IN_PROBLEMATIC_ENV
+)
 
 # Configurar GPyTorch para máximo rendimiento (Optimización 3)
 gpytorch.settings.fast_computations(covar_root_decomposition=True, log_prob=True, solves=True)
@@ -1231,20 +1265,45 @@ class GPROptimizer:
         self.likelihood.eval()
         
         # Optimización 2: Compilar modelo con torch.compile si está disponible
+        # NOTA: Puede fallar en entornos sin compilador C++ configurado (Nix, Replit, etc.)
+        global USE_TORCH_COMPILE
         if USE_TORCH_COMPILE and not self.is_sparse:
             try:
+                # Guardar referencia al modelo original por si falla la compilación en warmup
+                self._original_model = self.model
                 self.model = torch.compile(self.model, mode="reduce-overhead")
                 console.print(f"[grey50]      │ TORCH.COMPILE:    APLICADO[/grey50]")
-            except Exception:
-                pass  # Si falla, usar modelo sin compilar
+            except Exception as e:
+                error_msg = str(e).lower()
+                # Detectar errores de compilación C++ y desactivar globalmente
+                if "cpp" in error_msg or "compile" in error_msg or "crti.o" in error_msg or "ld" in error_msg:
+                    USE_TORCH_COMPILE = False  # Desactivar para futuras llamadas
+                    console.print(f"[yellow]      │ TORCH.COMPILE:    DESACTIVADO (entorno sin compilador C++)[/yellow]")
+                else:
+                    console.print(f"[grey50]      │ TORCH.COMPILE:    NO DISPONIBLE[/grey50]")
         
         # Optimización 4: Pre-computar cache de predicción (warm-up)
         # Esto pre-computa la descomposición de Cholesky
+        # NOTA: Si torch.compile está activo, aquí es donde realmente compila (lazy compilation)
         with torch.inference_mode(), gpytorch.settings.fast_pred_var():
             try:
                 _ = self.model(self._train_x[:10])  # Warm-up con subset pequeño
-            except Exception:
-                pass
+            except Exception as e:
+                # Si falla aquí, probablemente es error de torch.compile durante ejecución
+                error_msg = str(e).lower()
+                if USE_TORCH_COMPILE and ("cpp" in error_msg or "compile" in error_msg or 
+                                          "crti.o" in error_msg or "ld" in error_msg or
+                                          "subprocess" in error_msg or "linker" in error_msg):
+                    # Desactivar torch.compile y re-entrenar sin él
+                    USE_TORCH_COMPILE = False
+                    console.print(f"[yellow]      │ TORCH.COMPILE:    ERROR EN WARMUP - REVERTIENDO[/yellow]")
+                    # Recrear modelo sin compilar
+                    self.model = self._original_model if hasattr(self, '_original_model') else self.model
+                    self.model.eval()
+                    try:
+                        _ = self.model(self._train_x[:10])  # Re-intentar warmup sin compilar
+                    except Exception:
+                        pass
         t_eval = time.perf_counter() - t0
         console.print(f"[grey50]      │ WARM-UP CHOLESKY: {t_eval*1000:.1f}ms[/grey50]")
         
