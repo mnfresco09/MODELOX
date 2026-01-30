@@ -245,7 +245,7 @@ N_JOBS = max(1, cpu_count() - 1)
 # SPARSE_GP_ENABLED: Activa/desactiva Sparse GP (SVGP)
 #   - True:  Usa Sparse Variational GP con inducing points (más rápido para N > 1000)
 #   - False: Usa Exact GP (más preciso pero O(N³) en memoria/tiempo)
-SPARSE_GP_ENABLED = True
+SPARSE_GP_ENABLED = False
 SPARSE_INDUCING_POINTS = 500
 
 # ============================================================================
