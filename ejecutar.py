@@ -79,9 +79,27 @@ from general.configuracion import (
     OPTUNA_SAMPLER,
     # Limpieza periódica
     CLEANUP_INTERVAL,
+    # Configuración de mesetas
+    PLATEAU_EXPLORATION_RATIO,
+    PLATEAU_EXPLORATION_SAMPLER,
+    PLATEAU_MIN_CLUSTER_SIZE,
+    PLATEAU_MIN_SAMPLES,
+    PLATEAU_DBSCAN_EPS,
+    PLATEAU_MIN_TRIALS_FOR_MESETA,
+    PLATEAU_MAX_MESETAS,
+    PLATEAU_MIN_TRIALS_POR_MESETA,
+    PLATEAU_CENTROID_SELECTION,
+    PLATEAU_AUTO_EPS,
 )
 from modelox.core.data import load_data
-from modelox.core.runner import OptimizationRunner, OptunaConfig
+from modelox.core.runner import OptimizationRunner, OptunaConfig, PerturbationConfig
+from modelox.core.plateau_optimizer import (
+    PlateauOptimizer,
+    PlateauOptimizerConfig,
+    PlateauOptimizationResult,
+    run_plateau_optimization,
+)
+from modelox.core.topology import PlateauConfig
 from modelox.core.types import normalize_timeframe_to_suffix, BacktestConfig, filter_by_date, nuclear_cleanup, full_system_cleanup, TrialArtifacts
 from modelox.strategies.registry import instantiate_strategies
 from visual.excel import exportar_trades_excel_rapido, convertir_resumen_csv_a_excel
@@ -455,6 +473,17 @@ class ElegantRichReporter(BaseReporter):
     mostrar_evolucion_inline: bool = False  # Disabled - averages now shown in panel
     _best_score: float = field(default=float("-inf"), init=False, repr=False)
     _initialized: bool = field(default=False, init=False, repr=False)
+    
+    # Información de fase (para Topógrafo de Mesetas)
+    phase_name: str = ""
+    phase_total_trials: int = 0
+    _phase_trial_count: int = field(default=0, init=False, repr=False)
+    
+    def set_phase(self, name: str, total_trials: int = 0) -> None:
+        """Establece la fase actual de optimización."""
+        self.phase_name = name
+        self.phase_total_trials = total_trials
+        self._phase_trial_count = 0
 
     def needs_dataframe(self, score: float) -> bool:
         return False
@@ -498,6 +527,12 @@ class ElegantRichReporter(BaseReporter):
         if '__qty_max_activo' in params_for_reporting:
             params_for_reporting['cantidad'] = params_for_reporting['__qty_max_activo']
 
+        # Calcular progreso de fase
+        self._phase_trial_count += 1
+        phase_progress = ""
+        if self.phase_total_trials > 0:
+            phase_progress = f"{self._phase_trial_count}/{self.phase_total_trials}"
+
         mostrar_panel_elegante(
             metrics=metrics,
             params=params_for_reporting,
@@ -510,6 +545,9 @@ class ElegantRichReporter(BaseReporter):
             best_so_far=best_so_far,
             timeframe_entry=tf_entry,
             timeframe_exit=tf_exit,
+            neighborhood_result=artifacts.neighborhood_result,
+            phase_name=self.phase_name,
+            phase_progress=phase_progress,
         )
 
     def on_strategy_end(self, strategy_name: str, study) -> None:
@@ -611,31 +649,57 @@ def run_single_exit_type(
             activo=activo,
         ))
 
-    # 6. RUNNER
-    runner = OptimizationRunner(config=cfg_updated, n_trials=int(N_TRIALS), reporters=reporters)
-
-    # [CAMBIO v2.0] Usar sampler configurado (CMA-ES por defecto para scoring institucional)
-    # CMA-ES aprende de los scores y favorece regiones estables (mesetas de parámetros)
-    runner.optuna = OptunaConfig(
-        seed=None, 
-        n_jobs=1, 
-        storage=None,
-        sampler=OPTUNA_SAMPLER,  # "CMA" o "TPE" desde configuracion.py
-    )
-
-    runner.activo = activo
-
-    try:
+    # 6. RUNNER - Seleccionar modo de optimización
+    use_plateau_mode = str(OPTUNA_SAMPLER).upper() == "PLATEAU"
+    
+    if use_plateau_mode:
+        # =====================================================================
+        # MODO TOPÓGRAFO DE MESETAS (3 FASES)
+        # =====================================================================
+        # Fase 1: Exploración masiva con RandomSampler
+        # Fase 2: Detección de mesetas con DBSCAN
+        # Fase 3: Refinamiento CMA-ES en cada meseta
+        
+        # Configurar el sistema de mesetas
+        plateau_cfg = PlateauConfig(
+            min_cluster_size=int(PLATEAU_MIN_CLUSTER_SIZE),
+            min_samples=int(PLATEAU_MIN_SAMPLES),
+            eps=float(PLATEAU_DBSCAN_EPS),
+            min_trials_for_plateau=int(PLATEAU_MIN_TRIALS_FOR_MESETA),
+            centroid_selection=str(PLATEAU_CENTROID_SELECTION),
+        )
+        
+        optimizer_cfg = PlateauOptimizerConfig(
+            exploration_ratio=float(PLATEAU_EXPLORATION_RATIO),
+            exploration_sampler=str(PLATEAU_EXPLORATION_SAMPLER),
+            plateau_config=plateau_cfg,
+            auto_tune_dbscan=bool(PLATEAU_AUTO_EPS),
+            min_trials_per_plateau=int(PLATEAU_MIN_TRIALS_POR_MESETA),
+            max_plateaus_to_refine=int(PLATEAU_MAX_MESETAS),
+            verbose=True,
+        )
+        
+        # Configurar perturbación si está habilitada
+        perturbation_config = None
+        if PERTURBACION_ACTIVAR:
+            perturbation_config = PerturbationConfig(
+                enabled=True,
+                method=CONFIG.get("PERTURBACION_METHOD", "returns_perturbation"),
+                noise_factor=float(CONFIG.get("PERTURBACION_NOISE_SCALE", 0.5)),
+                block_size=int(CONFIG.get("PERTURBACION_BLOCK_SIZE", 360)),
+                seed=CONFIG.get("PERTURBACION_SEED", 42),
+            )
+        
         # Carga diferida de timeframes extra
         entry_tf = getattr(strategy, "timeframe_entry", None) or timeframe_base
         exit_tf = getattr(strategy, "timeframe_exit", None) or timeframe_base
         needed_tfs = [timeframe_base, entry_tf, exit_tf]
-
+        
         for tf in needed_tfs:
             tf_suf = normalize_timeframe_to_suffix(tf)
             if tf_suf in tf_cache:
                 continue
-
+            
             if resolve_archivo_data_tf_func:
                 try:
                     path_tf = resolve_archivo_data_tf_func(activo, tf, formato="parquet")
@@ -645,63 +709,153 @@ def run_single_exit_type(
                     tf_cache[tf_suf] = df_tf
                 except Exception as e:
                     logger.warning(f"No se pudo cargar TF extra {tf}: {e}")
+        
+        try:
+            # Ejecutar optimización por mesetas
+            plateau_result = run_plateau_optimization(
+                df=df_filtrado,
+                strategy=strategy,
+                backtest_config=cfg_updated,
+                n_trials=int(N_TRIALS),
+                reporters=reporters,
+                plateau_config=optimizer_cfg,
+                df_by_timeframe=tf_cache,
+                base_timeframe=timeframe_base,
+                perturbation_config=perturbation_config,
+                activo=activo,
+                seed=None,
+            )
+            
+            # Mostrar resultado final
+            if plateau_result.best_plateau:
+                mostrar_fin_optimizacion(
+                    total_trials=plateau_result.total_trials,
+                    best_score=plateau_result.best_refined_score,
+                    best_trial=plateau_result.best_refined_trial,
+                    estrategia=strategy_name,
+                )
+            else:
+                # Si no se encontraron mesetas, usar resultado de exploración
+                mostrar_fin_optimizacion(
+                    total_trials=plateau_result.total_trials,
+                    best_score=plateau_result.best_exploration_score,
+                    best_trial=plateau_result.phase1_exploration.best_trial_number,
+                    estrategia=strategy_name,
+                )
+            
+            # Notificar a reporters
+            for reporter in reporters:
+                if hasattr(reporter, "on_strategy_end"):
+                    try:
+                        # Usar el estudio de exploración para compatibilidad
+                        reporter.on_strategy_end(strategy_name, plateau_result.exploration_study)
+                    except Exception:
+                        pass
+                        
+        except KeyboardInterrupt:
+            raise
+        except Exception as e:
+            logger.error(f"Error en optimización por mesetas {strategy_name}: {e}")
+            import traceback
+            traceback.print_exc()
+        finally:
+            del reporters
+            nuclear_cleanup()
+    
+    else:
+        # =====================================================================
+        # MODO CLÁSICO (CMA-ES o TPE)
+        # =====================================================================
+        runner = OptimizationRunner(config=cfg_updated, n_trials=int(N_TRIALS), reporters=reporters)
 
-        runner.optimize_strategies(
-            df=df_filtrado,
-            strategies=[strategy],
-            df_by_timeframe=tf_cache,
-            base_timeframe=timeframe_base,
+        # [CAMBIO v2.0] Usar sampler configurado (CMA-ES por defecto para scoring institucional)
+        # CMA-ES aprende de los scores y favorece regiones estables (mesetas de parámetros)
+        runner.optuna = OptunaConfig(
+            seed=None, 
+            n_jobs=1, 
+            storage=None,
+            sampler=OPTUNA_SAMPLER,  # "CMA" o "TPE" desde configuracion.py
         )
 
-        # -------------------------------------------------------------------------
-        # [CORRECCIÓN] VISUALIZACIÓN DE RESULTADOS COMPATIBLE CON NSGA-II (MULTI-OBJETIVO)
-        # -------------------------------------------------------------------------
-        if hasattr(runner, "_last_study") and runner._last_study:
-            study = runner._last_study
+        runner.activo = activo
 
-            # Detectar si hay más de 1 objetivo
-            is_multiobj = len(study.directions) > 1
+        try:
+            # Carga diferida de timeframes extra
+            entry_tf = getattr(strategy, "timeframe_entry", None) or timeframe_base
+            exit_tf = getattr(strategy, "timeframe_exit", None) or timeframe_base
+            needed_tfs = [timeframe_base, entry_tf, exit_tf]
 
-            try:
-                best_trial = None
-                best_val = 0.0
+            for tf in needed_tfs:
+                tf_suf = normalize_timeframe_to_suffix(tf)
+                if tf_suf in tf_cache:
+                    continue
 
-                if is_multiobj:
-                    # NSGA-II: Obtenemos la Frontera de Pareto
-                    # Ordenamos por Calidad (values[0]) descendente para coger el "mejor"
-                    # Nota: values[0] = Calidad, values[1] = Riesgo (Drawdown)
-                    pareto_front = sorted(study.best_trials, key=lambda t: t.values[0], reverse=True)
-                    if pareto_front:
-                        best_trial = pareto_front[0]
-                        best_val = best_trial.values[0]
-                else:
-                    # TPE Clásico: Existe un único best_trial
-                    if study.best_trial:
-                        best_trial = study.best_trial
-                        best_val = study.best_value
+                if resolve_archivo_data_tf_func:
+                    try:
+                        path_tf = resolve_archivo_data_tf_func(activo, tf, formato="parquet")
+                        df_tf = load_data(path_tf)
+                        if fecha_inicio and fecha_fin:
+                            df_tf = filter_by_date(df_tf, fecha_inicio, fecha_fin)
+                        tf_cache[tf_suf] = df_tf
+                    except Exception as e:
+                        logger.warning(f"No se pudo cargar TF extra {tf}: {e}")
 
-                # Mostrar resultado si se encontró un trial válido
-                if best_trial:
-                    mostrar_fin_optimizacion(
-                        total_trials=len(study.trials),
-                        best_score=best_val,
-                        best_trial=best_trial.number,
-                        estrategia=strategy_name,
-                    )
-            except Exception as e:
-                # Fallback seguro para no detener la ejecución si Optuna cambia
-                logger.warning(f"No se pudo extraer el mejor trial para el reporte final: {e}")
-        # -------------------------------------------------------------------------
+            runner.optimize_strategies(
+                df=df_filtrado,
+                strategies=[strategy],
+                df_by_timeframe=tf_cache,
+                base_timeframe=timeframe_base,
+            )
 
-    except KeyboardInterrupt:
-        raise
-    except Exception as e:
-        logger.error(f"Error en {strategy_name}: {e}")
-    finally:
-        del runner
-        del reporters
-        # Limpieza nuclear para asegurar que la RAM se devuelve al SO
-        nuclear_cleanup()
+            # -------------------------------------------------------------------------
+            # [CORRECCIÓN] VISUALIZACIÓN DE RESULTADOS COMPATIBLE CON NSGA-II (MULTI-OBJETIVO)
+            # -------------------------------------------------------------------------
+            if hasattr(runner, "_last_study") and runner._last_study:
+                study = runner._last_study
+
+                # Detectar si hay más de 1 objetivo
+                is_multiobj = len(study.directions) > 1
+
+                try:
+                    best_trial = None
+                    best_val = 0.0
+
+                    if is_multiobj:
+                        # NSGA-II: Obtenemos la Frontera de Pareto
+                        # Ordenamos por Calidad (values[0]) descendente para coger el "mejor"
+                        # Nota: values[0] = Calidad, values[1] = Riesgo (Drawdown)
+                        pareto_front = sorted(study.best_trials, key=lambda t: t.values[0], reverse=True)
+                        if pareto_front:
+                            best_trial = pareto_front[0]
+                            best_val = best_trial.values[0]
+                    else:
+                        # TPE Clásico: Existe un único best_trial
+                        if study.best_trial:
+                            best_trial = study.best_trial
+                            best_val = study.best_value
+
+                    # Mostrar resultado si se encontró un trial válido
+                    if best_trial:
+                        mostrar_fin_optimizacion(
+                            total_trials=len(study.trials),
+                            best_score=best_val,
+                            best_trial=best_trial.number,
+                            estrategia=strategy_name,
+                        )
+                except Exception as e:
+                    # Fallback seguro para no detener la ejecución si Optuna cambia
+                    logger.warning(f"No se pudo extraer el mejor trial para el reporte final: {e}")
+            # -------------------------------------------------------------------------
+
+        except KeyboardInterrupt:
+            raise
+        except Exception as e:
+            logger.error(f"Error en {strategy_name}: {e}")
+        finally:
+            del runner
+            del reporters
+            # Limpieza nuclear para asegurar que la RAM se devuelve al SO
+            nuclear_cleanup()
 
 # ============================================================================
 # LIMPIEZA Y CIERRE SEGURO

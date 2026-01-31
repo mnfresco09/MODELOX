@@ -227,7 +227,7 @@ if NUMBA_METRICS_AVAILABLE:
         if var_ret < 0:
             var_ret = 0.0
         std_ret = np.sqrt(var_ret * n / (n - 1)) if n > 1 else 0.0
-        sharpe = mean_ret / std_ret if std_ret > 0 else 0.0
+        sharpe = (mean_ret / std_ret * 100) if std_ret > 0 else 0.0  # ×100 para visualización
 
         # Sortino: usa downside deviation (desviación de retornos negativos respecto a 0)
         # La fórmula correcta es: sqrt(mean(min(r, 0)^2)) - esto da la "semi-desviación"
@@ -572,42 +572,65 @@ def trades_por_dia(
     period_start: Optional[Any] = None,
     period_end: Optional[Any] = None,
 ) -> float:
-    """Trades por día (Polars puro, sin pandas)."""
-
+    """
+    Trades por día sobre el PERÍODO TOTAL de backtest.
+    
+    Si period_start/end no se proporcionan, usa el rango de trades,
+    pero esto puede dar resultados engañosos con pocos trades.
+    """
     if _empty(trades):
         return 0.0
 
-    entry_times, exit_times = _extract_times_polars(trades)
-
-    # Combinar y filtrar nulls usando Polars
-    all_times = pl.concat([entry_times.drop_nulls(), exit_times.drop_nulls()])
-    if all_times.is_empty():
-        return 0.0
-
-    min_ts = all_times.min()
-    max_ts = all_times.max()
-
-    if period_start is None or period_end is None:
-        start = min_ts
-        end = max_ts
-    else:
-        # Convertir a datetime si es string
-        start = period_start
-        end = period_end
-
-    # Calcular días usando Polars temporal
-    if start is None or end is None:
-        return 0.0
-
-    # Extraer fecha (día) y calcular diferencia usando el DataFrame
-    dates_df = pl.DataFrame({"ts": [min_ts, max_ts]})
-    dates_result = dates_df.select(pl.col("ts").dt.date())
-    start_date = dates_result["ts"][0]
-    end_date = dates_result["ts"][1]
-    days = (end_date - start_date).days + 1
-
     n_trades = trades.height if isinstance(trades, pl.DataFrame) else len(trades)
-    return float(n_trades) / float(days) if days > 0 else 0.0
+    
+    # Determinar el período de cálculo
+    if period_start is not None and period_end is not None:
+        # Usar período explícito de backtest (más preciso)
+        try:
+            if isinstance(period_start, str):
+                start_date = pl.Series([period_start]).str.to_datetime().dt.date()[0]
+            elif hasattr(period_start, 'date'):
+                start_date = period_start.date() if callable(getattr(period_start, 'date', None)) else period_start
+            else:
+                start_date = period_start
+                
+            if isinstance(period_end, str):
+                end_date = pl.Series([period_end]).str.to_datetime().dt.date()[0]
+            elif hasattr(period_end, 'date'):
+                end_date = period_end.date() if callable(getattr(period_end, 'date', None)) else period_end
+            else:
+                end_date = period_end
+                
+            days = (end_date - start_date).days + 1
+        except Exception:
+            # Fallback a rango de trades
+            period_start = None
+            period_end = None
+    
+    if period_start is None or period_end is None:
+        # Usar rango entre primer y último trade
+        entry_times, exit_times = _extract_times_polars(trades)
+        all_times = pl.concat([entry_times.drop_nulls(), exit_times.drop_nulls()])
+        if all_times.is_empty():
+            return 0.0
+
+        min_ts = all_times.min()
+        max_ts = all_times.max()
+        
+        if min_ts is None or max_ts is None:
+            return 0.0
+
+        dates_df = pl.DataFrame({"ts": [min_ts, max_ts]})
+        dates_result = dates_df.select(pl.col("ts").dt.date())
+        start_date = dates_result["ts"][0]
+        end_date = dates_result["ts"][1]
+        days = (end_date - start_date).days + 1
+    
+    # Evitar división por cero y valores engañosos
+    if days <= 0:
+        return 0.0
+    
+    return float(n_trades) / float(days)
 
 
 def _to_utc_polars(ts: Any) -> Any:
@@ -803,7 +826,9 @@ def sharpe(
     if annualize and n_trades > 1:
         # Escalar por sqrt(N) para ver acumulación con más trades
         ratio *= float(np.sqrt(n_trades))
-    return float(ratio)
+    
+    # Multiplicar por 100 para mejor visualización
+    return float(ratio * 100)
 
 
 def sortino(

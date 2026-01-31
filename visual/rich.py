@@ -12,14 +12,12 @@ from dataclasses import dataclass
 from typing import Optional, List, Dict, Any, Tuple
 
 from rich import box
-from rich.console import Console
+from rich.align import Align
+from rich.console import Console, Group
 from rich.panel import Panel
 from rich.table import Table
 from rich.text import Text
 from rich.columns import Columns
-
-# Valor por defecto para dispersión máxima (legacy)
-VECINDARIO_MAX_DISPERSION = 0.50
 
 
 # ============================================================================
@@ -31,6 +29,7 @@ class Theme:
     """Classic institutional color palette - Neutral & Professional."""
     # Primary accent (for score, headers) - darker blue
     BLUE: str = "steel_blue3"
+    CYAN: str = "cyan"                 # For phase names in plateau mode
     # Performance colors (only for PnL based on ROI)
     GREEN: str = "green3"              # ROI > 100% (vibrant)
     GREEN_SOFT: str = "pale_green3"    # ROI 0% to 100% (clear but not flashy)
@@ -38,6 +37,7 @@ class Theme:
     RED: str = "red3"                  # ROI -50% to -70% (medium bright red)
     # Best marker
     GOLD: str = "gold3"
+    BEST_BOX: str = "dodger_blue2"     # Bright blue for best trial box
     # Neutral tones
     TEXT: str = "grey78"
     MUTED: str = "grey50"
@@ -165,12 +165,14 @@ def mostrar_panel_elegante(
     best_so_far: Optional[float] = None,
     timeframe_entry: str = "",
     timeframe_exit: str = "",
-    neighborhood_result: Optional[Dict[str, Any]] = None,
+    neighborhood_result: Optional[Dict[str, Any]] = None,  # Deprecated, ignorado
+    # Nuevos parámetros para Topógrafo de Mesetas
+    phase_name: str = "",  # Ej: "EXPLORACIÓN", "REFINAMIENTO"
+    phase_progress: str = "",  # Ej: "42/2000"
 ) -> None:
     """
     Classic elegant trial display with organized boxes.
     All text uppercase, neutral tones, selective colors.
-    Includes NEIGHBORHOOD box when neighborhood_result is provided.
     """
     is_best = best_so_far is not None and score >= float(best_so_far)
     
@@ -220,9 +222,24 @@ def mostrar_panel_elegante(
     cantidad = params.get("cantidad", params.get("__cantidad", None))
     asset_str = f"[bold {THEME.BLUE}]{asset} {cantidad}[/]" if cantidad is not None else f"[bold {THEME.BLUE}]{asset}[/]"
     
+    # Construir info de fase si está disponible
+    phase_str = ""
+    if phase_name:
+        phase_str = f"[bold {THEME.BLUE}]{phase_name}[/]  │  "
+    
+    # Mostrar progreso de fase en lugar del número de trial global
+    trial_display = f"[{THEME.WHITE}]{trial_num}[/]"
+    if phase_progress:
+        trial_display = f"[bold {THEME.WHITE}]{phase_progress}[/]"
+    
+    # Header normal (con SCORE)
     header = (f"{asset_str}  │  {strat}  │  "
-              f"TF {tf}  │  TRIAL [{THEME.WHITE}]{trial_num}[/]  │  "
+              f"TF {tf}  │  {phase_str}TRIAL {trial_display}  │  "
               f"[bold {score_c}]SCORE {_format_score(score)}{star}[/]{best_str}")
+    
+    # Header para best trial (sin SCORE, se muestra aparte)
+    header_no_score = (f"{asset_str}  │  {strat}  │  "
+                       f"TF {tf}  │  TRIAL [{THEME.WHITE}]{trial_num}[/]")
     
     # ═══════════════════════════════════════════════════════════════════════
     # BOX 1: PERFORMANCE
@@ -233,7 +250,7 @@ def mostrar_panel_elegante(
     
     perf_grid.add_row("WIN RATE", f"{wr:.1f}%")
     perf_grid.add_row("EXPECTANCY", f"{exp:.2f}")
-    perf_grid.add_row("SHARPE", f"{shp:.3f}")
+    perf_grid.add_row("SHARPE", f"{shp:.2f}")
     perf_grid.add_row("SQN", f"{sqn:.3f}")
     perf_grid.add_row("PROFIT F", f"{pf:.2f}")
     perf_grid.add_row("MAX DD", f"{dd:.1f}%")
@@ -333,62 +350,8 @@ def mostrar_panel_elegante(
     )
     
     # ═══════════════════════════════════════════════════════════════════════
-    # BOX 4: NEIGHBORHOOD (optional, when analysis is done)
-    # ═══════════════════════════════════════════════════════════════════════
-    nbh_box = None
-    if neighborhood_result is not None:
-        if hasattr(neighborhood_result, "to_dict"):
-            neighborhood_result = neighborhood_result.to_dict()
-        
-        agg = neighborhood_result.get("aggregated_score", 0.0)
-        mean = neighborhood_result.get("mean_score", 0.0)
-        std = neighborhood_result.get("std_score", 0.0)
-        n_tested = neighborhood_result.get("n_neighbors_tested", 0)
-        n_ok = neighborhood_result.get("n_neighbors_successful", 0)
-        disp = neighborhood_result.get("avg_dispersion", 0.0) * 100
-        max_disp = neighborhood_result.get("max_dispersion_allowed", VECINDARIO_MAX_DISPERSION) * 100
-        exec_ms = neighborhood_result.get("execution_time_ms", 0.0)
-        approved = neighborhood_result.get("robustness_approved", False)
-        
-        # Skip codes check
-        if n_tested < 0:
-            skip_reason = neighborhood_result.get("skip_reason", "SKIPPED")
-            nbh_grid = Table.grid(padding=(0, 2))
-            nbh_grid.add_column(style=THEME.MUTED, width=10)
-            nbh_grid.add_column(style=THEME.TEXT, justify="right", width=20)
-            nbh_grid.add_row("STATUS", "SKIPPED")
-            nbh_grid.add_row("REASON", f"{skip_reason.upper()[:20]}")
-            status_c = THEME.MUTED
-            status = "○"
-        else:
-            status = "●"  # Always filled circle
-            status_c = THEME.GREEN if approved else THEME.RED
-            
-            nbh_grid = Table.grid(padding=(0, 2))
-            nbh_grid.add_column(style=THEME.MUTED, width=10)
-            nbh_grid.add_column(style=THEME.TEXT, justify="right", width=20)
-            
-            nbh_grid.add_row("MEAN", f"{mean:.2f}")
-            nbh_grid.add_row("STD", f"{std:.2f}")
-            nbh_grid.add_row("NEIGHBORS", f"{n_ok} / {n_tested}")
-            nbh_grid.add_row("DISPERSION", f"{disp:.1f}% / {max_disp:.0f}%")
-            nbh_grid.add_row("EXEC", f"{exec_ms:.0f} MS")
-        
-        nbh_box = Panel(
-            nbh_grid,
-            title=f"[{status_c}]{status}[/] [{THEME.MUTED}]NEIGHBORHOOD[/]",
-            border_style=THEME.BORDER,
-            box=box.ROUNDED,
-            padding=(0, 1),
-            width=38
-        )
-    
-    # ═══════════════════════════════════════════════════════════════════════
     # RENDER
     # ═══════════════════════════════════════════════════════════════════════
-    console.print()
-    console.print(header, justify="center")
-    console.print()
     
     # Row 1: PERFORMANCE | FINANCIALS | PARAMETERS
     row1 = Table.grid(padding=(0, 1))
@@ -396,63 +359,44 @@ def mostrar_panel_elegante(
     row1.add_column()
     row1.add_column()
     row1.add_row(perf_box, fin_box, param_box)
-    console.print(row1, justify="center")
     
-    # Row 2: NEIGHBORHOOD box (if exists) - centered
-    if nbh_box:
-        console.print(nbh_box, justify="center")
+    # Build content list for potential grouping
+    content_parts = [header, "", row1]
     
-    # Row 3: AVERAGES as horizontal line (centered)
     if avg_line:
-        console.print(avg_line, justify="center")
-
-
-def mostrar_resultado_vecindario(
-    result: Dict[str, Any],
-    inline: bool = False,
-) -> None:
-    """Display neighborhood result - elegant box."""
-    if hasattr(result, "to_dict"):
-        result = result.to_dict()
+        content_parts.append(avg_line)
     
-    agg = result.get("aggregated_score", 0.0)
-    mean = result.get("mean_score", 0.0)
-    std = result.get("std_score", 0.0)
-    n_tested = result.get("n_neighbors_tested", 0)
-    n_ok = result.get("n_neighbors_successful", 0)
-    disp = result.get("avg_dispersion", 0.0) * 100
-    max_disp = result.get("max_dispersion_allowed", VECINDARIO_MAX_DISPERSION) * 100
-    exec_ms = result.get("execution_time_ms", 0.0)
-    approved = result.get("robustness_approved", False)
+    console.print()
     
-    # Skip codes
-    if n_tested < 0:
-        skip_reason = result.get("skip_reason", "")
-        console.print(f"  [{THEME.MUTED}]○ NEIGHBORHOOD    SKIP: {skip_reason.upper()}[/]", justify="center")
-        return
-    
-    status = "●"  # Always filled circle
-    status_c = THEME.GREEN if approved else THEME.RED
-    
-    grid = Table.grid(padding=(0, 2))
-    grid.add_column(style=THEME.MUTED, width=10)
-    grid.add_column(style=THEME.TEXT, justify="right", width=20)
-    
-    grid.add_row("MEAN", f"{mean:.2f}")
-    grid.add_row("STD", f"{std:.2f}")
-    grid.add_row("NEIGHBORS", f"{n_ok} / {n_tested}")
-    grid.add_row("DISPERSION", f"{disp:.1f}% / {max_disp:.0f}%")
-    grid.add_row("EXEC", f"{exec_ms:.0f} MS")
-    
-    nbh_box = Panel(
-        grid,
-        title=f"[{status_c}]{status}[/] [{THEME.MUTED}]NEIGHBORHOOD[/]",
-        border_style=THEME.BORDER,
-        box=box.ROUNDED,
-        padding=(0, 1),
-        width=38
-    )
-    console.print(nbh_box, justify="center")
+    if is_best:
+        # Para best trial: SCORE grande y prominente debajo del título
+        score_line = Text()
+        score_line.append(f"SCORE ", style=f"bold {THEME.GOLD}")
+        score_line.append(f"{_format_score(score)}", style=f"bold {THEME.GOLD}")
+        
+        # Contenido con header sin score + score prominente
+        best_content_parts = [score_line, "", header_no_score, "", row1]
+        if avg_line:
+            best_content_parts.append(avg_line)
+        
+        best_content = Group(*best_content_parts)
+        best_panel = Panel(
+            best_content,
+            border_style=THEME.BEST_BOX,
+            box=box.DOUBLE,
+            padding=(1, 2),
+            title=f"[bold {THEME.GOLD}]★ NEW BEST ★[/]",
+            title_align="center",
+        )
+        console.print(best_panel, justify="center")
+    else:
+        # Normal render without wrapper
+        console.print(header, justify="center")
+        console.print()
+        console.print(row1, justify="center")
+        
+        if avg_line:
+            console.print(avg_line, justify="center")
 
 
 # ============================================================================

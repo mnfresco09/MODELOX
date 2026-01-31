@@ -114,7 +114,7 @@ FECHA_FIN_PLOT = "2021-03-15"
 # ----------------------------------------------------------------------------
 # 1.4 MOTOR DE OPTIMIZACIÓN (OPTUNA - MÁXIMA POTENCIA VM)
 # ----------------------------------------------------------------------------
-N_TRIALS = 50000   # NÚMERO DE PRUEBAS (AUMENTAR SI TIENES BUENA CPU)
+N_TRIALS = 4000   # NÚMERO DE PRUEBAS (AUMENTAR SI TIENES BUENA CPU)
 OPTUNA_N_JOBS = -1      # -1 = USAR TODOS LOS NÚCLEOS DISPONIBLES
 OPTUNA_SEED = None      # SEMILLA ALEATORIA (NONE PARA VARIEDAD)
 OPTUNA_STORAGE = None   # NONE = EJECUCIÓN EN RAM (MÁS RÁPIDO)
@@ -122,20 +122,99 @@ OPTUNA_STORAGE = None   # NONE = EJECUCIÓN EN RAM (MÁS RÁPIDO)
 # ----------------------------------------------------------------------------
 # 1.4.A ALGORITMO DE OPTIMIZACIÓN (SAMPLER)
 # ----------------------------------------------------------------------------
-# SELECCIONA EL ALGORITMO DE BÚSQUEDA BAYESIANA:
+# SELECCIONA EL ALGORITMO DE BÚSQUEDA:
+#
+#   "PLATEAU" = TOPÓGRAFO DE MESETAS (NUEVO - RECOMENDADO)
+#               - Fase 1: Exploración masiva con RandomSampler
+#               - Fase 2: Detección de mesetas con DBSCAN
+#               - Fase 3: Refinamiento CMA-ES en cada meseta
+#               - MÁXIMA ROBUSTEZ, evita overfitting
 #
 #   "CMA"  = CMA-ES (Covariance Matrix Adaptation Evolution Strategy)
-#            - RECOMENDADO para scoring institucional
-#            - Mejor para encontrar "mesetas de parámetros" (robustez)
+#            - Algoritmo clásico de optimización evolutiva
 #            - Adapta la matriz de covarianza según los scores
-#            - Ideal para espacios de búsqueda continuos
+#            - Puede caer en picos locales (overfitting)
 #
 #   "TPE"  = Tree-structured Parzen Estimator
 #            - Algoritmo clásico de Optuna
 #            - Bueno para espacios mixtos (continuos + categóricos)
 #            - Más rápido en las primeras iteraciones
 #
-OPTUNA_SAMPLER = "CMA"  # <--- MODIFICA AQUÍ ("CMA" o "TPE")
+OPTUNA_SAMPLER = "PLATEAU"  # <--- MODIFICA AQUÍ ("PLATEAU", "CMA" o "TPE")
+
+# ----------------------------------------------------------------------------
+# 1.4.B CONFIGURACIÓN DEL TOPÓGRAFO DE MESETAS
+# ----------------------------------------------------------------------------
+# Solo aplica si OPTUNA_SAMPLER = "PLATEAU"
+#
+# FASE 1: EXPLORACIÓN
+# El sistema "llena" el espacio de parámetros para ver el terreno completo.
+PLATEAU_EXPLORATION_RATIO = 0.50  # 50% de trials para exploración (el otro 50% para refinamiento)
+PLATEAU_EXPLORATION_SAMPLER = "qmc"  # "qmc" (RECOMENDADO), "random" o "tpe"
+#
+#   "qmc"    = Quasi-Monte Carlo (Secuencia Sobol) [RECOMENDADO]
+#              - Cobertura SISTEMÁTICA y UNIFORME de todo el espacio
+#              - NO es aleatorio, pero NO se centra en ninguna zona
+#              - Más trials = mayor resolución (como aumentar pixeles)
+#              - 100 trials = malla gruesa, 1000 trials = malla fina
+#              - GARANTIZA explorar TODO el rango de cada parámetro
+#
+#   "random" = Aleatorio puro
+#              - Distribución uniforme pero con "huecos" aleatorios
+#              - Puede dejar zonas sin explorar por mala suerte
+#
+#   "tpe"    = Tree-structured Parzen Estimator
+#              - APRENDE de trials anteriores
+#              - Tiende a CONCENTRARSE en zonas prometedoras (greedy)
+#              - Puede perderse mesetas si encuentra un pico primero
+
+# FASE 2: DETECCIÓN DE MESETAS (HDBSCAN/DBSCAN)
+# HDBSCAN agrupa puntos cercanos en el espacio de parámetros.
+#
+# PARÁMETROS DE CLUSTERING:
+PLATEAU_MIN_CLUSTER_SIZE = 10  # Tamaño mínimo de una meseta (cluster)
+                               # - Valor BAJO (5-10): Detecta mesetas pequeñas, más sensible
+                               # - Valor ALTO (20-50): Solo mesetas grandes, más conservador
+                               # RECOMENDADO: 10-30 para 1000+ trials
+
+PLATEAU_MIN_SAMPLES = 5        # Mínimo de vecinos cercanos para ser "núcleo" de cluster
+                               # - Valor BAJO (3-5): Acepta zonas poco densas
+                               # - Valor ALTO (10-15): Solo zonas muy densas
+                               # RECOMENDADO: 5-10
+
+PLATEAU_MIN_TRIALS_FOR_MESETA = 2  # Mínimo trials para considerar meseta válida (post-filtro)
+
+# LEGACY (solo si use_hdbscan=False)
+PLATEAU_DBSCAN_EPS = 0.35  # Radio de vecindad para DBSCAN clásico (0.1-0.5)
+
+# FILTRADO ANTES DEL CLUSTERING (AUTOMÁTICO - NO CONFIGURABLE)
+# Se aplican DOS filtros secuenciales:
+#
+#   FILTRO 1: ROI >= 0%
+#             Descarta TODOS los trials con ROI negativo (perdedores)
+#
+#   FILTRO 2: Score >= Media (μ)
+#             Descarta TODOS los trials con score < media
+#             Elimina automáticamente la mitad inferior
+#
+# Ejemplo: 2500 trials → Filtro ROI → 1800 pasan → Filtro Media → ~900 para clustering
+
+# FASE 3: REFINAMIENTO CMA-ES
+# Los trials de refinamiento (50%) se distribuyen proporcionalmente entre mesetas.
+# Ejemplo: 4000 trials → 2000 exploración, 2000 refinamiento
+#          Si DBSCAN encuentra 5 mesetas → 400 trials/meseta
+#          Si DBSCAN encuentra 10 mesetas → 200 trials/meseta
+PLATEAU_MAX_MESETAS = 0  # 0 = sin límite (refinar TODAS las mesetas encontradas)
+PLATEAU_MIN_TRIALS_POR_MESETA = 50  # Mínimo de trials por meseta (si hay muchas)
+
+# SELECCIÓN DEL REPRESENTANTE
+# "centroid" = Trial más cercano al centro de la meseta (RECOMENDADO)
+# "best" = Trial con mejor score en la meseta
+# "median" = Trial con score mediano
+PLATEAU_CENTROID_SELECTION = "centroid"
+
+# AJUSTE AUTOMÁTICO
+PLATEAU_AUTO_EPS = True  # Ajustar eps automáticamente según los datos
 
 # ----------------------------------------------------------------------------
 # 1.4.0 LIMPIEZA PERIÓDICA DE MEMORIA (ANTI-SLOWDOWN)
@@ -239,19 +318,14 @@ USAR_EXCEL = True          # Generar archivos Excel con resumen y trades
 PURGE_PYCACHE_ON_EXIT = True
 
 # ----------------------------------------------------------------------------
-# 1.10 SISTEMA DE SCORING UNIFICADO v8.0 (SIMPLIFICADO)
+# 1.10 SISTEMA DE SCORING UNIFICADO v8.0 (CALIDAD PURA)
 # ----------------------------------------------------------------------------
-# Sistema de evaluación: Score = Calidad × Actividad
+# Sistema de evaluación basado en métricas de calidad.
+# La robustez se valida en fases posteriores (Fase 2 y 3 del Topógrafo).
 #
-# COMPONENTE DE CALIDAD:
-# - Rango: [0, 600]
-# - Normaliza Sharpe (per-trade), SQN, ROI, Drawdown usando tanh
-# - Sharpe per-trade: calidad promedio de cada disparo individual
-#
-# COMPONENTE DE ACTIVIDAD:
-# - Sigmoide logística centrada en 0.25 trades/día
-# - Si trades/día < 0.25 → factor cae hacia 0
-# - Si trades/día >= 0.5 → factor ~1.0
+# COMPONENTE DE CALIDAD (0-600 puntos):
+# - Normaliza Sharpe, SQN, ROI, Drawdown usando tanh
+# - Factor de actividad (trades/día) se aplica como multiplicador
 
 
 # =============================================================================
@@ -350,7 +424,7 @@ CONFIG = {
     "QTY_MAX_MAP": QTY_MAX_MAP, "QTY_MAX_RANGE_MAP": QTY_MAX_RANGE_MAP,
     "N_TRIALS": N_TRIALS, "OPTUNA_N_JOBS": OPTUNA_N_JOBS,
     "OPTUNA_SEED": OPTUNA_SEED, "OPTUNA_STORAGE": OPTUNA_STORAGE,
-    "OPTUNA_SAMPLER": OPTUNA_SAMPLER,  # CMA o TPE
+    "OPTUNA_SAMPLER": OPTUNA_SAMPLER,  # PLATEAU, CMA o TPE
     "COMBINACION_A_EJECUTAR": COMBINACION_A_EJECUTAR,
     "EXIT_TYPE": EXIT_TYPE, "RIESGO_POR_TRADE_PCT": RIESGO_POR_TRADE_PCT,
     "EXIT_SL_PCT": EXIT_SL_PCT, "EXIT_TP_PCT": EXIT_TP_PCT,
@@ -367,4 +441,15 @@ CONFIG = {
     "PERTURBACION_BLOCK_SIZE": PERTURBACION_BLOCK_SIZE,
     "PERTURBACION_SEED": PERTURBACION_SEED,
     "PERTURBACION_VERIFY": PERTURBACION_VERIFY,
+    # CONFIGURACIÓN DEL TOPÓGRAFO DE MESETAS
+    "PLATEAU_EXPLORATION_RATIO": PLATEAU_EXPLORATION_RATIO,
+    "PLATEAU_EXPLORATION_SAMPLER": PLATEAU_EXPLORATION_SAMPLER,
+    "PLATEAU_MIN_CLUSTER_SIZE": PLATEAU_MIN_CLUSTER_SIZE,
+    "PLATEAU_MIN_SAMPLES": PLATEAU_MIN_SAMPLES,
+    "PLATEAU_DBSCAN_EPS": PLATEAU_DBSCAN_EPS,
+    "PLATEAU_MIN_TRIALS_FOR_MESETA": PLATEAU_MIN_TRIALS_FOR_MESETA,
+    "PLATEAU_MAX_MESETAS": PLATEAU_MAX_MESETAS,
+    "PLATEAU_MIN_TRIALS_POR_MESETA": PLATEAU_MIN_TRIALS_POR_MESETA,
+    "PLATEAU_CENTROID_SELECTION": PLATEAU_CENTROID_SELECTION,
+    "PLATEAU_AUTO_EPS": PLATEAU_AUTO_EPS,
 }

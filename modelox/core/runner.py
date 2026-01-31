@@ -51,7 +51,11 @@ from optuna.samplers import TPESampler, CmaEsSampler
 
 from .engine import BacktestParams, calculate_performance_vectorized_numba
 from .metrics import resumen_metricas
-from .scoring import score_optuna, set_study_for_scorer
+from .scoring import (
+    score_optuna, 
+    score_unified,
+    set_study_for_scorer,
+)
 from .types import (
     BacktestConfig,
     Reporter,
@@ -750,6 +754,13 @@ class BacktestEngine:
             df=df, signals=signals, params=backtest_params, strategy=strategy,
         )
         
+        # Obtener período de backtest del DataFrame de datos
+        period_start = None
+        period_end = None
+        if "timestamp" in df.columns and df.height > 0:
+            period_start = df["timestamp"].min()
+            period_end = df["timestamp"].max()
+        
         metrics: Dict[str, Any]
         if not trades_df.is_empty():
             metrics = resumen_metricas(
@@ -757,6 +768,8 @@ class BacktestEngine:
                 saldo_inicial=config.saldo_inicial,
                 equity_curve=equity_curve,
                 timeframe=timeframe,
+                period_start=period_start,
+                period_end=period_end,
             )
         else:
             metrics = {}
@@ -1000,6 +1013,8 @@ class OptimizationRunner:
                 return 0.0
             
             trial.set_user_attr("metricas", metrics)
+            
+            # Score basado en calidad (sin test de vecindario)
             score = float(score_optuna(metrics))
             
             t_total = time.perf_counter() - t0_total
@@ -1039,6 +1054,7 @@ class OptimizationRunner:
                 indicators_used=params_rt.get("__indicators_used", []),
                 perturbado=perturb_info.get("perturbation_applied", False),
                 perturb_seed=perturb_seed if perturb_info.get("perturbation_applied", False) else None,
+                neighborhood_result=None,
             )
             
             for reporter in self.reporters:
@@ -1099,12 +1115,3 @@ def cleanup_parallel_resources():
     """
     clear_all_caches()
     gc.collect()
-
-
-# =============================================================================
-# ALIAS DE COMPATIBILIDAD
-# =============================================================================
-
-# Mantener el nombre anterior para compatibilidad
-MonteCarloRunner = OptimizationRunner
-MonteCarloConfig = PerturbationConfig
