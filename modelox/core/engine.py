@@ -1,24 +1,32 @@
-"""modelox/core/engine.py
-
-Vector engine (Polars + Numba + C) consolidado - ULTRA OPTIMIZADO.
-
-OPTIMIZACIONES:
-- Kernel C nativo via Cython (5-10x más rápido que Numba)
-- Fallback a Numba JIT si C no está compilado
-- Zero-copy arrays via views
-- Pre-allocación de memoria
-- Eliminación de JOINs de Polars
-- Edge-trigger vectorizado sin materialización
-
-- Entradas: detecta cruces de señales (edge-trigger)
-- Salidas: kernel C/Numba para SL/TP/Trailing/Time stop
-- PnL/comisiones: Numpy vectorizado
-- Equity curve: O(N_trades)
-
-PARA MÁXIMO RENDIMIENTO:
-    cd cp && python setup.py build_ext --inplace
 """
-
+# =============================================================================
+#
+#     ███████╗███╗   ██╗ ██████╗ ██╗███╗   ██╗███████╗
+#     ██╔════╝████╗  ██║██╔════╝ ██║████╗  ██║██╔════╝
+#     █████╗  ██╔██╗ ██║██║  ███╗██║██╔██╗ ██║█████╗
+#     ██╔══╝  ██║╚██╗██║██║   ██║██║██║╚██╗██║██╔══╝
+#     ███████╗██║ ╚████║╚██████╔╝██║██║ ╚████║███████╗
+#     ╚══════╝╚═╝  ╚═══╝ ╚═════╝ ╚═╝╚═╝  ╚═══╝╚══════╝
+#
+#     ENGINE.PY - MOTOR DE BACKTESTING VECTORIZADO
+#
+# =============================================================================
+#
+#     ARQUITECTURA:
+#     - Kernel C nativo via Cython (5-10x más rápido)
+#     - Fallback a Numba JIT si C no está compilado
+#     - Zero-copy arrays, pre-allocación de memoria
+#
+#     PIPELINE:
+#     - Entradas: detecta cruces de señales (edge-trigger)
+#     - Salidas: kernel C/Numba para SL/TP/Trailing
+#     - PnL/comisiones: NumPy vectorizado
+#
+#     COMPILAR EXTENSIONES C:
+#         cd cp && python setup.py build_ext --inplace
+#
+# =============================================================================
+"""
 from __future__ import annotations
 
 from dataclasses import dataclass
@@ -32,9 +40,10 @@ from modelox.core.types import BacktestConfig, Strategy
 
 
 # =============================================================================
-# EXTENSIONES C - DETECCIÓN AUTOMÁTICA
+# 1. EXTENSIONES C - DETECCIÓN AUTOMÁTICA
 # =============================================================================
-_USE_C_ENGINE = False
+
+_USE_C_ENGINE: bool = False
 _C_simulate_trades = None
 _C_compute_metrics = None
 
@@ -44,33 +53,31 @@ try:
         _USE_C_ENGINE = True
         _C_simulate_trades = simulate_trades_c
         _C_compute_metrics = compute_metrics_c
-        # Log solo una vez al importar
         import logging
-        logging.getLogger(__name__).debug("✅ Extensiones C activas - Modo Nuclear")
+        logging.getLogger(__name__).debug("Extensiones C activas - Modo Nuclear")
 except ImportError:
-    pass  # Usar Numba como fallback
+    pass
 
 
 # =============================================================================
-# CACHE GLOBAL DE ARRAYS (evita recreación en cada backtest)
+# 2. CACHÉ GLOBAL DE ARRAYS
 # =============================================================================
+
 _ARRAY_CACHE: Dict[int, Dict[str, np.ndarray]] = {}
-_CACHE_MAX_SIZE = 4
+_CACHE_MAX_SIZE: int = 4
 
 
 def _get_cached_arrays(df_id: int, df: pl.DataFrame) -> Dict[str, np.ndarray]:
-    """Obtiene arrays cacheados o los crea."""
+    """OBTIENE ARRAYS CACHEADOS O LOS CREA (ZERO-COPY)."""
     if df_id in _ARRAY_CACHE:
         return _ARRAY_CACHE[df_id]
     
-    # Crear arrays (zero-copy cuando es posible)
     arrays = {
         "close": df["close"].to_numpy(),
         "high": df["high"].to_numpy() if "high" in df.columns else df["close"].to_numpy(),
         "low": df["low"].to_numpy() if "low" in df.columns else df["close"].to_numpy(),
     }
     
-    # Limpiar cache si está llena
     if len(_ARRAY_CACHE) >= _CACHE_MAX_SIZE:
         _ARRAY_CACHE.pop(next(iter(_ARRAY_CACHE)))
     
@@ -78,8 +85,13 @@ def _get_cached_arrays(df_id: int, df: pl.DataFrame) -> Dict[str, np.ndarray]:
     return arrays
 
 
+# =============================================================================
+# 3. PARÁMETROS DE BACKTEST
+# =============================================================================
+
 @dataclass
 class BacktestParams:
+    """PARÁMETROS PARA EJECUTAR UN BACKTEST."""
     saldo_inicial: float
     comision_pct: float
     comision_sides: int
@@ -115,13 +127,20 @@ class BacktestParams:
         )
 
 
+
+
+
+# =============================================================================
+# 4. KERNEL NUMBA - SALIDAS SL/TP/TRAILING
+# =============================================================================
+
 @nb.njit(cache=True, fastmath=True)
 def find_exits_numba(
     entry_indices,
     entry_prices,
-    entry_types,  # 1=Long, -1=Short
-    entry_qty,    # qty por trade
-    entry_stake,  # stake (saldo usado) por trade
+    entry_types,       # 1=LONG, -1=SHORT
+    entry_qty,         # CANTIDAD POR TRADE
+    entry_stake,       # STAKE (MARGEN) POR TRADE
     close_prices,
     high_prices,
     low_prices,
@@ -279,6 +298,10 @@ def find_exits_numba(
     return exit_indices, exit_prices, exit_reasons
 
 
+# =============================================================================
+# 5. KERNEL NUMBA - SIMULACIÓN SECUENCIAL DE TRADES
+# =============================================================================
+
 @nb.njit(cache=True, fastmath=True, parallel=False)
 def _simulate_trades_sequential(
     entry_indices: np.ndarray,
@@ -303,9 +326,9 @@ def _simulate_trades_sequential(
 ) -> Tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray, np.ndarray, 
            np.ndarray, np.ndarray, np.ndarray, np.ndarray, np.ndarray,
            np.ndarray, np.ndarray, int]:
-    """
-    Kernel Numba optimizado para simular todos los trades secuencialmente.
-    Retorna arrays con datos de cada trade exitoso.
+    """KERNEL NUMBA: SIMULA TRADES SECUENCIALMENTE.
+    
+    RETORNA ARRAYS CON DATOS DE CADA TRADE EXITOSO.
     """
     n_entries = len(entry_indices)
     n_bars = len(close_prices)
@@ -522,21 +545,19 @@ def calculate_performance_vectorized_numba(
     params: BacktestParams,
     strategy: Strategy,
 ) -> Tuple[pl.DataFrame, List[float]]:
-    """
-    Vector engine con gestión de capital realista:
-    - Escala qty al saldo disponible (apalancamiento variable)
-    - Calcula SL/TP basados en % sobre STAKE (no sobre precio)
-    - Detiene el trading cuando saldo <= saldo_minimo_operativo
-    - Equity curve refleja el balance real después de cada trade
-    - Soporta salidas personalizadas de estrategia si SALIDAS_PERSONALIZADAS=True
+    """VECTOR ENGINE CON GESTIÓN DE CAPITAL REALISTA.
     
-    OPTIMIZADO: JOIN eliminado, usa hstack + filtrado vectorizado directo.
+    CARACTERÍSTICAS:
+    - Escala qty al saldo disponible (apalancamiento variable)
+    - SL/TP basados en % sobre STAKE (no sobre precio)
+    - Detiene trading cuando saldo <= saldo_minimo_operativo
+    - Soporta kernel C (nuclear) o Numba (fallback)
     """
     # Check si la estrategia tiene salidas personalizadas
     bool(getattr(strategy, "SALIDAS_PERSONALIZADAS", False))
 
     # =========================================================================
-    # 1) OPTIMIZACIÓN: Evitar JOIN costoso - usar select + hstack directo
+    # PASO 1: DETECCIÓN DE ENTRADAS (EDGE-TRIGGER VECTORIZADO)
     # =========================================================================
     # Solo necesitamos signal_long y signal_short de signals
     sig_long = signals["signal_long"].fill_null(False)
@@ -552,9 +573,9 @@ def calculate_performance_vectorized_numba(
     
     if n_entries == 0:
         return pl.DataFrame(), [params.saldo_inicial]
-    
+
     # =========================================================================
-    # 2) OPTIMIZACIÓN: Extraer arrays numpy una sola vez (evitar múltiples to_numpy)
+    # PASO 2: EXTRAER ARRAYS NUMPY (UNA SOLA VEZ)
     # =========================================================================
     c_arr = df["close"].to_numpy()
     h_arr = df["high"].to_numpy() if "high" in df.columns else c_arr
@@ -573,7 +594,9 @@ def calculate_performance_vectorized_numba(
 
     is_trailing = params.exit_type == "pnl_trailing"
 
-    # 3) Simular secuencialmente con gestión de capital realista
+    # =========================================================================
+    # PASO 3: SIMULACIÓN CON GESTIÓN DE CAPITAL
+    # =========================================================================
     fee_rate = float(params.comision_pct)
     min_op = float(params.saldo_minimo_operativo)
     apalancamiento_max = float(params.apalancamiento_max)
@@ -590,7 +613,7 @@ def calculate_performance_vectorized_numba(
     saldo_inicial = float(params.saldo_inicial)
 
     # =========================================================================
-    # KERNEL OPTIMIZADO: C (si disponible) o Numba (fallback)
+    # PASO 4: KERNEL C (NUCLEAR) O NUMBA (FALLBACK)
     # =========================================================================
     if _USE_C_ENGINE and _C_simulate_trades is not None:
         # Usar extensión C - MODO NUCLEAR
@@ -647,7 +670,7 @@ def calculate_performance_vectorized_numba(
         return pl.DataFrame(), [saldo_inicial]
 
     # =========================================================================
-    # 4) OPTIMIZACIÓN: Slicing directo sin copias innecesarias
+    # PASO 5: CONSTRUIR DATAFRAME DE TRADES
     # =========================================================================
     # Vistas sobre arrays (no copian memoria)
     entry_idx_view = out_entry_idx[:trade_count]
@@ -677,9 +700,7 @@ def calculate_performance_vectorized_numba(
     # Tipo de trade
     trade_type = np.where(side_view == 1, "long", "short")
 
-    # =========================================================================
-    # 5) Construir DataFrame optimizado - una sola llamada
-    # =========================================================================
+    # CONSTRUIR DATAFRAME EN UNA SOLA LLAMADA
     trades_df = pl.DataFrame({
         "entry_idx": entry_idx_view,
         "exit_idx": exit_idx_view,
@@ -700,14 +721,14 @@ def calculate_performance_vectorized_numba(
         "exit_time": ts_arr.gather(pl.Series(exit_idx_view)),
     })
 
-    # 6) Equity curve como lista Python (más rápido que .tolist() para arrays pequeños)
+    # EQUITY CURVE COMO LISTA
     equity_curve = list(saldo_despues_view)
 
     return trades_df, equity_curve
 
 
 # =============================================================================
-# MÉTRICAS RÁPIDAS INLINE (evita overhead de import/llamada)
+# 6. MÉTRICAS RÁPIDAS INLINE (NUMBA)
 # =============================================================================
 
 @nb.njit(cache=True, fastmath=True)
@@ -717,12 +738,10 @@ def _compute_fast_metrics(
     saldo_despues: np.ndarray,
     saldo_inicial: float,
 ) -> Tuple[float, float, float, float, float, float, int, int, float, float]:
-    """
-    Calcula métricas esenciales en un solo pase (Numba JIT).
+    """CALCULA MÉTRICAS ESENCIALES EN UN SOLO PASE.
     
-    Returns:
-        (roi, winrate, drawdown, sharpe, sqn, expectancy, 
-         n_wins, n_losses, saldo_final, profit_factor)
+    RETORNA: (roi, winrate, drawdown, sharpe, sqn, expectancy, 
+              n_wins, n_losses, saldo_final, profit_factor)
     """
     n = len(pnl_neto)
     if n == 0:
@@ -801,11 +820,11 @@ def _compute_fast_metrics(
 
 
 # =============================================================================
-# WARMUP: Pre-compila JIT al importar el módulo (elimina latencia del Trial 0)
+# 7. WARMUP JIT - ELIMINA LATENCIA DEL TRIAL 0
 # =============================================================================
 
 def _warmup_jit() -> None:
-    """Pre-compila funciones Numba con datos dummy para eliminar latencia inicial."""
+    """PRE-COMPILA FUNCIONES NUMBA CON DATOS DUMMY."""
     # Datos dummy mínimos
     dummy_entries = np.array([0, 5, 10], dtype=np.int64)
     dummy_prices = np.array([100.0, 101.0, 102.0], dtype=np.float64)

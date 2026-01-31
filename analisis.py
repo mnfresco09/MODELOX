@@ -1,17 +1,25 @@
 #!/usr/bin/env python3
 """
-================================================================================
-SISTEMA DE ANÁLISIS DE TRADING CON DESIONIZACIÓN BAYESIANA - ULTRA OPTIMIZADO
-================================================================================
-
-Versión de alto rendimiento con:
-- PyArrow + Parquet para I/O de datos (formato columnar ultra-rápido)
-- GPyTorch + torch.compile para Gaussian Process Regression
-- Numba JIT para loops críticos
-- NumPy vectorizado para cálculos numéricos
-- Joblib para paralelización de visualizaciones
-
-================================================================================
+# =============================================================================
+#
+#      █████╗ ███╗   ██╗ █████╗ ██╗     ██╗███████╗██╗███████╗
+#     ██╔══██╗████╗  ██║██╔══██╗██║     ██║██╔════╝██║██╔════╝
+#     ███████║██╔██╗ ██║███████║██║     ██║███████╗██║███████╗
+#     ██╔══██║██║╚██╗██║██╔══██║██║     ██║╚════██║██║╚════██║
+#     ██║  ██║██║ ╚████║██║  ██║███████╗██║███████║██║███████║
+#     ╚═╝  ╚═╝╚═╝  ╚═══╝╚═╝  ╚═╝╚══════╝╚═╝╚══════╝╚═╝╚══════╝
+#
+#     ANALISIS.PY - ANÁLISIS BAYESIANO DE RESULTADOS
+#
+# =============================================================================
+#
+#     TECNOLOGÍAS:
+#     - GPyTorch para Gaussian Process Regression
+#     - PyArrow + Parquet para I/O columnar
+#     - Numba JIT para loops críticos
+#     - Joblib para paralelización
+#
+# =============================================================================
 """
 
 from __future__ import annotations
@@ -28,9 +36,8 @@ import tempfile
 import atexit
 from pathlib import Path
 from typing import Dict, List, Tuple, Any, Optional
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from datetime import datetime
-from concurrent.futures import ThreadPoolExecutor, ProcessPoolExecutor
 import multiprocessing as mp
 
 import numpy as np
@@ -42,23 +49,21 @@ import torch
 import gpytorch
 from gpytorch.models import ExactGP, ApproximateGP
 from gpytorch.means import ConstantMean
-from gpytorch.kernels import ScaleKernel, MaternKernel, InducingPointKernel, RQKernel
+from gpytorch.kernels import ScaleKernel, MaternKernel, RQKernel
 from gpytorch.likelihoods import GaussianLikelihood
 from gpytorch.distributions import MultivariateNormal
 from gpytorch.mlls import ExactMarginalLogLikelihood, VariationalELBO
-from gpytorch.variational import CholeskyVariationalDistribution, VariationalStrategy, NaturalVariationalDistribution
-from gpytorch.optim import NGD  # Natural Gradient Descent para parámetros variacionales
-from sklearn.preprocessing import RobustScaler  # Robusto a outliers (usa mediana/IQR en lugar de media/std)
+from gpytorch.variational import CholeskyVariationalDistribution, VariationalStrategy
+from gpytorch.optim import NGD
+from sklearn.preprocessing import RobustScaler
 from sklearn.cluster import MiniBatchKMeans
 import matplotlib.pyplot as plt
 from matplotlib.figure import Figure
 from matplotlib.backends.backend_agg import FigureCanvasAgg
 from joblib import Parallel, delayed, cpu_count
 from numba import jit, prange
-import numba
 
-# Rich para interfaz de consola profesional
-from rich.console import Console, Group
+from rich.console import Console
 from rich.panel import Panel
 from rich.table import Table
 from rich.progress import (
@@ -68,15 +73,11 @@ from rich.progress import (
 )
 from rich.prompt import Prompt, Confirm
 from rich.rule import Rule
-from rich.columns import Columns
 from rich.text import Text
-from rich.live import Live
-from rich.layout import Layout
 from rich import box
 from rich.traceback import install as install_rich_traceback
 import time
 
-# Import del sistema de limpieza de MODELOX (condicional para compatibilidad)
 try:
     from modelox.core.types import full_system_cleanup
 except ImportError:
@@ -255,6 +256,25 @@ N_JOBS = max(1, cpu_count() - 1)
 # ============================================================================
 
 # ============================================================================
+# CONFIGURACIÓN DE ENTRENAMIENTO GPR - EARLY STOPPING
+# ============================================================================
+# GPR_MAX_ITERATIONS: Número máximo de iteraciones de entrenamiento
+#   - Más iteraciones = mejor ajuste pero más lento
+#   - Recomendado: 500-2000
+GPR_MAX_ITERATIONS = 1000
+
+# GPR_PATIENCE: Iteraciones SIN MEJORA antes de parar (early stopping)
+#   - Menor = para antes si no mejora (más rápido)
+#   - Mayor = más oportunidades de mejorar
+#   - Recomendado: 1-50 (1 = para inmediatamente si no mejora)
+GPR_PATIENCE = 25
+
+# GPR_MIN_DELTA: Mejora mínima para considerar progreso
+#   - Menor = más sensible a mejoras pequeñas
+#   - Recomendado: 0.0001-0.01
+GPR_MIN_DELTA = 0.001
+
+# ============================================================================
 # CONFIGURACIÓN DE SPARSE GP (para datasets muy grandes)
 # ============================================================================
 # SPARSE_GP_ENABLED: Activa/desactiva Sparse GP (SVGP)
@@ -308,29 +328,38 @@ def _detect_problematic_env():
 
 _IN_PROBLEMATIC_ENV = _detect_problematic_env()
 
-USE_TORCH_COMPILE = (
-    hasattr(torch, 'compile') and 
-    torch.__version__ >= '2.0' and 
-    not _TORCH_COMPILE_DISABLED and
-    not _IN_PROBLEMATIC_ENV
-)
+# IMPORTANTE: torch.compile NO es compatible con GPyTorch
+# GPyTorch usa LazyEvaluatedKernelTensor que torch._dynamo no puede manejar
+# Error: "Unknown attribute __defaults__ for LazyEvaluatedKernelTensor"
+# Por lo tanto, SIEMPRE desactivamos torch.compile cuando usamos GPyTorch
+USE_TORCH_COMPILE = False  # Desactivado permanentemente para GPyTorch
 
 # Configurar GPyTorch para máximo rendimiento (Optimización 3)
 gpytorch.settings.fast_computations(covar_root_decomposition=True, log_prob=True, solves=True)
 gpytorch.settings.max_cholesky_size(2000)  # Usar Cholesky hasta 2000x2000
 gpytorch.settings.cholesky_jitter(1e-4)  # Estabilidad numérica
 
+# ============================================================================
+# EVITAR CONFLICTOS DE OPENMP (causa segmentation fault)
+# ============================================================================
+# Numba y PyTorch usan diferentes versiones de OpenMP que pueden colisionar
+# Desactivamos threading anidado para evitar el problema
+import os
+os.environ['OMP_NUM_THREADS'] = '1'
+os.environ['MKL_NUM_THREADS'] = '1'
+os.environ['NUMBA_NUM_THREADS'] = '1'
+
 
 # =============================================================================
-# FUNCIONES NUMBA JIT - OPERACIONES CRÍTICAS ACELERADAS
+# FUNCIONES NUMBA JIT - OPERACIONES CRÍTICAS (SIN PARALELIZACIÓN)
 # =============================================================================
+# NOTA: parallel=False para evitar conflictos con PyTorch OpenMP
 
-@jit(nopython=True, parallel=True, cache=True, fastmath=True)
+@jit(nopython=True, cache=True, fastmath=True)
 def _compute_bin_stats_numba(x_vals: np.ndarray, y_vals: np.ndarray, 
                               bin_edges: np.ndarray) -> Tuple[np.ndarray, np.ndarray, np.ndarray]:
     """
     Calcula estadísticas por bin de forma ultra-rápida con Numba.
-    Paralelizado automáticamente.
     """
     n_bins = len(bin_edges) - 1
     bin_sums = np.zeros(n_bins, dtype=np.float32)
@@ -341,8 +370,8 @@ def _compute_bin_stats_numba(x_vals: np.ndarray, y_vals: np.ndarray,
     for i in range(n_bins):
         bin_centers[i] = (bin_edges[i] + bin_edges[i + 1]) / 2.0
     
-    # Acumular valores en bins (paralelizado)
-    for i in prange(len(x_vals)):
+    # Acumular valores en bins
+    for i in range(len(x_vals)):
         x = x_vals[i]
         y = y_vals[i]
         # Encontrar bin
@@ -359,7 +388,7 @@ def _compute_bin_stats_numba(x_vals: np.ndarray, y_vals: np.ndarray,
     return bin_centers, bin_sums, bin_counts
 
 
-@jit(nopython=True, parallel=True, cache=True, fastmath=True)
+@jit(nopython=True, cache=True, fastmath=True)
 def _expand_matrix_for_pd_numba(X: np.ndarray, param_grid: np.ndarray, 
                                  param_idx: int) -> np.ndarray:
     """
@@ -369,7 +398,7 @@ def _expand_matrix_for_pd_numba(X: np.ndarray, param_grid: np.ndarray,
     n_samples, n_features = X.shape
     result = np.empty((n_points * n_samples, n_features), dtype=np.float32)
     
-    for i in prange(n_points):
+    for i in range(n_points):
         start = i * n_samples
         for j in range(n_samples):
             for k in range(n_features):
@@ -381,21 +410,17 @@ def _expand_matrix_for_pd_numba(X: np.ndarray, param_grid: np.ndarray,
     return result
 
 
-@jit(nopython=True, parallel=True, cache=True, fastmath=True)
+@jit(nopython=True, cache=True, fastmath=True)
 def _expand_all_params_numba(X: np.ndarray, param_grids: np.ndarray, 
                               n_points: int, n_params: int) -> np.ndarray:
     """
-    Expande matriz para TODOS los parámetros en una sola pasada - Ultra optimizado.
-    
-    Esta versión fusiona todos los loops en uno solo, eliminando overhead de Python.
-    Paralelizado con Numba prange.
+    Expande matriz para TODOS los parámetros en una sola pasada.
     """
     n_samples, n_features = X.shape
     total_points = n_params * n_points * n_samples
     result = np.empty((total_points, n_features), dtype=np.float32)
     
-    # Paralelizar sobre parámetros (cada thread maneja un parámetro completo)
-    for param_idx in prange(n_params):
+    for param_idx in range(n_params):
         param_offset = param_idx * n_points * n_samples
         
         for point_idx in range(n_points):
@@ -435,17 +460,17 @@ def _compute_r2_numba(y_true: np.ndarray, y_pred: np.ndarray) -> float:
     return 1.0 - (ss_res / ss_tot)
 
 
-@jit(nopython=True, parallel=True, cache=True, fastmath=True)
+@jit(nopython=True, cache=True, fastmath=True)
 def _reshape_and_marginalize_numba(y_pred: np.ndarray, n_points: int, 
                                     n_samples: int) -> Tuple[np.ndarray, np.ndarray]:
     """
-    Reshape y marginalize predicciones en una pasada - Numba paralelo.
+    Reshape y marginalize predicciones en una pasada.
     Retorna (mean, std) para cada punto del grid.
     """
     result_mean = np.empty(n_points, dtype=np.float32)
     result_std = np.empty(n_points, dtype=np.float32)
     
-    for i in prange(n_points):
+    for i in range(n_points):
         start = i * n_samples
         end = start + n_samples
         
@@ -848,13 +873,12 @@ class GPROptimizer:
     _global_cache = {}
     _cache_max_size = 500
     
-    def __init__(self, n_restarts=2, training_iterations=1000):
+    def __init__(self, n_restarts=2):
         self.n_restarts = n_restarts
-        self.training_iterations = training_iterations
-        # Early stopping para evitar epochs innecesarias
-        # Full Batch converge más rápido que Minibatch
-        self.patience = 50  # Epochs sin mejora antes de parar
-        self.min_delta = 0.001  # Mejora mínima para considerar progreso
+        # Usar configuración global de entrenamiento
+        self.training_iterations = GPR_MAX_ITERATIONS
+        self.patience = GPR_PATIENCE
+        self.min_delta = GPR_MIN_DELTA
         self.model = None
         self.likelihood = None
         self.scaler_X = None
@@ -1322,46 +1346,13 @@ class GPROptimizer:
         self.model.eval()
         self.likelihood.eval()
         
-        # Optimización 2: Compilar modelo con torch.compile si está disponible
-        # NOTA: Puede fallar en entornos sin compilador C++ configurado (Nix, Replit, etc.)
-        global USE_TORCH_COMPILE
-        if USE_TORCH_COMPILE and not self.is_sparse:
-            try:
-                # Guardar referencia al modelo original por si falla la compilación en warmup
-                self._original_model = self.model
-                self.model = torch.compile(self.model, mode="reduce-overhead")
-                console.print(f"[grey50]      │ TORCH.COMPILE:    APLICADO[/grey50]")
-            except Exception as e:
-                error_msg = str(e).lower()
-                # Detectar errores de compilación C++ y desactivar globalmente
-                if "cpp" in error_msg or "compile" in error_msg or "crti.o" in error_msg or "ld" in error_msg:
-                    USE_TORCH_COMPILE = False  # Desactivar para futuras llamadas
-                    console.print(f"[yellow]      │ TORCH.COMPILE:    DESACTIVADO (entorno sin compilador C++)[/yellow]")
-                else:
-                    console.print(f"[grey50]      │ TORCH.COMPILE:    NO DISPONIBLE[/grey50]")
-        
         # Optimización 4: Pre-computar cache de predicción (warm-up)
         # Esto pre-computa la descomposición de Cholesky
-        # NOTA: Si torch.compile está activo, aquí es donde realmente compila (lazy compilation)
         with torch.inference_mode(), gpytorch.settings.fast_pred_var():
             try:
                 _ = self.model(self._train_x[:10])  # Warm-up con subset pequeño
-            except Exception as e:
-                # Si falla aquí, probablemente es error de torch.compile durante ejecución
-                error_msg = str(e).lower()
-                if USE_TORCH_COMPILE and ("cpp" in error_msg or "compile" in error_msg or 
-                                          "crti.o" in error_msg or "ld" in error_msg or
-                                          "subprocess" in error_msg or "linker" in error_msg):
-                    # Desactivar torch.compile y re-entrenar sin él
-                    USE_TORCH_COMPILE = False
-                    console.print(f"[yellow]      │ TORCH.COMPILE:    ERROR EN WARMUP - REVERTIENDO[/yellow]")
-                    # Recrear modelo sin compilar
-                    self.model = self._original_model if hasattr(self, '_original_model') else self.model
-                    self.model.eval()
-                    try:
-                        _ = self.model(self._train_x[:10])  # Re-intentar warmup sin compilar
-                    except Exception:
-                        pass
+            except Exception:
+                pass  # Ignorar errores de warmup, el modelo funcionará de todas formas
         t_eval = time.perf_counter() - t0
         console.print(f"[grey50]      │ WARM-UP CHOLESKY: {t_eval*1000:.1f}ms[/grey50]")
         
@@ -1460,92 +1451,6 @@ class GPROptimizer:
         ss_res = np.sum((y - y_pred) ** 2)
         ss_tot = np.sum((y - np.mean(y)) ** 2)
         return 1 - (ss_res / ss_tot) if ss_tot > 0 else 0.0
-    
-    def compute_cv_r2(self, X: np.ndarray, y: np.ndarray, n_folds: int = 5, 
-                      random_state: int = 42) -> Tuple[float, float, bool]:
-        """
-        Calcula R² con K-Fold Cross-Validation para detectar sobreajuste.
-        
-        Entrena en (K-1) folds y valida en el fold restante, rotando K veces.
-        Compara R²_train vs R²_cv para detectar si el modelo está "alucinando" patrones.
-        
-        Args:
-            X: Features de entrada
-            y: Target
-            n_folds: Número de folds (default 5 = 80% train / 20% val)
-            random_state: Semilla para reproducibilidad
-            
-        Returns:
-            Tuple[r2_train, r2_cv, is_overfit]:
-                - r2_train: R² promedio en datos de entrenamiento
-                - r2_cv: R² promedio en datos de validación (out-of-fold)
-                - is_overfit: True si (r2_train - r2_cv) > 0.15 (15% de caída)
-        """
-        from sklearn.model_selection import KFold
-        
-        n_samples = len(X)
-        
-        # Si muy pocos datos, no hacer CV (mínimo 2 samples por fold)
-        if n_samples < n_folds * 2:
-            r2_train = self.compute_r2(X, y)
-            console.print(f"[yellow]      │   ⚠ POCOS DATOS ({n_samples}) PARA CV, USANDO R² TRAIN[/yellow]")
-            return r2_train, r2_train, False
-        
-        kf = KFold(n_splits=n_folds, shuffle=True, random_state=random_state)
-        
-        r2_train_scores = []
-        r2_val_scores = []
-        
-        console.print(f"[grey50]      │   K-FOLD CV: {n_folds} FOLDS ({100*(n_folds-1)/n_folds:.0f}% TRAIN / {100/n_folds:.0f}% VAL)[/grey50]")
-        
-        for fold_idx, (train_idx, val_idx) in enumerate(kf.split(X)):
-            X_train, X_val = X[train_idx], X[val_idx]
-            y_train, y_val = y[train_idx], y[val_idx]
-            
-            # Entrenar modelo temporal en este fold
-            fold_gpr = GPROptimizer(n_restarts=self.n_restarts, 
-                                     training_iterations=self.training_iterations)
-            
-            # Suprimir output del entrenamiento de folds
-            with console.capture():
-                fold_gpr.fit(X_train, y_train, self.feature_names)
-            
-            # R² en train de este fold
-            y_pred_train, _ = fold_gpr.predict_batch(X_train)
-            ss_res_train = np.sum((y_train - y_pred_train) ** 2)
-            ss_tot_train = np.sum((y_train - np.mean(y_train)) ** 2)
-            r2_train = 1 - (ss_res_train / ss_tot_train) if ss_tot_train > 0 else 0.0
-            
-            # R² en validación (out-of-fold)
-            y_pred_val, _ = fold_gpr.predict_batch(X_val)
-            ss_res_val = np.sum((y_val - y_pred_val) ** 2)
-            ss_tot_val = np.sum((y_val - np.mean(y_val)) ** 2)
-            r2_val = 1 - (ss_res_val / ss_tot_val) if ss_tot_val > 0 else 0.0
-            
-            r2_train_scores.append(r2_train)
-            r2_val_scores.append(r2_val)
-            
-            # Limpiar modelo del fold
-            del fold_gpr
-        
-        # Promedios
-        r2_train_mean = np.mean(r2_train_scores)
-        r2_cv_mean = np.mean(r2_val_scores)
-        r2_cv_std = np.std(r2_val_scores)
-        
-        # Detectar sobreajuste: si R²_train - R²_cv > 15%, el modelo "alucina"
-        overfit_threshold = 0.15
-        gap = r2_train_mean - r2_cv_mean
-        is_overfit = gap > overfit_threshold
-        
-        # Mostrar resultados CV
-        if is_overfit:
-            console.print(f"[red]      │   ⚠ SOBREAJUSTE DETECTADO: R²_TRAIN={r2_train_mean:.3f} vs R²_CV={r2_cv_mean:.3f} (Δ={gap:.3f})[/red]")
-            console.print(f"[red]      │   ⚠ LA DESIONIZACIÓN NO ES CONFIABLE - EL MODELO ESTÁ 'ALUCINANDO' PATRONES[/red]")
-        else:
-            console.print(f"[grey50]      │   R²_TRAIN={r2_train_mean:.3f} | R²_CV={r2_cv_mean:.3f}±{r2_cv_std:.3f} (Δ={gap:.3f}) ✓[/grey50]")
-        
-        return r2_train_mean, r2_cv_mean, is_overfit
 
 
 # =============================================================================
@@ -1578,19 +1483,27 @@ def compute_all_partial_dependences(
     
     console.print(f"[grey50]      │ PARTIAL DEPENDENCE: {n_params} PARAMS × {n_points} PUNTOS[/grey50]")
     
-    # Submuestreo para datasets grandes
-    max_samples_pd = 300  # Reducido para velocidad con múltiples params
-    if n_samples > max_samples_pd:
-        np.random.seed(42)
-        sample_indices = np.random.choice(n_samples, max_samples_pd, replace=False)
-        X_sample = X[sample_indices]
-        y_sample = y[sample_indices]
-        n_samples_eff = max_samples_pd
-        console.print(f"[grey50]      │   SUBMUESTREO:    {n_samples:,} → {n_samples_eff} SAMPLES[/grey50]")
+    # Submuestreo solo si SPARSE_GP está habilitado (modo rápido)
+    # En modo FULL (SPARSE_GP_ENABLED=False), usar todas las muestras
+    if SPARSE_GP_ENABLED:
+        max_samples_pd = SPARSE_INDUCING_POINTS  # Usar mismo tamaño que inducing points
+        if n_samples > max_samples_pd:
+            np.random.seed(42)
+            sample_indices = np.random.choice(n_samples, max_samples_pd, replace=False)
+            X_sample = X[sample_indices]
+            y_sample = y[sample_indices]
+            n_samples_eff = max_samples_pd
+            console.print(f"[grey50]      │   SUBMUESTREO:    {n_samples:,} → {n_samples_eff} SAMPLES (SPARSE MODE)[/grey50]")
+        else:
+            X_sample = X
+            y_sample = y
+            n_samples_eff = n_samples
     else:
+        # MODO FULL: usar todas las muestras
         X_sample = X
         y_sample = y
         n_samples_eff = n_samples
+        console.print(f"[grey50]      │   FULL MODE:      {n_samples_eff:,} SAMPLES (TODAS)[/grey50]")
     
     # Pre-calcular grids para todos los parámetros como matriz 2D para Numba
     t0 = time.perf_counter()
@@ -1691,14 +1604,22 @@ def compute_partial_dependence_vectorized(
     n_samples = X.shape[0]
     n_features = X.shape[1]
     
-    max_samples_pd = 300  # Reducido para velocidad
-    if n_samples > max_samples_pd:
-        np.random.seed(42)
-        sample_indices = np.random.choice(n_samples, max_samples_pd, replace=False)
-        X_sample = X[sample_indices]
-        y_sample = y[sample_indices]
-        n_samples_eff = max_samples_pd
+    # Submuestreo solo si SPARSE_GP está habilitado
+    # En modo FULL (SPARSE_GP_ENABLED=False), usar todas las muestras
+    if SPARSE_GP_ENABLED:
+        max_samples_pd = SPARSE_INDUCING_POINTS  # Usar mismo tamaño que inducing points
+        if n_samples > max_samples_pd:
+            np.random.seed(42)
+            sample_indices = np.random.choice(n_samples, max_samples_pd, replace=False)
+            X_sample = X[sample_indices]
+            y_sample = y[sample_indices]
+            n_samples_eff = max_samples_pd
+        else:
+            X_sample = X
+            y_sample = y
+            n_samples_eff = n_samples
     else:
+        # MODO FULL: usar todas las muestras
         X_sample = X
         y_sample = y
         n_samples_eff = n_samples
@@ -2410,11 +2331,8 @@ class BayesianDenoisingAnalyzer:
         gpr = GPROptimizer(n_restarts=5)
         gpr.fit(X_clean, y_clean, self.param_columns)
         
-        # R² de entrenamiento (optimista)
+        # R² de entrenamiento
         r2_train = gpr.compute_r2(X_clean, y_clean)
-        
-        # R² de validación cruzada (realista) - detecta sobreajuste
-        r2_train_cv, r2_cv, is_overfit = gpr.compute_cv_r2(X_clean, y_clean, n_folds=5)
         
         # Optimización 5: Calcular TODAS las dependencias parciales en UNA llamada
         predictions = compute_all_partial_dependences(
@@ -2427,9 +2345,9 @@ class BayesianDenoisingAnalyzer:
                        } if len(gpr.learned_length_scales) == len(self.param_columns) else {}
         
         result = GPRResult(
-            metric=metric, r2_score=r2_train, r2_cv_score=r2_cv, 
+            metric=metric, r2_score=r2_train, r2_cv_score=r2_train, 
             noise_level=gpr.learned_noise, length_scales=length_scales, 
-            predictions=predictions, is_overfit=is_overfit
+            predictions=predictions, is_overfit=False
         )
         
         total_time = time.perf_counter() - metric_start
@@ -2544,29 +2462,22 @@ class BayesianDenoisingAnalyzer:
                     gpr = GPROptimizer(n_restarts=5)
                     gpr.fit(X_clean, y_clean, self.param_columns)
                     
-                    # R² de entrenamiento (optimista)
+                    # R² de entrenamiento
                     r2_train = gpr.compute_r2(X_clean, y_clean)
-                    
-                    # R² de validación cruzada (realista) - detecta sobreajuste
-                    r2_train_cv, r2_cv, is_overfit = gpr.compute_cv_r2(X_clean, y_clean, n_folds=5)
                     fit_time = time.perf_counter() - fit_start
                     
                     # Reanudar progress
                     progress.start()
                     
-                    # Calidad basada en R² de CV (más realista)
-                    if is_overfit:
-                        quality = "[red]⚠ SOBREAJUSTE[/red]"
-                    elif r2_cv > 0.7:
+                    # Calidad basada en R²
+                    if r2_train > 0.7:
                         quality = "[green]EXCELENTE[/green]"
-                    elif r2_cv > 0.4:
+                    elif r2_train > 0.4:
                         quality = "[yellow]MODERADO[/yellow]"
                     else:
                         quality = "[red]BAJO[/red]"
                     
-                    console.print(f"[grey70]  │  R²_TRAIN = {r2_train:.4f} | R²_CV = {r2_cv:.4f} ({quality}) - {tracker.format_duration(fit_time)}[/grey70]")
-                    if is_overfit:
-                        console.print(f"[red]  │  ⚠ DESIONIZACIÓN NO CONFIABLE - MODELO SOBREAJUSTADO[/red]")
+                    console.print(f"[grey70]  │  R² = {r2_train:.4f} ({quality}) - {tracker.format_duration(fit_time)}[/grey70]")
                     console.print(f"[grey50]  │  σn = {gpr.learned_noise:.4f}[/grey50]")
                     
                     if gpr.is_sparse:
@@ -2589,9 +2500,9 @@ class BayesianDenoisingAnalyzer:
                     
                     self.gpr_models[metric] = gpr
                     self.gpr_results[metric] = GPRResult(
-                        metric=metric, r2_score=r2_train, r2_cv_score=r2_cv,
+                        metric=metric, r2_score=r2_train, r2_cv_score=r2_train,
                         noise_level=gpr.learned_noise, length_scales=length_scales, 
-                        predictions=predictions, is_overfit=is_overfit
+                        predictions=predictions, is_overfit=False
                     )
                     
                     total_time = time.perf_counter() - metric_start

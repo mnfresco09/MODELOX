@@ -1,13 +1,23 @@
 """
-================================================================================
-VISUAL/EXCEL.PY - Dashboard Quant Profesional (Smart Param Detection)
-================================================================================
-Módulo de exportación de resultados.
-Filtra agresivamente métricas secundarias para que en "Parámetros"
-solo queden los inputs reales de la estrategia.
-
-Autor: Sistema MODELOX
-================================================================================
+# =============================================================================
+#
+#     ███████╗██╗  ██╗ ██████╗███████╗██╗
+#     ██╔════╝╚██╗██╔╝██╔════╝██╔════╝██║
+#     █████╗   ╚███╔╝ ██║     █████╗  ██║
+#     ██╔══╝   ██╔██╗ ██║     ██╔══╝  ██║
+#     ███████╗██╔╝ ██╗╚██████╗███████╗███████╗
+#     ╚══════╝╚═╝  ╚═╝ ╚═════╝╚══════╝╚══════╝
+#
+#     EXCEL.PY - DASHBOARD QUANT PROFESIONAL
+#
+# =============================================================================
+#
+#     EXPORTACIÓN DE RESULTADOS A EXCEL:
+#     - Detección inteligente de parámetros vs métricas
+#     - Formato institucional con colores y bordes
+#     - Data bars y color scales para visualización
+#
+# =============================================================================
 """
 
 import os
@@ -20,26 +30,25 @@ from openpyxl.styles import Alignment, Border, Font, PatternFill, Side
 from openpyxl.utils import get_column_letter
 from openpyxl.formatting.rule import DataBarRule, ColorScaleRule
 
-# ==============================================================================
-# CONFIGURACIÓN DE ESTILO
-# ==============================================================================
+
+# =============================================================================
+# 1. CONFIGURACIÓN DE ESTILO
+# =============================================================================
 
 COLORS = {
-    "header_bg_metrics": "1A5276", # Azul Oscuro (Métricas)
-    "header_bg_params":  "566573", # Gris Plomo (Parámetros)
-    "header_bg_id":      "212F3D", # Negro Azulado (IDs)
+    "header_bg_metrics": "1A5276",
+    "header_bg_params":  "566573",
+    "header_bg_id":      "212F3D",
     "text_white":        "FFFFFF",
     "text_dark":         "212F3D",
     "border_color":      "BDC3C7",
-    "success_bg":        "D5F5E3", # Verde claro
-    "danger_bg":         "FADBD8", # Rojo claro
+    "success_bg":        "D5F5E3",
+    "danger_bg":         "FADBD8",
 }
 
 FONT_TITLE = "Calibri"
 FONT_BODY = "Consolas"
 
-# --- 1. MÉTRICAS CLAVE (Performance & Financials) ---
-# Orden estricto de aparición en la sección de MÉTRICAS.
 METRICS_ORDER = [
     "SALDO_ACTUAL",
     "ROI_PCT",
@@ -47,7 +56,7 @@ METRICS_ORDER = [
     "WINRATE_PCT",
     "TOTAL_TRADES",
     "TRADES_DIA",
-    "MAX_DD_PCT",      # Drawdown
+    "MAX_DD_PCT",
     "SHARPE",
     "SQN",
     "ESTABILIDAD",     # Añadido a métricas clave

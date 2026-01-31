@@ -1,47 +1,32 @@
 """
-MODELOX C Extensions - Módulo de Aceleración Nuclear
-=====================================================
-
-Este módulo contiene extensiones en C/Cython para acelerar
-las operaciones críticas del backtesting:
-
-- simulate_trades_c: Simulación secuencial de trades (kernel principal)
-- find_exits_c: Búsqueda de salidas SL/TP/Trailing
-- compute_metrics_c: Cálculo de métricas estadísticas
-- perturb_returns_c: Perturbación de retornos para validación
-- compute_cvar_95_c: CVaR 95% para análisis de riesgo
-- compute_equity_r2_c: R² de equity para estabilidad
-- aggregate_neighbor_metrics_c: Agregación de métricas vecinales
-
-USO:
-    from cp import (
-        simulate_trades_c,
-        find_exits_c,
-        compute_metrics_c,
-        perturb_returns_c,
-        C_AVAILABLE
-    )
-    
-    if C_AVAILABLE:
-        # Usar versiones C (más rápido)
-        results = simulate_trades_c(...)
-    else:
-        # Fallback a Numba/Python
-        results = simulate_trades_numba(...)
-
-COMPILACIÓN:
-    cd cp
-    python setup.py build_ext --inplace
-    
-    O usando el Makefile:
-    make build-c
+# =============================================================================
+#
+#      ██████╗    ███████╗██╗  ██╗████████╗███████╗███╗   ██╗███████╗
+#     ██╔════╝    ██╔════╝╚██╗██╔╝╚══██╔══╝██╔════╝████╗  ██║██╔════╝
+#     ██║         █████╗   ╚███╔╝    ██║   █████╗  ██╔██╗ ██║███████╗
+#     ██║         ██╔══╝   ██╔██╗    ██║   ██╔══╝  ██║╚██╗██║╚════██║
+#     ╚██████╗    ███████╗██╔╝ ██╗   ██║   ███████╗██║ ╚████║███████║
+#      ╚═════╝    ╚══════╝╚═╝  ╚═╝   ╚═╝   ╚══════╝╚═╝  ╚═══╝╚══════╝
+#
+#     CP - EXTENSIONES C PARA ACELERACIÓN
+#
+# =============================================================================
+#
+#     FUNCIONES C/CYTHON:
+#     - simulate_trades_c: Simulación de trades
+#     - find_exits_c: Búsqueda de salidas SL/TP/Trailing
+#     - compute_metrics_c: Métricas estadísticas
+#
+#     COMPILACIÓN:
+#         cd cp && python setup.py build_ext --inplace
+#
+# =============================================================================
 """
 
 from __future__ import annotations
 
-# Intentar importar extensiones C compiladas
-C_AVAILABLE = False
-_C_VERSION = "3.0.0"
+C_AVAILABLE: bool = False
+_C_VERSION: str = "3.0.0"
 
 try:
     from .nuclear_engine import (

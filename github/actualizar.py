@@ -1,21 +1,25 @@
 #!/usr/bin/env python3
 """
-================================================================================
-🔄 MODELOX Git Pull - Actualizar sistema local con cambios de GitHub
-================================================================================
-
-Script para sincronizar tu sistema local con los últimos cambios del repositorio
-remoto en GitHub. Útil cuando has hecho cambios desde otro dispositivo o cuando
-otro colaborador ha subido código.
-
-USO:
-    python github/actualizar.py           # Pull normal
-    python github/actualizar.py --force   # Descartar cambios no commiteados y actualizar
-    python github/actualizar.py --hard    # REEMPLAZAR TODO con lo de GitHub (reset --hard)
-    python github/actualizar.py --stash   # Guardar cambios locales, actualizar, restaurar
-    python github/actualizar.py --check   # Solo verificar si hay actualizaciones
-
-================================================================================
+# =============================================================================
+#
+#      █████╗  ██████╗████████╗██╗   ██╗ █████╗ ██╗     ██╗███████╗ █████╗ ██████╗
+#     ██╔══██╗██╔════╝╚══██╔══╝██║   ██║██╔══██╗██║     ██║╚══███╔╝██╔══██╗██╔══██╗
+#     ███████║██║        ██║   ██║   ██║███████║██║     ██║  ███╔╝ ███████║██████╔╝
+#     ██╔══██║██║        ██║   ██║   ██║██╔══██║██║     ██║ ███╔╝  ██╔══██║██╔══██╗
+#     ██║  ██║╚██████╗   ██║   ╚██████╔╝██║  ██║███████╗██║███████╗██║  ██║██║  ██║
+#     ╚═╝  ╚═╝ ╚═════╝   ╚═╝    ╚═════╝ ╚═╝  ╚═╝╚══════╝╚═╝╚══════╝╚═╝  ╚═╝╚═╝  ╚═╝
+#
+#     ACTUALIZAR.PY - GIT PULL DESDE GITHUB
+#
+# =============================================================================
+#
+#     USO:
+#         python github/actualizar.py           # Pull normal
+#         python github/actualizar.py --force   # Descartar cambios y actualizar
+#         python github/actualizar.py --hard    # Reset completo
+#         python github/actualizar.py --stash   # Guardar cambios, actualizar, restaurar
+#
+# =============================================================================
 """
 
 import subprocess
@@ -26,8 +30,9 @@ import sys
 import argparse
 from typing import Optional, List, Tuple
 
-# Colores ANSI
+
 class Colors:
+    """COLORES ANSI PARA TERMINAL."""
     RED = '\033[91m'
     GREEN = '\033[92m'
     YELLOW = '\033[93m'
@@ -37,15 +42,13 @@ class Colors:
     DIM = '\033[2m'
     RESET = '\033[0m'
 
-# Timeout en segundos para comandos git
-GIT_TIMEOUT = 60
 
-# Obtener la raíz del repo (un nivel arriba de github/)
-REPO_ROOT = Path(__file__).resolve().parent.parent
+GIT_TIMEOUT: int = 60
+REPO_ROOT: Path = Path(__file__).resolve().parent.parent
 
 
 def run_command(cmd: List[str], check: bool = True, timeout: int = GIT_TIMEOUT, silent: bool = False) -> Tuple[bool, str]:
-    """Ejecuta un comando y retorna (éxito, output)."""
+    """EJECUTA UN COMANDO Y RETORNA (ÉXITO, OUTPUT)."""
     cmd_str = ' '.join(cmd)
     if not silent:
         print(f"   {Colors.DIM}→ {cmd_str}{Colors.RESET}")

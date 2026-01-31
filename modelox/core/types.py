@@ -1,54 +1,110 @@
+"""
+# =============================================================================
+#
+#     ███╗   ███╗ ██████╗ ██████╗ ███████╗██╗      ██████╗ ██╗  ██╗
+#     ████╗ ████║██╔═══██╗██╔══██╗██╔════╝██║     ██╔═══██╗╚██╗██╔╝
+#     ██╔████╔██║██║   ██║██║  ██║█████╗  ██║     ██║   ██║ ╚███╔╝
+#     ██║╚██╔╝██║██║   ██║██║  ██║██╔══╝  ██║     ██║   ██║ ██╔██╗
+#     ██║ ╚═╝ ██║╚██████╔╝██████╔╝███████╗███████╗╚██████╔╝██╔╝ ██╗
+#     ╚═╝     ╚═╝ ╚═════╝ ╚═════╝ ╚══════╝╚══════╝ ╚═════╝ ╚═╝  ╚═╝
+#
+#     TYPES.PY - TIPOS Y ESTRUCTURAS DE DATOS FUNDAMENTALES
+#
+# =============================================================================
+#
+#     PROPÓSITO:
+#     Define todas las estructuras de datos básicas del sistema:
+#     - Configuración de backtesting
+#     - Artefactos de cada trial
+#     - Protocolos para estrategias y reporters
+#     - Utilidades de fechas y timeframes
+#     - Gestión de memoria
+#
+# =============================================================================
+"""
 from __future__ import annotations
 
+import ctypes
+import gc
 import math
+import platform
+import sys
 from dataclasses import dataclass
 from typing import Any, Dict, List, Optional, Protocol, Union
 
 import pandas as pd
 import polars as pl
 
-# Tipo unificado para DataFrames (soporta ambos durante la migración)
+
+# =============================================================================
+# 1. TIPOS GLOBALES
+# =============================================================================
+
+# Tipo unificado para DataFrames (soporta Polars y Pandas)
 TradesDF = Union[pd.DataFrame, pl.DataFrame]
 
 
+# =============================================================================
+# 2. CONFIGURACIÓN DE BACKTEST
+# =============================================================================
+
 @dataclass(frozen=True)
 class BacktestConfig:
+    """
+    CONFIGURACIÓN PRINCIPAL DEL BACKTEST
+    
+    Contiene todos los parámetros necesarios para ejecutar un backtest:
+    - Capital inicial y límites operativos
+    - Comisiones
+    - Sistema de salidas (SL/TP/Trailing)
+    - Rangos de optimización para Optuna
+    """
+    
+    # -------------------------------------------------------------------------
+    # CAPITAL Y LÍMITES
+    # -------------------------------------------------------------------------
     saldo_inicial: float
     saldo_operativo_max: float
     comision_pct: float
     comision_sides: int = 2
     saldo_minimo_operativo: float = 1.0
     qty_max_activo: float = float("inf")
-
-    # Position Sizing: SALDO_USADO fijo, QTY fija, APALANCAMIENTO variable
-    saldo_usado: float = 75.0            # Margen fijo por trade
-    apalancamiento_max: float = 60.0     # Límite máximo de apalancamiento
-
-    # Position Sizing: Fixed Fractional (riesgo % por trade) - legacy
-    riesgo_por_trade_pct: float = 0.10  # 10% del saldo por trade
-
-    # Global exit settings (engine-owned) - SISTEMA PNL_PCT
-    exit_type: str = "pnl_trailing"  # "pnl_fixed", "pnl_trailing", or "all"
-    exit_sl_pct: float = 1.0             # Stop Loss: 1% del precio
-    exit_tp_pct: float = 3.0             # Take Profit: 3% del precio
-    exit_trail_act_pct: float = 1.0      # Activar trailing cuando ROI >= 1%
-    exit_trail_dist_pct: float = 0.5     # Distancia del trailing: 0.5%
-
-    # Optuna: allow optimizing global exits from configuration
+    
+    # -------------------------------------------------------------------------
+    # POSITION SIZING
+    # -------------------------------------------------------------------------
+    saldo_usado: float = 75.0
+    apalancamiento_max: float = 60.0
+    riesgo_por_trade_pct: float = 0.10
+    
+    # -------------------------------------------------------------------------
+    # SISTEMA DE SALIDAS (FUENTE: modelox/core/exits.py)
+    # -------------------------------------------------------------------------
+    exit_type: str = "pnl_trailing"
+    exit_sl_pct: float = 8.0
+    exit_tp_pct: float = 14.0
+    exit_trail_act_pct: float = 15.0
+    exit_trail_dist_pct: float = 3.0
+    
+    # -------------------------------------------------------------------------
+    # OPTIMIZACIÓN OPTUNA
+    # -------------------------------------------------------------------------
     optimize_exits: bool = True
-    # Ranges are inclusive; tuples: (min, max, step)
-    exit_sl_pct_range: tuple[float, float, float] = (0.5, 5.0, 0.1)
-    exit_tp_pct_range: tuple[float, float, float] = (1.0, 10.0, 0.1)
-    exit_trail_act_pct_range: tuple[float, float, float] = (0.5, 3.0, 0.1)
-    exit_trail_dist_pct_range: tuple[float, float, float] = (0.2, 2.0, 0.1)
-
-    # Optuna: allow optimizing qty cap per asset
+    exit_sl_pct_range: tuple[float, float, float] = (1.0, 50.0, 1.0)
+    exit_tp_pct_range: tuple[float, float, float] = (20.0, 40.0, 1.0)
+    exit_trail_act_pct_range: tuple[float, float, float] = (1.0, 50.0, 1.0)
+    exit_trail_dist_pct_range: tuple[float, float, float] = (0.5, 20.0, 0.5)
     optimize_qty_max_activo: bool = False
     qty_max_activo_range: tuple[float, float, float] = (0.01, 5.0, 0.01)
 
 
+# =============================================================================
+# 3. ESTRUCTURAS DE RESULTADOS
+# =============================================================================
+
 @dataclass(frozen=True)
 class ExitDecision:
+    """DECISIÓN DE SALIDA: barra, motivo y precio."""
     exit_idx: int
     reason: str = ""
     exit_price: float | None = None
@@ -56,74 +112,57 @@ class ExitDecision:
 
 @dataclass(frozen=True)
 class TrialArtifacts:
+    """ARTEFACTOS DE UN TRIAL: params, métricas, trades, equity."""
     strategy_name: str
     trial_number: int
     params: Dict[str, Any]
     params_reporting: Dict[str, Any]
     score: float
     metrics: Dict[str, Any]
-    # NOTE: df_signals (OHLCV + indicadores) puede ser costoso de construir.
-    # Se permite None para optimizar trials donde no se generan plots.
     df_signals: Optional[Union[pd.DataFrame, pl.DataFrame]]
-    trades: TradesDF  # Acepta Polars o Pandas
+    trades: TradesDF
     equity_curve: List[float]
     indicators_used: List[str]
-    # Tracking de perturbación de datos
     perturbado: bool = False
     perturb_seed: Optional[int] = None
-    # Resultado del análisis de vecindario (si se ejecutó)
     neighborhood_result: Optional[Dict[str, Any]] = None
 
 
+# =============================================================================
+# 4. PROTOCOLOS (INTERFACES)
+# =============================================================================
+
 class Reporter(Protocol):
+    """INTERFAZ PARA REPORTERS DE EVENTOS."""
+    
     def on_trial_end(self, artifacts: TrialArtifacts) -> None: ...
     def on_strategy_end(self, strategy_name: str, study: Any) -> None: ...
 
 
 class Strategy(Protocol):
+    """INTERFAZ PARA ESTRATEGIAS DE TRADING."""
     combinacion_id: int
     name: str
-
+    
     def suggest_params(self, trial: Any) -> Dict[str, Any]: ...
-    def generate_signals(
-        self, df: pl.DataFrame, params: Dict[str, Any]
-    ) -> pl.DataFrame: ...
+    def generate_signals(self, df: pl.DataFrame, params: Dict[str, Any]) -> pl.DataFrame: ...
 
 
-# NOTE:
-# La lógica de salida vive en el engine; las estrategias sólo generan entradas.
-
+# =============================================================================
+# 5. UTILIDADES DE FECHAS
+# =============================================================================
 
 def filter_by_date(df: pl.DataFrame, start: str, end: str) -> pl.DataFrame:
-    """
-    Filtro de fechas inteligente que alinea precisión y zona horaria.
-    Resuelve el error de supertipo al comparar datetime[ns, UTC] con datetime[us].
-    """
-    # Preparamos los límites con precisión de microsegundos ('us') y en UTC.
-    # La columna 'timestamp' ya está normalizada a UTC en data.py, pero aquí
-    # hacemos el filtro robusto sin depender de atributos del dtype.
-    start_expr = (
-        pl.lit(start)
-        .str.to_datetime()
-        .dt.cast_time_unit("us")
-        .dt.replace_time_zone("UTC")
-    )
-    end_expr = (
-        pl.lit(end)
-        .str.to_datetime()
-        .dt.cast_time_unit("us")
-        .dt.replace_time_zone("UTC")
-    )
-
+    """FILTRA DATAFRAME POR RANGO DE FECHAS (UTC)."""
+    start_expr = pl.lit(start).str.to_datetime().dt.cast_time_unit("us").dt.replace_time_zone("UTC")
+    end_expr = pl.lit(end).str.to_datetime().dt.cast_time_unit("us").dt.replace_time_zone("UTC")
     return df.filter(pl.col("timestamp").is_between(start_expr, end_expr))
 
 
 def ensure_utc_index(df: pd.DataFrame) -> pd.DataFrame:
-    """Mantenido para procesos secundarios que aún usen Pandas."""
+    """NORMALIZA ÍNDICE TEMPORAL A UTC (PANDAS)."""
     df = df.copy()
-    col_time = next(
-        (c for c in ["timestamp", "date", "time", "datetime"] if c in df.columns), None
-    )
+    col_time = next((c for c in ["timestamp", "date", "time", "datetime"] if c in df.columns), None)
     if col_time is not None:
         df[col_time] = pd.to_datetime(df[col_time], utc=True, errors="coerce")
         df = df.set_index(col_time)
@@ -131,22 +170,18 @@ def ensure_utc_index(df: pd.DataFrame) -> pd.DataFrame:
         df.index = pd.to_datetime(df.index, utc=True, errors="coerce")
     elif df.index.tz is None:
         df.index = df.index.tz_localize("UTC")
-    df = df.sort_index()
-    return df
+    return df.sort_index()
 
+
+# =============================================================================
+# 6. UTILIDADES DE TIMEFRAME
+# =============================================================================
 
 def normalize_timeframe_to_suffix(timeframe: Any) -> str:
-    """Normaliza un timeframe a sufijo estilo archivos: 5m/15m/1h/2h/30m.
-
-    Acepta:
-    - int/float (minutos): 5, 15, 60, 30, 120...
-    - str: "5", "5m", "15", "15m", "60", "1h", "2h"...
-
-    Default: "1h" si no se puede parsear.
-    """
+    """NORMALIZA TIMEFRAME A SUFIJO: 5 -> "5m", 60 -> "1h", "15m" -> "15m"."""
     if timeframe is None:
         return "1h"
-
+    
     if isinstance(timeframe, (int, float)):
         m = int(timeframe)
         if m <= 0:
@@ -155,40 +190,39 @@ def normalize_timeframe_to_suffix(timeframe: Any) -> str:
             h = int(m // 60)
             return "1h" if h == 1 else f"{h}h"
         return f"{m}m"
-
+    
     s = str(timeframe).strip().lower()
     if not s:
         return "1h"
-
+    
     if s.endswith("h"):
         try:
             h = int(float(s[:-1]))
+            return "1h" if h == 1 else f"{h}h"
         except Exception:
             return "1h"
-        return "1h" if h == 1 else f"{h}h"
-
+    
     if s.endswith("m"):
         s = s[:-1]
-
+    
     try:
         m = int(float(s))
+        if m <= 0:
+            return "1h"
+        if m % 60 == 0:
+            h = int(m // 60)
+            return "1h" if h == 1 else f"{h}h"
+        return f"{m}m"
     except Exception:
         return "1h"
 
-    if m <= 0:
-        return "1h"
-    if m % 60 == 0:
-        h = int(m // 60)
-        return "1h" if h == 1 else f"{h}h"
-    return f"{m}m"
-
 
 def suffix_to_minutes(suffix: str) -> int:
+    """CONVIERTE SUFIJO A MINUTOS: "5m" -> 5, "1h" -> 60."""
     s = str(suffix).strip().lower()
     if s.endswith("h"):
         try:
-            h = float(s[:-1])
-            return int(round(h * 60.0))
+            return int(round(float(s[:-1]) * 60.0))
         except Exception:
             return 60
     if s.endswith("m"):
@@ -197,11 +231,7 @@ def suffix_to_minutes(suffix: str) -> int:
 
 
 def convert_warmup_bars_to_base(*, warmup_bars: int, from_tf: str, to_tf: str) -> int:
-    """Convierte warmup expresado en barras from_tf a barras de to_tf.
-
-    Ej:
-      warmup=50 en 15m -> base=5m => 150 barras
-    """
+    """CONVIERTE BARRAS DE WARMUP ENTRE TIMEFRAMES."""
     wb = int(warmup_bars)
     if wb <= 0:
         return 0
@@ -209,161 +239,92 @@ def convert_warmup_bars_to_base(*, warmup_bars: int, from_tf: str, to_tf: str) -
     t = suffix_to_minutes(to_tf)
     if t <= 0:
         return wb
-    mins = wb * f
-    return int(math.ceil(mins / t))
+    return int(math.ceil(wb * f / t))
 
 
-def align_signals_to_base(
-    *,
-    df_base: pl.DataFrame,
-    df_signals: pl.DataFrame,
-) -> pl.DataFrame:
-    """Alinea columnas de señales/indicadores de df_signals a df_base sin lookahead.
-
-    - join_asof usando el último timestamp de df_signals <= timestamp de df_base
-    - conserva OHLCV del base timeframe
-    - copia columnas no-OHLCV desde df_signals
-    """
-    if "timestamp" not in df_base.columns:
-        raise ValueError("df_base must contain 'timestamp'")
-    if "timestamp" not in df_signals.columns:
-        raise ValueError("df_signals must contain 'timestamp'")
-
+def align_signals_to_base(*, df_base: pl.DataFrame, df_signals: pl.DataFrame) -> pl.DataFrame:
+    """ALINEA SEÑALES AL TIMEFRAME BASE SIN LOOKAHEAD."""
+    if "timestamp" not in df_base.columns or "timestamp" not in df_signals.columns:
+        raise ValueError("Ambos DataFrames deben contener columna 'timestamp'")
+    
     base = df_base.sort("timestamp")
     sig = df_signals.sort("timestamp")
-
     skip = {"open", "high", "low", "close", "volume"}
     extra_cols = [c for c in sig.columns if c not in skip and c != "timestamp"]
     sig_small = sig.select(["timestamp", *extra_cols])
-
     out = base.join_asof(sig_small, on="timestamp", strategy="backward")
-
+    
     for col in ("signal_long", "signal_short"):
         if col in out.columns:
             out = out.with_columns(pl.col(col).fill_null(False).cast(pl.Boolean))
-
     return out
 
 
 # =============================================================================
-# GESTIÓN DE MEMORIA (fusionado desde memory.py)
+# 7. GESTIÓN DE MEMORIA
 # =============================================================================
-import gc
-import platform
-import ctypes
-import sys
 
-
-def nuclear_cleanup():
-    """
-    Realiza una limpieza agresiva de memoria (compatible macOS/Linux).
-    1. Fuerza la recolección de basura de Python (Generaciones 0, 1 y 2).
-    2. En Linux, fuerza a la librería C (malloc) a devolver la RAM al sistema operativo.
-    3. En macOS, libera caché de módulos y fuerza GC completo.
-    """
-    # Triple GC para asegurar limpieza completa de referencias cíclicas
+def nuclear_cleanup() -> None:
+    """LIMPIEZA AGRESIVA DE MEMORIA (TRIPLE GC + LIBERACIÓN OS)."""
     for _ in range(3):
         gc.collect()
-
-    system = platform.system()
     
+    system = platform.system()
     if system == "Linux":
         try:
             libc = ctypes.CDLL("libc.so.6")
             libc.malloc_trim(0)
         except Exception:
             pass
-    elif system == "Darwin":  # macOS
-        # Liberar caches internos de Python
+    elif system == "Darwin":
         try:
-            # Limpiar interned strings cache parcialmente
             if hasattr(sys, '_clear_type_cache'):
                 sys._clear_type_cache()
         except Exception:
             pass
 
 
-def full_system_cleanup():
-    """
-    Limpieza completa del sistema al finalizar ejecución.
-    Libera RAM, cierra conexiones, limpia cachés.
-    """
-    import atexit
-    
-    # 1. Limpiar cachés de módulos numéricos si están cargados
+def full_system_cleanup() -> None:
+    """LIMPIEZA COMPLETA AL FINALIZAR OPTIMIZACIÓN."""
     modules_to_clear = ['numpy', 'pandas', 'polars', 'torch', 'numba']
     
     for mod_name in modules_to_clear:
         if mod_name in sys.modules:
             mod = sys.modules[mod_name]
-            # Numpy: limpiar buffers
-            if mod_name == 'numpy' and hasattr(mod, 'finfo'):
-                try:
-                    mod.finfo.cache.clear() if hasattr(mod.finfo, 'cache') else None
-                except:
-                    pass
-            # Torch: limpiar caché CUDA/MPS si existe
             if mod_name == 'torch':
                 try:
                     if hasattr(mod, 'cuda') and mod.cuda.is_available():
                         mod.cuda.empty_cache()
                     if hasattr(mod, 'mps') and hasattr(mod.mps, 'empty_cache'):
-                        mod.mps.empty_cache()  # Apple Silicon
-                except:
-                    pass
-            # Numba: limpiar caché de compilación en memoria
-            if mod_name == 'numba':
-                try:
-                    from numba.core import caching
-                    if hasattr(caching, '_CacheImpl'):
-                        caching._CacheImpl._cache.clear() if hasattr(caching._CacheImpl, '_cache') else None
-                except:
+                        mod.mps.empty_cache()
+                except Exception:
                     pass
     
-    # 2. Cerrar matplotlib figures si existen
     if 'matplotlib.pyplot' in sys.modules:
         try:
             import matplotlib.pyplot as plt
             plt.close('all')
-        except:
+        except Exception:
             pass
     
-    # 3. Limpiar joblib cache en memoria
-    if 'joblib' in sys.modules:
-        try:
-            from joblib import Memory
-            # No borramos disco, solo liberamos refs
-        except:
-            pass
-    
-    # 4. Forzar GC agresivo
     gc.collect()
     gc.collect()
     gc.collect()
-    
-    # 5. Liberar memoria del sistema
     nuclear_cleanup()
     
-    # 6. En macOS, sugerir liberación de memoria comprimida (no invasivo)
     if platform.system() == "Darwin":
         try:
             import subprocess
-            # Solo si tenemos permisos, intentar purgar memoria inactiva
-            # Esto es seguro y no afecta al sistema
             subprocess.run(['purge'], capture_output=True, timeout=5)
-        except:
-            pass  # Si falla, no pasa nada
+        except Exception:
+            pass
 
 
-def clean_trial_variables(*vars_to_delete):
-    """
-    Borra variables específicas y ejecuta limpieza.
-    Uso: clean_trial_variables(df, signals, trades)
-    """
+def clean_trial_variables(*vars_to_delete: Any) -> None:
+    """LIMPIA VARIABLES DE UN TRIAL Y EJECUTA GC."""
     for v in vars_to_delete:
         try:
             del v
         except (UnboundLocalError, NameError):
             pass
-
     nuclear_cleanup()

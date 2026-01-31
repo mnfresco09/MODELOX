@@ -1,21 +1,28 @@
 """
-MODELOX Parallel Engine - Multiprocesamiento para Vecinos
-==========================================================
-
-Este módulo implementa ejecución paralela de backtests para:
-- Análisis de vecindario (K backtests por trial)
-- Perturbación de datos (múltiples seeds)
-- Trials paralelos de Optuna
-
-ARQUITECTURA:
-- Pool de workers persistente (evita overhead de creación)
-- Memoria compartida para datos OHLCV (zero-copy entre procesos)
-- Batch processing para minimizar IPC overhead
-
-LIMITACIONES:
-- No usar con GIL-bound operations
-- Cada worker tiene su propia copia de los arrays pequeños
-- Los datos OHLCV grandes se pasan por referencia
+# =============================================================================
+#
+#     ██████╗  █████╗ ██████╗  █████╗ ██╗     ██╗     ███████╗██╗
+#     ██╔══██╗██╔══██╗██╔══██╗██╔══██╗██║     ██║     ██╔════╝██║
+#     ██████╔╝███████║██████╔╝███████║██║     ██║     █████╗  ██║
+#     ██╔═══╝ ██╔══██║██╔══██╗██╔══██║██║     ██║     ██╔══╝  ██║
+#     ██║     ██║  ██║██║  ██║██║  ██║███████╗███████╗███████╗███████╗
+#     ╚═╝     ╚═╝  ╚═╝╚═╝  ╚═╝╚═╝  ╚═╝╚══════╝╚══════╝╚══════╝╚══════╝
+#
+#     PARALLEL_ENGINE.PY - MULTIPROCESAMIENTO
+#
+# =============================================================================
+#
+#     USO:
+#     - Análisis de vecindario (K backtests por trial)
+#     - Perturbación de datos (múltiples seeds)
+#     - Trials paralelos de Optuna
+#
+#     ARQUITECTURA:
+#     - Pool de workers persistente
+#     - Memoria compartida para OHLCV (zero-copy)
+#     - Batch processing
+#
+# =============================================================================
 """
 
 from __future__ import annotations
@@ -23,31 +30,34 @@ from __future__ import annotations
 import os
 import multiprocessing as mp
 from concurrent.futures import ProcessPoolExecutor, ThreadPoolExecutor, as_completed
-from typing import Any, Callable, Dict, List, Optional, Tuple
+from typing import Any, Dict, List, Optional, Tuple
 import numpy as np
 
-# Configuración
-_PARALLEL_ENABLED = os.environ.get("MODELOX_PARALLEL", "1") in {"1", "true", "True", "YES", "yes"}
-_MAX_WORKERS = int(os.environ.get("MODELOX_MAX_WORKERS", str(min(mp.cpu_count(), 8))))
-_USE_THREADS = os.environ.get("MODELOX_USE_THREADS", "0") in {"1", "true", "True"}  # Threads vs Processes
 
-# Pool global (lazy init)
+# =============================================================================
+# 1. CONFIGURACIÓN
+# =============================================================================
+
+_PARALLEL_ENABLED: bool = os.environ.get("MODELOX_PARALLEL", "1") in {"1", "true", "True", "YES", "yes"}
+_MAX_WORKERS: int = int(os.environ.get("MODELOX_MAX_WORKERS", str(min(mp.cpu_count(), 8))))
+_USE_THREADS: bool = os.environ.get("MODELOX_USE_THREADS", "0") in {"1", "true", "True"}
+
 _PROCESS_POOL: Optional[ProcessPoolExecutor] = None
 _THREAD_POOL: Optional[ThreadPoolExecutor] = None
 
 
 def get_max_workers() -> int:
-    """Retorna el número máximo de workers configurado."""
+    """RETORNA EL NÚMERO MÁXIMO DE WORKERS."""
     return _MAX_WORKERS
 
 
 def is_parallel_enabled() -> bool:
-    """Verifica si la paralelización está habilitada."""
+    """VERIFICA SI LA PARALELIZACIÓN ESTÁ HABILITADA."""
     return _PARALLEL_ENABLED and _MAX_WORKERS > 1
 
 
 def _get_pool(use_threads: bool = False) -> ProcessPoolExecutor | ThreadPoolExecutor:
-    """Obtiene el pool de workers (lazy initialization)."""
+    """OBTIENE EL POOL DE WORKERS (LAZY INITIALIZATION)."""
     global _PROCESS_POOL, _THREAD_POOL
     
     if use_threads or _USE_THREADS:

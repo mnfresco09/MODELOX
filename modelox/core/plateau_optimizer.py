@@ -1,44 +1,42 @@
-"""modelox/core/plateau_optimizer.py
-
-═══════════════════════════════════════════════════════════════════════════════
-TOPÓGRAFO DE MESETAS - Optimizador de 3 Fases
-═══════════════════════════════════════════════════════════════════════════════
-
-Este módulo implementa el nuevo paradigma de optimización:
-
-FASE 1: EXPLORACIÓN (40% de trials)
-    - Usa RandomSampler para "llenar" el espacio de parámetros
-    - Genera materia prima para el clustering
-    - Evita la concentración prematura en un solo punto
-
-FASE 2: DETECCIÓN DE MESETAS
-    - Aplica DBSCAN sobre los trials de la Fase 1
-    - Encuentra clusters (mesetas) de parámetros buenos
-    - Descarta picos aislados (overfitting)
-    - Calcula centroides como representantes robustos
-
-FASE 3: REFINAMIENTO LOCAL (CMA-ES)
-    - Para cada meseta encontrada, lanza un estudio CMA-ES
-    - Restringe la búsqueda a los límites de la meseta
-    - Afina la solución dentro de la zona segura
-
-RESULTADO FINAL:
-    - En lugar del "mejor trial global" (potencial pico)
-    - Devuelve el "mejor centroide refinado" (solución robusta)
-
-═══════════════════════════════════════════════════════════════════════════════
+"""
+# =============================================================================
+#
+#     ██████╗ ██╗      █████╗ ████████╗███████╗ █████╗ ██╗   ██╗
+#     ██╔══██╗██║     ██╔══██╗╚══██╔══╝██╔════╝██╔══██╗██║   ██║
+#     ██████╔╝██║     ███████║   ██║   █████╗  ███████║██║   ██║
+#     ██╔═══╝ ██║     ██╔══██║   ██║   ██╔══╝  ██╔══██║██║   ██║
+#     ██║     ███████╗██║  ██║   ██║   ███████╗██║  ██║╚██████╔╝
+#     ╚═╝     ╚══════╝╚═╝  ╚═╝   ╚═╝   ╚══════╝╚═╝  ╚═╝ ╚═════╝
+#
+#     PLATEAU_OPTIMIZER.PY - OPTIMIZADOR EN 3 FASES
+#
+# =============================================================================
+#
+#     FASE 1: EXPLORACIÓN (40% de trials)
+#     - RandomSampler o QMC para llenar el espacio de parámetros
+#     - Genera materia prima para clustering
+#
+#     FASE 2: DETECCIÓN DE MESETAS
+#     - HDBSCAN sobre los trials de Fase 1
+#     - Encuentra clusters (mesetas) de parámetros buenos
+#     - Descarta picos aislados (overfitting)
+#
+#     FASE 3: REFINAMIENTO LOCAL (CMA-ES)
+#     - Para cada meseta, CMA-ES dentro de sus límites
+#     - Afina la solución en la zona segura
+#
+#     RESULTADO: "Mejor centroide refinado" (solución robusta)
+#
+# =============================================================================
 """
 
 from __future__ import annotations
 
-import gc
-import os
 import time
 import warnings
 from dataclasses import dataclass, field
 from typing import Any, Callable, Dict, List, Optional, Sequence, Tuple
 
-import numpy as np
 import polars as pl
 
 try:
@@ -51,7 +49,6 @@ except ImportError:
     _OPTUNA_AVAILABLE = False
     _QMC_AVAILABLE = False
 
-# Fallback si QMCSampler no está disponible en versiones antiguas de Optuna
 try:
     from optuna.samplers import QMCSampler
     _QMC_AVAILABLE = True
@@ -65,11 +62,8 @@ from .topology import (
     analyze_topology,
     print_topology_report,
 )
-from .engine import BacktestParams, calculate_performance_vectorized_numba
-from .metrics import resumen_metricas
 from .scoring import (
     score_optuna,
-    score_unified,
     set_study_for_scorer,
 )
 from .types import (
@@ -79,7 +73,6 @@ from .types import (
     TrialArtifacts,
     normalize_timeframe_to_suffix,
 )
-from .data import load_data, prepare_multitimeframe_data
 from .exits import resolve_exit_settings_for_trial
 
 # Silenciar warnings
@@ -624,6 +617,7 @@ class PlateauOptimizer:
             perturbation_config=perturbation_config,
             phase_name=f"refine_cluster{plateau.cluster_id}",
             param_bounds=plateau.param_bounds,
+            centroid_params=plateau.centroid_params,
         )
         
         # Notificar a reporters del cambio de fase
@@ -667,19 +661,21 @@ class PlateauOptimizer:
         perturbation_config: Optional[Any],
         phase_name: str,
         param_bounds: Optional[Dict[str, Tuple[float, float]]] = None,
+        centroid_params: Optional[Dict[str, float]] = None,
     ) -> Callable[["optuna.Trial"], float]:
         """
         Crea función objetivo para Optuna.
         
         Si param_bounds está definido, restringe la búsqueda a esos límites.
+        Si centroid_params está definido, usa esos valores para parámetros no en bounds.
         """
         from .runner import SignalGenerator, BacktestEngine, apply_perturbation, PerturbationConfig
         
         def objective(trial: "optuna.trial.Trial") -> float:
             # Sugerir parámetros
             if param_bounds:
-                # Modo refinamiento: usar bounds de la meseta
-                params_puros = self._suggest_params_bounded(trial, strategy, param_bounds)
+                # Modo refinamiento: usar bounds de la meseta + centroid para parámetros fijos
+                params_puros = self._suggest_params_bounded(trial, strategy, param_bounds, centroid_params)
             else:
                 # Modo exploración: usar suggest_params normal
                 params_puros = strategy.suggest_params(trial)
@@ -748,9 +744,14 @@ class PlateauOptimizer:
         trial: "optuna.trial.Trial",
         strategy: Strategy,
         bounds: Dict[str, Tuple[float, float]],
+        centroid_params: Optional[Dict[str, float]] = None,
     ) -> Dict[str, Any]:
         """
         Sugiere parámetros restringidos a los bounds de la meseta.
+        
+        Para parámetros no en bounds, usa los valores del centroide si están disponibles.
+        Esto asegura que durante el refinamiento, los parámetros de estrategia se mantienen
+        fijos mientras solo se optimizan los parámetros de salida (exit params).
         """
         # Obtener la definición original de parámetros
         parametros_optuna = getattr(strategy, "parametros_optuna", {})
@@ -789,8 +790,15 @@ class PlateauOptimizer:
                 else:
                     # Categórico u otro: usar suggest normal
                     params[name] = strategy.suggest_params(trial).get(name)
+            elif centroid_params and name in centroid_params:
+                # Usar valor del centroide (parámetro fijo durante refinamiento)
+                value = centroid_params[name]
+                if spec["type"] == "int":
+                    params[name] = int(round(value))
+                else:
+                    params[name] = value
             else:
-                # No hay bound: usar suggest normal
+                # Fallback: usar suggest normal (no debería ocurrir en refinamiento)
                 normal_params = strategy.suggest_params(trial)
                 if name in normal_params:
                     params[name] = normal_params[name]

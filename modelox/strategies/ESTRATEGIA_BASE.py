@@ -188,9 +188,18 @@ class EstrategiaBase:
         """INICIALIZA METADATA ESTANDAR EN params.
 
         NO HACE TRABAJO PESADO; SOLO NORMALIZA CLAVES.
+        
+        WARMUP_BARS: Se lee de la configuración centralizada.
+        Si no está disponible, usa 200 como valor por defecto seguro.
         """
-
-        params.setdefault("__warmup_bars", 1)
+        # [FIX v2.1] Leer WARMUP_BARS desde configuración centralizada
+        try:
+            from general.configuracion import CONFIG
+            default_warmup = int(CONFIG.get("WARMUP_BARS", 200))
+        except (ImportError, KeyError):
+            default_warmup = 200  # Fallback seguro para EMA/RSI comunes
+        
+        params.setdefault("__warmup_bars", default_warmup)
         params.setdefault("__indicators_used", [])
         params.setdefault("__indicator_bounds", {})
         params.setdefault("__indicator_specs", {})

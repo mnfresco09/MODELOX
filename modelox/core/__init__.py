@@ -1,20 +1,20 @@
 """
-modelox/core/__init__.py
-
-═══════════════════════════════════════════════════════════════════════════════
-CORE PACKAGE - MODELOX v3.0 + TOPÓGRAFO DE MESETAS
-═══════════════════════════════════════════════════════════════════════════════
-
-Exports principales del sistema de backtesting y optimización.
-
-NOTA: Este __init__ debe ser liviano - NO importar dependencias pesadas 
-      (optuna/numba) ni módulos que puedan cambiar con refactors.
+# =============================================================================
+#
+#      ██████╗ ██████╗ ██████╗ ███████╗
+#     ██╔════╝██╔═══██╗██╔══██╗██╔════╝
+#     ██║     ██║   ██║██████╔╝█████╗
+#     ██║     ██║   ██║██╔══██╗██╔══╝
+#     ╚██████╗╚██████╔╝██║  ██║███████╗
+#      ╚═════╝ ╚═════╝ ╚═╝  ╚═╝╚══════╝
+#
+#     CORE PACKAGE - MOTOR DE BACKTESTING
+#
+# =============================================================================
 """
 
-# Tipos base
 from .types import BacktestConfig, Reporter, Strategy, TrialArtifacts
 
-# Sistema de scoring institucional
 from .scoring import (
     ScoringConfig,
     score_unified,
@@ -24,7 +24,6 @@ from .scoring import (
     cleanup_scoring_resources,
 )
 
-# Carga de datos
 from .data import (
     load_data,
     prepare_multitimeframe_data,
@@ -32,18 +31,15 @@ from .data import (
     get_available_timeframes,
 )
 
-# Sistema de mesetas (carga diferida para evitar dependencias circulares)
-# from .topology import PlateauConfig, PlateauResult, TopologyAnalysis, analyze_topology
-# from .plateau_optimizer import PlateauOptimizer, PlateauOptimizerConfig, run_plateau_optimization
 
 __all__ = [
-    # Tipos
+    # TIPOS
     "BacktestConfig",
     "Reporter",
     "Strategy",
     "TrialArtifacts",
     
-    # Scoring
+    # SCORING
     "ScoringConfig",
     "score_unified",
     "score_optuna",

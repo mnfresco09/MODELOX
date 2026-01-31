@@ -1,8 +1,23 @@
 """
-MODELOX Terminal Interface v3.0 - Classic Institutional Design
-===============================================================
-Elegant, clean, professional terminal display.
-Neutral tones with selective color highlighting.
+# =============================================================================
+#
+#     ██████╗ ██╗ ██████╗██╗  ██╗    ██╗   ██╗██╗
+#     ██╔══██╗██║██╔════╝██║  ██║    ██║   ██║██║
+#     ██████╔╝██║██║     ███████║    ██║   ██║██║
+#     ██╔══██╗██║██║     ██╔══██║    ██║   ██║██║
+#     ██║  ██║██║╚██████╗██║  ██║    ╚██████╔╝██║
+#     ╚═╝  ╚═╝╚═╝ ╚═════╝╚═╝  ╚═╝     ╚═════╝ ╚═╝
+#
+#     RICH.PY - INTERFAZ DE TERMINAL INSTITUCIONAL
+#
+# =============================================================================
+#
+#     DISEÑO:
+#     - Paleta institucional (tonos neutros + acentos selectivos)
+#     - Visualización de trials en tiempo real
+#     - Paneles Rich con bordes y colores consistentes
+#
+# =============================================================================
 """
 
 from __future__ import annotations
@@ -12,33 +27,27 @@ from dataclasses import dataclass
 from typing import Optional, List, Dict, Any, Tuple
 
 from rich import box
-from rich.align import Align
 from rich.console import Console, Group
 from rich.panel import Panel
 from rich.table import Table
 from rich.text import Text
-from rich.columns import Columns
 
 
-# ============================================================================
-# THEME - Classic Institutional Palette (Neutral & Elegant)
-# ============================================================================
+# =============================================================================
+# 1. TEMA INSTITUCIONAL
+# =============================================================================
 
 @dataclass(frozen=True)
 class Theme:
-    """Classic institutional color palette - Neutral & Professional."""
-    # Primary accent (for score, headers) - darker blue
+    """PALETA DE COLORES INSTITUCIONAL."""
     BLUE: str = "steel_blue3"
-    CYAN: str = "cyan"                 # For phase names in plateau mode
-    # Performance colors (only for PnL based on ROI)
-    GREEN: str = "green3"              # ROI > 100% (vibrant)
-    GREEN_SOFT: str = "pale_green3"    # ROI 0% to 100% (clear but not flashy)
-    ORANGE: str = "orange3"            # ROI -50% to 0% (soft orange)
-    RED: str = "red3"                  # ROI -50% to -70% (medium bright red)
-    # Best marker
+    CYAN: str = "cyan"
+    GREEN: str = "green3"
+    GREEN_SOFT: str = "pale_green3"
+    ORANGE: str = "orange3"
+    RED: str = "red3"
     GOLD: str = "gold3"
-    BEST_BOX: str = "dodger_blue2"     # Bright blue for best trial box
-    # Neutral tones
+    BEST_BOX: str = "dodger_blue2"
     TEXT: str = "grey78"
     MUTED: str = "grey50"
     DIM: str = "grey35"
@@ -50,12 +59,12 @@ THEME = Theme()
 console = Console()
 
 
-# ============================================================================
-# METRIC MAPPER - Flexible Key Extraction
-# ============================================================================
+# =============================================================================
+# 2. EXTRACTOR DE MÉTRICAS
+# =============================================================================
 
 class M:
-    """Ultra-compact metric mapper."""
+    """EXTRACTOR COMPACTO DE MÉTRICAS."""
     
     KEYS = {
         "winrate": ("winrate", "win_rate", "wr"),
@@ -213,7 +222,7 @@ def mostrar_panel_elegante(
     score_c = _score_color(is_best)
     
     # Get best score for header (only show if NOT current best)
-    s = _stats.obtener_promedios()
+    s = _obtener_stats()
     best_str = ""
     if not is_best and s['mejor_score'] > float('-inf') and s['n_trials'] > 0:
         best_str = f"  │  [{THEME.GOLD}]BEST {_format_score(s['mejor_score'])} TRIAL {s['mejor_trial']}[/]"
@@ -400,68 +409,39 @@ def mostrar_panel_elegante(
 
 
 # ============================================================================
-# EVOLUTION TRACKER
+# EVOLUTION TRACKER - Usa métricas centralizadas de metrics.py
 # ============================================================================
+# NOTA: Las estadísticas se calculan en modelox/core/metrics.py
+# Este módulo solo las muestra, NO las recalcula.
 
-class EstadisticasOptimizacion:
-    """Optimization statistics tracker."""
-    
-    def __init__(self):
-        self.valores = {"roi": [], "sqn": [], "exp": [], "sharpe": [], "score": [], "pf": []}
-        self.mejor_score = float("-inf")
-        self.mejor_trial = 0
-        self.n = 0
-
-    def actualizar(self, metricas: Dict[str, Any], score: float, trial: int) -> None:
-        self.valores["roi"].append(M.get(metricas, "roi"))
-        self.valores["sqn"].append(M.get(metricas, "sqn"))
-        self.valores["exp"].append(M.get(metricas, "expectativa"))
-        self.valores["sharpe"].append(M.get(metricas, "sharpe"))
-        self.valores["score"].append(score)
-        self.valores["pf"].append(M.get(metricas, "profit_factor"))
-        self.n += 1
-        if score > self.mejor_score:
-            self.mejor_score = score
-            self.mejor_trial = trial
-
-    def promedio(self, key: str) -> float:
-        v = self.valores.get(key, [])
-        # Filtrar NaN e infinitos
-        valid = [x for x in v if x == x and abs(x) != float('inf')]  # x != x es True solo para NaN
-        return sum(valid) / len(valid) if valid else 0.0
-
-    def obtener_promedios(self) -> Dict[str, float]:
-        return {
-            "roi_medio": self.promedio("roi"),
-            "sqn_medio": self.promedio("sqn"),
-            "expectativa_media": self.promedio("exp"),
-            "sharpe_medio": self.promedio("sharpe"),
-            "score_medio": self.promedio("score"),
-            "pf_medio": self.promedio("pf"),
-            "n_trials": self.n,
-            "mejor_score": self.mejor_score,
-            "mejor_trial": self.mejor_trial,
-        }
-
-
-_stats = EstadisticasOptimizacion()
+from modelox.core.metrics import (
+    agregar_metricas_trial,
+    obtener_estadisticas_dict,
+    resetear_estadisticas_globales,
+)
 
 
 def resetear_estadisticas() -> None:
-    global _stats
-    _stats = EstadisticasOptimizacion()
+    """Reinicia las estadísticas globales (delegado a metrics.py)."""
+    resetear_estadisticas_globales()
 
 
 def actualizar_estadisticas(metricas: Dict[str, Any], score: float, trial: int) -> None:
-    _stats.actualizar(metricas, score, trial)
+    """Actualiza estadísticas agregadas (delegado a metrics.py)."""
+    agregar_metricas_trial(metricas, score, trial)
+
+
+def _obtener_stats() -> Dict[str, Any]:
+    """Obtiene estadísticas desde metrics.py."""
+    return obtener_estadisticas_dict()
 
 
 def mostrar_evolucion_metricas(mostrar_cada_n: int = 25, forzar: bool = False) -> None:
     """Show evolution box every N trials - two columns, centered."""
-    if not forzar and (_stats.n == 0 or _stats.n % mostrar_cada_n != 0):
-        return
+    s = _obtener_stats()
     
-    s = _stats.obtener_promedios()
+    if not forzar and (s['n_trials'] == 0 or s['n_trials'] % mostrar_cada_n != 0):
+        return
     
     # Two-column grid for compact display
     grid = Table.grid(padding=(0, 3))
@@ -738,31 +718,6 @@ def mostrar_trial_compacto(
     )
 
 
-# ============================================================================
-# LEGACY COMPATIBILITY
-# ============================================================================
-
-def mostrar_panel_rich(
-    metrics: dict,
-    params: dict,
-    score: float,
-    trial_num: int,
-    saldo_inicial: float,
-    indicadores_activos: list[str] | None = None,
-    combo_idx: int = 1,
-    n_combos: int = 1,
-    combo_str: str = "",
-    activo: str = "",
-) -> None:
-    """Legacy wrapper."""
-    mostrar_panel_elegante(
-        metrics=metrics, params=params, score=score, trial_num=trial_num,
-        saldo_inicial=saldo_inicial, indicadores_activos=indicadores_activos,
-        combo_str=combo_str, activo=activo,
-        best_so_far=params.get("__best_score_so_far"),
-    )
-
-
 # Alias for MetricMapper
 MetricMapper = M
 
@@ -773,7 +728,7 @@ MetricMapper = M
 
 __all__ = [
     "THEME", "MetricMapper", "M",
-    "mostrar_panel_elegante", "mostrar_panel_rich",
+    "mostrar_panel_elegante",
     "mostrar_resultado_vecindario",
     "mostrar_top_trials",
     "mostrar_fin_optimizacion", 

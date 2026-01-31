@@ -1,51 +1,29 @@
-"""  
-================================================================================
-MODELOX - Dynamic Multi-Strategy Trading Charts (v6.1 UNIFIED WARMUP)
-================================================================================
-100% dynamic indicator detection - Compatible with any strategy (1, 2, N...).
-
-ARCHITECTURE v6.1 - ZERO-LAG + GLOBAL WARMUP:
-
-1. SINGLE AUTHORITATIVE TIMESTAMP ARRAY (SATA)
-   - ts_q = authoritative timestamps from candle data
-   - ALL data (indicators, markers) references ts_q indices
-   - Eliminates any possibility of desynchronization
-
-2. StrictAlignmentMapper CLASS
-   - Maps indicator values to ts_q using O(1) hash lookup
-   - Handles NaN values as None (gaps in line series)
-   - Guarantees: indicator[i] corresponds to candle[i]
-
-3. GLOBAL WARM-UP PERIOD (v6.1 - DATA SLICING)
-   - Detects max period from all *_period params (mfi_period, atr_period, etc.)
-   - SLICES all data (candles + volume + indicators) from warmup point
-   - Chart visually starts at candle[max_warmup]
-   - Trade markers within warmup period are filtered out
-   - Result: Clean, synchronized chart where everything starts together
-
-4. CENTRALIZED TIMESTAMP NORMALIZATION
-   - _normalize_timestamps_to_unix() is the ONLY timestamp converter
-   - Ensures consistent datetime64 -> Unix seconds conversion
-   - Supports any datetime64 precision (ns, us, ms, s)
-
-5. CROSS-PANEL MARKER MIRRORING
-   - Markers use exact candle timestamps (no approximation)
-   - Markers appear on price chart AND indicator panels
-   - Zero pixel deviation between chart elements
-
-6. DYNAMIC OPTUNA PARAMETER BINDING
-   - Reference lines read from trial params (overbought, oversold)
-   - Panel names include period (e.g., "MFI (14)")
-   - Entry/exit levels visualized as horizontal lines
-
-PERFORMANCE:
-- orjson for 10x faster JSON serialization
-- Vectorized numpy operations (no row-by-row iteration)
-- Data quantization (2-4 decimal precision)
-- Unix Int64 timestamps (minimal payload)
-- Polars-first processing
-
-================================================================================
+"""
+# =============================================================================
+#
+#      ██████╗ ██████╗  █████╗ ███████╗██╗ ██████╗ ██████╗
+#     ██╔════╝ ██╔══██╗██╔══██╗██╔════╝██║██╔════╝██╔═══██╗
+#     ██║  ███╗██████╔╝███████║█████╗  ██║██║     ██║   ██║
+#     ██║   ██║██╔══██╗██╔══██║██╔══╝  ██║██║     ██║   ██║
+#     ╚██████╔╝██║  ██║██║  ██║██║     ██║╚██████╗╚██████╔╝
+#      ╚═════╝ ╚═╝  ╚═╝╚═╝  ╚═╝╚═╝     ╚═╝ ╚═════╝ ╚═════╝
+#
+#     GRAFICO.PY - GRÁFICOS DINÁMICOS DE TRADING
+#
+# =============================================================================
+#
+#     ARQUITECTURA:
+#     - Detección dinámica de indicadores (compatible con cualquier estrategia)
+#     - Single Authoritative Timestamp Array (SATA)
+#     - StrictAlignmentMapper para sincronización O(1)
+#     - Global warmup period (slice desde max_period)
+#
+#     RENDIMIENTO:
+#     - orjson para serialización rápida
+#     - Numpy vectorizado
+#     - Polars-first processing
+#
+# =============================================================================
 """
 
 # =============================================================================
@@ -2507,7 +2485,8 @@ def plot_trades(
 
     if metrics:
         total_trades = int(metrics.get("total_trades", metrics.get("num_trades", 0)))
-        winrate = float(metrics.get("win_rate", metrics.get("winrate", 0))) * 100 if metrics.get("win_rate", metrics.get("winrate", 0)) <= 1 else float(metrics.get("win_rate", metrics.get("winrate", 0)))
+        # winrate ya viene como porcentaje (0-100) desde metrics.py
+        winrate = float(metrics.get("winrate", metrics.get("win_rate", 0)))
         pnl_neto = float(metrics.get("pnl_neto", metrics.get("net_pnl", 0)))
     elif df_trades is not None:
         if HAS_POLARS and isinstance(df_trades, pl.DataFrame):

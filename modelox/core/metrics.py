@@ -1,5 +1,32 @@
+"""
+# =============================================================================
+#
+#     ███╗   ███╗███████╗████████╗██████╗ ██╗ ██████╗███████╗
+#     ████╗ ████║██╔════╝╚══██╔══╝██╔══██╗██║██╔════╝██╔════╝
+#     ██╔████╔██║█████╗     ██║   ██████╔╝██║██║     ███████╗
+#     ██║╚██╔╝██║██╔══╝     ██║   ██╔══██╗██║██║     ╚════██║
+#     ██║ ╚═╝ ██║███████╗   ██║   ██║  ██║██║╚██████╗███████║
+#     ╚═╝     ╚═╝╚══════╝   ╚═╝   ╚═╝  ╚═╝╚═╝ ╚═════╝╚══════╝
+#
+#     METRICS.PY - CÁLCULO DE MÉTRICAS DE TRADING
+#
+# =============================================================================
+#
+#     MÉTRICAS CALCULADAS:
+#     - ROI, Winrate, Drawdown, SQN
+#     - Sharpe, Sortino (per-trade)
+#     - Profit Factor, Payoff Ratio, Calmar
+#     - Trades/día, Rachas, Expectativa
+#
+#     OPTIMIZACIÓN:
+#     - Usa Numba JIT cuando está disponible
+#     - Fallback a Python puro si no hay Numba
+#
+# =============================================================================
+"""
 from __future__ import annotations
 
+from dataclasses import dataclass, field
 from typing import Any, Dict, List, Optional, Tuple, Union
 
 import numpy as np
@@ -8,9 +35,10 @@ import polars as pl
 
 
 # =============================================================================
-# CONFIGURACIÓN DE MÉTRICAS NUMBA
+# 1. CONFIGURACIÓN
 # =============================================================================
-USE_NUMBA_METRICS = True  # Cambiar a False para usar métricas Python puras
+
+USE_NUMBA_METRICS: bool = True
 
 try:
     from numba import njit
@@ -227,7 +255,7 @@ if NUMBA_METRICS_AVAILABLE:
         if var_ret < 0:
             var_ret = 0.0
         std_ret = np.sqrt(var_ret * n / (n - 1)) if n > 1 else 0.0
-        sharpe = (mean_ret / std_ret * 100) if std_ret > 0 else 0.0  # ×100 para visualización
+        sharpe = (mean_ret / std_ret) if std_ret > 0 else 0.0  # Sharpe estándar (sin escalar)
 
         # Sortino: usa downside deviation (desviación de retornos negativos respecto a 0)
         # La fórmula correcta es: sqrt(mean(min(r, 0)^2)) - esto da la "semi-desviación"
@@ -827,8 +855,8 @@ def sharpe(
         # Escalar por sqrt(N) para ver acumulación con más trades
         ratio *= float(np.sqrt(n_trades))
     
-    # Multiplicar por 100 para mejor visualización
-    return float(ratio * 100)
+    # Sharpe estándar (sin escalar) - valores típicos: -3 a 3
+    return float(ratio)
 
 
 def sortino(
@@ -1218,3 +1246,198 @@ def _resumen_metricas_python(
         "pnl_neto": float(np.sum(pnl_neto)),
         "net_pnl": float(np.sum(pnl_neto)),
     }
+
+
+# =============================================================================
+# ESTADÍSTICAS AGREGADAS DE OPTIMIZACIÓN
+# =============================================================================
+# Centraliza el cálculo de promedios y estadísticas de múltiples trials
+# para que todo el sistema use los mismos datos estandarizados.
+
+@dataclass
+class EstadisticasAgregadas:
+    """
+    Estadísticas agregadas de una sesión de optimización.
+    
+    Todas las métricas se calculan aquí y se pasan TAL CUAL al resto del sistema.
+    Ningún otro módulo debe recalcular estas estadísticas.
+    """
+    # Promedios de métricas (valores estándar, sin transformar)
+    roi_medio: float = 0.0
+    sharpe_medio: float = 0.0
+    sqn_medio: float = 0.0
+    pf_medio: float = 0.0
+    expectativa_media: float = 0.0
+    winrate_medio: float = 0.0
+    drawdown_medio: float = 0.0
+    score_medio: float = 0.0
+    
+    # Mejor trial
+    mejor_score: float = float("-inf")
+    mejor_trial: int = 0
+    
+    # Contadores
+    n_trials: int = 0
+    
+    def to_dict(self) -> Dict[str, Any]:
+        """Convierte a diccionario para pasar a otros módulos."""
+        return {
+            "roi_medio": self.roi_medio,
+            "sharpe_medio": self.sharpe_medio,
+            "sqn_medio": self.sqn_medio,
+            "pf_medio": self.pf_medio,
+            "expectativa_media": self.expectativa_media,
+            "winrate_medio": self.winrate_medio,
+            "drawdown_medio": self.drawdown_medio,
+            "score_medio": self.score_medio,
+            "mejor_score": self.mejor_score,
+            "mejor_trial": self.mejor_trial,
+            "n_trials": self.n_trials,
+        }
+
+
+class AcumuladorEstadisticas:
+    """
+    Acumula métricas de múltiples trials y calcula estadísticas agregadas.
+    
+    USO:
+        acumulador = AcumuladorEstadisticas()
+        for trial in trials:
+            acumulador.agregar(metrics, score, trial_num)
+        stats = acumulador.calcular()  # EstadisticasAgregadas
+    """
+    
+    __slots__ = ['_roi', '_sharpe', '_sqn', '_pf', '_exp', '_wr', '_dd', '_score',
+                 '_mejor_score', '_mejor_trial', '_n']
+    
+    def __init__(self):
+        self._roi: List[float] = []
+        self._sharpe: List[float] = []
+        self._sqn: List[float] = []
+        self._pf: List[float] = []
+        self._exp: List[float] = []
+        self._wr: List[float] = []
+        self._dd: List[float] = []
+        self._score: List[float] = []
+        self._mejor_score: float = float("-inf")
+        self._mejor_trial: int = 0
+        self._n: int = 0
+    
+    def agregar(self, metricas: Dict[str, Any], score: float, trial: int) -> None:
+        """
+        Agrega métricas de un trial al acumulador.
+        
+        Args:
+            metricas: Diccionario de métricas del trial (de resumen_metricas)
+            score: Score del trial (de scoring.py)
+            trial: Número del trial
+        """
+        self._roi.append(_safe_get(metricas, "roi"))
+        self._sharpe.append(_safe_get(metricas, "sharpe"))
+        self._sqn.append(_safe_get(metricas, "sqn"))
+        self._pf.append(_safe_get(metricas, "profit_factor"))
+        self._exp.append(_safe_get(metricas, "expectativa"))
+        self._wr.append(_safe_get(metricas, "winrate"))
+        self._dd.append(_safe_get(metricas, "drawdown"))
+        self._score.append(score)
+        self._n += 1
+        
+        if score > self._mejor_score:
+            self._mejor_score = score
+            self._mejor_trial = trial
+    
+    def calcular(self) -> EstadisticasAgregadas:
+        """
+        Calcula y retorna las estadísticas agregadas.
+        
+        Returns:
+            EstadisticasAgregadas con todos los promedios calculados
+        """
+        return EstadisticasAgregadas(
+            roi_medio=_safe_mean(self._roi),
+            sharpe_medio=_safe_mean(self._sharpe),
+            sqn_medio=_safe_mean(self._sqn),
+            pf_medio=_safe_mean(self._pf),
+            expectativa_media=_safe_mean(self._exp),
+            winrate_medio=_safe_mean(self._wr),
+            drawdown_medio=_safe_mean(self._dd),
+            score_medio=_safe_mean(self._score),
+            mejor_score=self._mejor_score,
+            mejor_trial=self._mejor_trial,
+            n_trials=self._n,
+        )
+    
+    def reset(self) -> None:
+        """Reinicia el acumulador."""
+        self._roi.clear()
+        self._sharpe.clear()
+        self._sqn.clear()
+        self._pf.clear()
+        self._exp.clear()
+        self._wr.clear()
+        self._dd.clear()
+        self._score.clear()
+        self._mejor_score = float("-inf")
+        self._mejor_trial = 0
+        self._n = 0
+
+
+def _safe_get(d: Dict[str, Any], key: str, default: float = 0.0) -> float:
+    """Extrae valor de forma segura, manejando None y errores."""
+    if not d:
+        return default
+    val = d.get(key, default)
+    if val is None:
+        return default
+    try:
+        return float(val)
+    except (TypeError, ValueError):
+        return default
+
+
+def _safe_mean(values: List[float]) -> float:
+    """Calcula media filtrando NaN e infinitos."""
+    if not values:
+        return 0.0
+    valid = [x for x in values if x == x and abs(x) != float('inf')]  # x != x es True para NaN
+    return sum(valid) / len(valid) if valid else 0.0
+
+
+# Instancia global del acumulador (singleton para uso en todo el sistema)
+_acumulador_global = AcumuladorEstadisticas()
+
+
+def agregar_metricas_trial(metricas: Dict[str, Any], score: float, trial: int) -> None:
+    """
+    Agrega métricas de un trial al acumulador global.
+    
+    Esta función debe ser llamada por el sistema de optimización
+    después de cada trial completado.
+    """
+    _acumulador_global.agregar(metricas, score, trial)
+
+
+def obtener_estadisticas_agregadas() -> EstadisticasAgregadas:
+    """
+    Obtiene las estadísticas agregadas actuales.
+    
+    Returns:
+        EstadisticasAgregadas con todos los promedios
+    """
+    return _acumulador_global.calcular()
+
+
+def obtener_estadisticas_dict() -> Dict[str, Any]:
+    """
+    Obtiene las estadísticas agregadas como diccionario.
+    
+    Returns:
+        Diccionario con todos los promedios y estadísticas
+    """
+    return _acumulador_global.calcular().to_dict()
+
+
+def resetear_estadisticas_globales() -> None:
+    """Reinicia el acumulador global de estadísticas."""
+    _acumulador_global.reset()
+

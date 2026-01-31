@@ -1,84 +1,76 @@
-"""modelox/core/scoring.py
-
-═══════════════════════════════════════════════════════════════════════════════
-SISTEMA DE SCORING UNIFICADO v9.0 - CALIDAD PURA
-═══════════════════════════════════════════════════════════════════════════════
-
-FILOSOFÍA:
-El Score se basa únicamente en métricas de CALIDAD.
-La robustez se valida en Fase 2 y Fase 3 del Topógrafo de Mesetas.
-
-Score = Puntos_Calidad × Factor_Actividad
-
-Máximo: 600 puntos
-
-COMPONENTES:
-1. CALIDAD (0-600 puntos):
-   - Sharpe, SQN, ROI, Drawdown normalizados con tanh
-   - Rendimientos decrecientes
-
-2. ACTIVIDAD (factor 0-1):
-   - Penaliza estrategias con pocos trades/día
-   - Centro en 0.25 trades/día
-
-═══════════════════════════════════════════════════════════════════════════════
 """
-
+# =============================================================================
+#
+#     ███████╗ ██████╗ ██████╗ ██████╗ ██╗███╗   ██╗ ██████╗
+#     ██╔════╝██╔════╝██╔═══██╗██╔══██╗██║████╗  ██║██╔════╝
+#     ███████╗██║     ██║   ██║██████╔╝██║██╔██╗ ██║██║  ███╗
+#     ╚════██║██║     ██║   ██║██╔══██╗██║██║╚██╗██║██║   ██║
+#     ███████║╚██████╗╚██████╔╝██║  ██║██║██║ ╚████║╚██████╔╝
+#     ╚══════╝ ╚═════╝ ╚═════╝ ╚═╝  ╚═╝╚═╝╚═╝  ╚═══╝ ╚═════╝
+#
+#     SCORING.PY - SISTEMA DE PUNTUACIÓN v9.0
+#
+# =============================================================================
+#
+#     FILOSOFÍA:
+#     El Score mide CALIDAD pura de la estrategia.
+#     La robustez se valida aparte en el Topógrafo de Mesetas.
+#
+#     FÓRMULA:
+#     Score = Calidad_Raw × Factor_Actividad
+#
+#     COMPONENTES:
+#     - CALIDAD (0-1000 pts): Sharpe + SQN + ROI + Drawdown
+#     - ACTIVIDAD (0-1): Penaliza pocas operaciones/día
+#
+# =============================================================================
+"""
 from __future__ import annotations
 
 import math
 from dataclasses import dataclass
-from typing import Any, Dict, List, Mapping, Optional, Tuple
-
-import numpy as np
+from typing import Any, List, Mapping, Optional, Tuple
 
 
 # =============================================================================
-# PARÁMETROS DE SCORING v9.0
+# 1. CONSTANTES DE CONFIGURACIÓN
 # =============================================================================
 
-# Máximo de puntos (solo calidad, sin robustez)
-MAX_PUNTOS_CALIDAD = 1000.0
-MAX_SCORE = 1000.0
+# PUNTUACIÓN MÁXIMA
+MAX_PUNTOS_CALIDAD: float = 1000.0
+MAX_SCORE: float = 1000.0
 
-# Pesos de métricas de calidad (suman 1.0)
-PESO_SHARPE = 0.30
-PESO_SQN = 0.28
-PESO_DRAWDOWN = 0.18
-PESO_ROI = 0.24
+# PESOS DE MÉTRICAS (SUMAN 1.0)
+PESO_SHARPE: float = 0.30
+PESO_SQN: float = 0.28
+PESO_DRAWDOWN: float = 0.18
+PESO_ROI: float = 0.24
 
-# Rangos progresivos para cada métrica [mínimo_para_0, máximo_para_techo]
-# Sharpe (×100): -200 → 0 puntos, 400 → máximo
-SHARPE_MIN = -20.0
-SHARPE_MAX = 20.0
+# RANGOS DE NORMALIZACIÓN
+# Sharpe estándar sin escalar: valores típicos -2 a 3
+SHARPE_MIN: float = -2.0
+SHARPE_MAX: float = 3.0
+SQN_MIN: float = -3.0
+SQN_MAX: float = 4.5
+DD_MIN: float = 60.0   # Peor (0 pts)
+DD_MAX: float = 10.0   # Mejor (máx pts)
+ROI_MIN: float = -60.0
+ROI_MAX: float = 350.0
 
-# SQN: -2 → 0 puntos, 5 → máximo
-SQN_MIN = -3.0
-SQN_MAX = 4.5
+# FACTOR DE ACTIVIDAD
+ACTIVIDAD_CENTRO: float = 0.25
+ACTIVIDAD_PENDIENTE: float = 12.0
 
-# Drawdown: 60% → 0 puntos, 10% → máximo (invertido: menor es mejor)
-DD_MIN = 60.0   # Peor caso (0 puntos)
-DD_MAX = 10.0   # Mejor caso (máximo puntos)
-
-# ROI: -50% → 0 puntos, 350% → máximo
-ROI_MIN = -60.0
-ROI_MAX = 350.0
-
-# Factor de actividad
-ACTIVIDAD_CENTRO = 0.25
-ACTIVIDAD_PENDIENTE = 12.0
-
-# Umbrales de suspenso
-REF_ROI_SUSPENSO = 100.0
-REF_TRADES_DIA_MIN = 0.15
+# UMBRALES MÍNIMOS
+REF_TRADES_DIA_MIN: float = 0.15
 
 
 # =============================================================================
-# UTILIDADES
+# 2. UTILIDADES
 # =============================================================================
 
 def _get(metrics: Mapping[str, Any], key: str, default: float = 0.0) -> float:
-    """Extrae un valor de métricas de forma segura."""
+    """EXTRAE VALOR DE MÉTRICAS DE FORMA SEGURA."""
     val = metrics.get(key, default)
     if val is None:
         return default
@@ -89,13 +81,7 @@ def _get(metrics: Mapping[str, Any], key: str, default: float = 0.0) -> float:
 
 
 def _linear_normalize(value: float, min_val: float, max_val: float) -> float:
-    """
-    Normaliza un valor al rango [0, 1] de forma lineal progresiva.
-    
-    - valor <= min_val → 0.0
-    - valor >= max_val → 1.0
-    - valor intermedio → proporción lineal
-    """
+    """NORMALIZA VALOR A [0,1] - MÁS ES MEJOR."""
     if value <= min_val:
         return 0.0
     if value >= max_val:
@@ -104,12 +90,7 @@ def _linear_normalize(value: float, min_val: float, max_val: float) -> float:
 
 
 def _linear_normalize_inverted(value: float, min_val: float, max_val: float) -> float:
-    """
-    Normaliza un valor al rango [0, 1] de forma INVERTIDA (menor es mejor).
-    
-    - valor >= min_val (peor) → 0.0
-    - valor <= max_val (mejor) → 1.0
-    """
+    """NORMALIZA VALOR A [0,1] - MENOS ES MEJOR (para drawdown)."""
     if value >= min_val:
         return 0.0
     if value <= max_val:
@@ -118,7 +99,7 @@ def _linear_normalize_inverted(value: float, min_val: float, max_val: float) -> 
 
 
 # =============================================================================
-# CÁLCULO DE COMPONENTES
+# 3. CÁLCULO DE COMPONENTES
 # =============================================================================
 
 def calculate_calidad_raw(
@@ -128,23 +109,16 @@ def calculate_calidad_raw(
     roi: float,
 ) -> float:
     """
-    Calcula puntos de calidad (0-600) usando normalización lineal progresiva.
+    CALCULA PUNTOS DE CALIDAD (0-1000)
     
-    Rangos:
-    - Sharpe: -2 (0 pts) → 4 (máx)
-    - SQN: -2 (0 pts) → 5 (máx)
-    - Drawdown: 60% (0 pts) → 10% (máx) [invertido]
-    - ROI: -50% (0 pts) → 350% (máx)
+    Normaliza cada métrica a [0,1] y aplica pesos.
+    Drawdown usa normalización invertida (menor = mejor).
     """
-    # Normalizar cada métrica (0-1) con rangos progresivos
     sharpe_norm = _linear_normalize(sharpe, SHARPE_MIN, SHARPE_MAX)
     sqn_norm = _linear_normalize(sqn, SQN_MIN, SQN_MAX)
     roi_norm = _linear_normalize(roi, ROI_MIN, ROI_MAX)
-    
-    # Drawdown: invertido (menor es mejor)
     dd_norm = _linear_normalize_inverted(drawdown, DD_MIN, DD_MAX)
     
-    # Suma ponderada
     calidad_norm = (
         PESO_SHARPE * sharpe_norm +
         PESO_SQN * sqn_norm +
@@ -157,83 +131,63 @@ def calculate_calidad_raw(
 
 def calculate_factor_actividad(trades_dia: float) -> float:
     """
-    Factor de actividad: penaliza si hay muy pocos trades/día.
+    FACTOR DE ACTIVIDAD (0-1)
     
-    Sigmoide logística centrada en ACTIVIDAD_CENTRO:
-    - trades/día < centro → factor baja hacia 0
-    - trades/día = centro → factor = 0.5
-    - trades/día > centro → factor sube hacia 1.0
+    Sigmoide que penaliza pocas operaciones:
+    - trades/día < 0.25 → factor baja hacia 0
+    - trades/día = 0.25 → factor = 0.5
+    - trades/día > 0.25 → factor sube hacia 1.0
     """
     if trades_dia <= 0:
         return 0.0
-    
     x = (trades_dia - ACTIVIDAD_CENTRO) * ACTIVIDAD_PENDIENTE
     return 1.0 / (1.0 + math.exp(-x))
 
 
 # =============================================================================
-# FUNCIÓN PRINCIPAL: SCORE
+# 4. FUNCIÓN PRINCIPAL
 # =============================================================================
 
 def score_unified(
     metrics: Mapping[str, Any],
-    neighborhood_result: Optional[Mapping[str, Any]] = None,  # Ignorado
+    neighborhood_result: Optional[Mapping[str, Any]] = None,
     trial_number: int = 0,
     equity_curve: Optional[List[float]] = None,
 ) -> float:
     """
-    SCORE v9.0 - Solo calidad.
+    SCORE UNIFICADO v9.0
     
-    Fórmula: Score = Calidad_Raw × Factor_Actividad
-    
-    RANGO: [0, 600]
+    Fórmula: Score = Calidad × Actividad
+    Rango: [0, 1000]
     
     Args:
-        metrics: Métricas del trial
-        neighborhood_result: IGNORADO (compatibilidad)
+        metrics: Diccionario con métricas del backtest
+        neighborhood_result: Ignorado (compatibilidad)
         trial_number: Número del trial
         equity_curve: Curva de equity (opcional)
     
     Returns:
-        Score final [0, 600]
+        Score final entre 0 y 1000
     """
-    # Extraer trades/día
+    # EXTRAER TRADES/DÍA (BUSCAR EN VARIOS NOMBRES)
     trades_dia = _get(metrics, "trades_por_dia", 0.0)
     if trades_dia == 0:
         trades_dia = _get(metrics, "trades_dia", 0.0)
     if trades_dia == 0:
         trades_dia = _get(metrics, "trades_per_day", 0.0)
-    if trades_dia == 0:
-        trades_dia = _get(metrics, "tpd", 0.0)
     
-    # Suspenso si trades/día muy bajo
+    # SUSPENSO SI MUY POCOS TRADES
     if trades_dia < REF_TRADES_DIA_MIN:
         return 0.001
     
-    # Extraer métricas
+    # EXTRAER MÉTRICAS
     sqn = _get(metrics, "sqn", 0.0)
+    sharpe = _get(metrics, "sharpe", 0.0) or _get(metrics, "sharpe_ratio", 0.0)
+    drawdown = _get(metrics, "drawdown", 50.0) or _get(metrics, "max_drawdown", 50.0)
+    roi = _get(metrics, "roi", 0.0) or _get(metrics, "roi_pct", 0.0)
     
-    sharpe = _get(metrics, "sharpe", 0.0)
-    if sharpe == 0:
-        sharpe = _get(metrics, "sharpe_ratio", 0.0)
-    
-    drawdown = _get(metrics, "drawdown", 50.0)
-    if drawdown == 0:
-        drawdown = _get(metrics, "max_drawdown", 50.0)
-    
-    roi = _get(metrics, "roi", 0.0)
-    if roi == 0:
-        roi = _get(metrics, "roi_pct", 0.0)
-    
-    # Calcular calidad
-    calidad_raw = calculate_calidad_raw(
-        sharpe=sharpe,
-        sqn=sqn,
-        drawdown=drawdown,
-        roi=roi,
-    )
-    
-    # Aplicar factor de actividad
+    # CALCULAR SCORE
+    calidad_raw = calculate_calidad_raw(sharpe, sqn, drawdown, roi)
     factor_actividad = calculate_factor_actividad(trades_dia)
     score = calidad_raw * factor_actividad
     
@@ -241,33 +195,28 @@ def score_unified(
 
 
 def format_score(score: float) -> str:
-    """Formatea el score: X.XX si >=1, 0.XXX si <1."""
-    if score >= 1.0:
-        return f"{score:.2f}"
-    else:
-        return f"{score:.3f}"
+    """FORMATEA SCORE PARA MOSTRAR."""
+    return f"{score:.2f}" if score >= 1.0 else f"{score:.3f}"
 
 
 # =============================================================================
-# FUNCIONES LEGACY PARA COMPATIBILIDAD
+# 5. FUNCIONES DE COMPATIBILIDAD
 # =============================================================================
 
 def score_quality_only(metrics: Mapping[str, Any]) -> float:
-    """Score de calidad."""
+    """ALIAS: Score de calidad."""
     return score_unified(metrics)
 
 
 def score_optuna(metrics: Mapping[str, Any]) -> float:
-    """Alias para compatibilidad."""
+    """ALIAS: Para uso con Optuna."""
     return score_unified(metrics)
 
 
 def nsga2_objectives(metrics: Mapping[str, Any]) -> Tuple[float, float]:
-    """Objetivos para NSGA-II (quality, drawdown)."""
+    """OBJETIVOS PARA NSGA-II: (calidad, drawdown)."""
     quality = score_unified(metrics)
-    drawdown = _get(metrics, "drawdown", 50.0)
-    if drawdown == 0:
-        drawdown = _get(metrics, "max_drawdown", 50.0)
+    drawdown = _get(metrics, "drawdown", 50.0) or _get(metrics, "max_drawdown", 50.0)
     return (max(0.001, quality), max(0.0, min(100.0, drawdown)))
 
 
@@ -278,7 +227,7 @@ def calculate_deflated_sharpe_score(
     skewness: float = 0.0,
     kurtosis: float = 3.0,
 ) -> float:
-    """DSR Score [0, 100] para compatibilidad."""
+    """DEFLATED SHARPE RATIO SCORE [0, 100]."""
     if n_trades < 5 or sharpe <= 0:
         return max(5.0, 15.0 + sharpe * 10.0) if sharpe > -1 else 5.0
     
@@ -297,26 +246,26 @@ def calculate_deflated_sharpe_score(
 
 
 def deflated_sharpe_ratio(sharpe_obs: float, n_trials: int, n_trades: int, **kw) -> float:
-    """Legacy: Retorna probabilidad [0, 1]."""
+    """LEGACY: Retorna probabilidad [0, 1]."""
     return calculate_deflated_sharpe_score(sharpe_obs, n_trials, n_trades) / 100.0
 
 
 def score_robust(metrics: Mapping[str, Any], **kw) -> float:
-    """Legacy."""
+    """LEGACY: Alias de score_unified."""
     return score_unified(metrics)
 
 
 @dataclass
 class ScoringConfig:
-    """Legacy: Configuración del sistema de scoring."""
+    """LEGACY: Configuración vacía para compatibilidad."""
     pass
 
 
 def set_study_for_scorer(study: Any) -> None:
-    """Legacy: Ya no se necesita."""
+    """LEGACY: No-op."""
     pass
 
 
 def cleanup_scoring_resources() -> None:
-    """Legacy: Ya no hay recursos que limpiar."""
+    """LEGACY: No-op."""
     pass

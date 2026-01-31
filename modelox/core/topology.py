@@ -1,46 +1,35 @@
-"""modelox/core/topology.py
-
-═══════════════════════════════════════════════════════════════════════════════
-ANÁLISIS TOPOLÓGICO DE MESETAS - "El Ojo del Sistema"
-═══════════════════════════════════════════════════════════════════════════════
-
-Este módulo implementa la detección de "mesetas de parámetros" usando clustering
-HDBSCAN (Hierarchical DBSCAN). Las mesetas son regiones del espacio de parámetros 
-donde múltiples combinaciones similares producen buenos resultados consistentes.
-
-¿POR QUÉ HDBSCAN EN LUGAR DE DBSCAN?
-------------------------------------
-DBSCAN tiene un problema fatal: usa un radio fijo (eps).
-- Si eps es pequeño: solo detecta mesetas muy densas, pierde las amplias
-- Si eps es grande: fusiona mesetas distintas, pierde precisión
-
-HDBSCAN resuelve esto:
-- No usa radio fijo - construye un árbol jerárquico de densidades
-- Detecta clusters de DENSIDAD VARIABLE simultáneamente
-- Proporciona PROBABILIDADES de pertenencia (soft clustering)
-  → Podemos filtrar puntos dudosos de los bordes
-
-FILOSOFÍA:
-    - Un "pico" es un punto aislado con buen score pero sin vecinos buenos
-    - Una "meseta" es una región densa donde MUCHOS puntos tienen buen score
-    - Las mesetas indican ROBUSTEZ: pequeños cambios en parámetros no arruinan el resultado
-
-PIPELINE:
-    1. Extraer trials con score > percentil (auto-adaptable)
-    2. Normalizar parámetros a [0, 1]
-    3. Aplicar HDBSCAN para encontrar clusters
-    4. Filtrar por probabilidad de pertenencia (>75% = centro puro)
-    5. Calcular centroide de cada cluster
-    6. Seleccionar el trial más cercano al centroide como "representante robusto"
-
-═══════════════════════════════════════════════════════════════════════════════
+"""
+# =============================================================================
+#
+#     ████████╗ ██████╗ ██████╗  ██████╗ ██╗      ██████╗  ██████╗██╗   ██╗
+#     ╚══██╔══╝██╔═══██╗██╔══██╗██╔═══██╗██║     ██╔═══██╗██╔════╝╚██╗ ██╔╝
+#        ██║   ██║   ██║██████╔╝██║   ██║██║     ██║   ██║██║  ███╗╚████╔╝
+#        ██║   ██║   ██║██╔═══╝ ██║   ██║██║     ██║   ██║██║   ██║ ╚██╔╝
+#        ██║   ╚██████╔╝██║     ╚██████╔╝███████╗╚██████╔╝╚██████╔╝  ██║
+#        ╚═╝    ╚═════╝ ╚═╝      ╚═════╝ ╚══════╝ ╚═════╝  ╚═════╝   ╚═╝
+#
+#     TOPOLOGY.PY - ANÁLISIS TOPOLÓGICO DE MESETAS
+#
+# =============================================================================
+#
+#     CONCEPTO:
+#     - "PICO": Punto aislado con buen score pero sin vecinos buenos
+#     - "MESETA": Región densa donde MUCHOS puntos tienen buen score
+#     - Las mesetas indican ROBUSTEZ
+#
+#     ALGORITMO:
+#     - HDBSCAN (clustering de densidad variable, sin eps fijo)
+#     - Normalización de parámetros a [0, 1]
+#     - Filtrado por probabilidad de pertenencia (>75% = centro puro)
+#     - Selección del centroide como "representante robusto"
+#
+# =============================================================================
 """
 
 from __future__ import annotations
 
-import math
-from dataclasses import dataclass, field
-from typing import Any, Dict, List, Optional, Tuple, Sequence
+from dataclasses import dataclass
+from typing import Any, Dict, List, Optional, Tuple
 
 import numpy as np
 
@@ -56,7 +45,6 @@ try:
     _HDBSCAN_AVAILABLE = True
 except ImportError:
     _HDBSCAN_AVAILABLE = False
-    # Fallback a DBSCAN si HDBSCAN no está disponible
     try:
         from sklearn.cluster import DBSCAN
     except ImportError:
@@ -70,34 +58,17 @@ except ImportError:
 
 
 # =============================================================================
-# CONFIGURACIÓN DEL ANÁLISIS TOPOLÓGICO
+# 1. CONFIGURACIÓN DEL ANÁLISIS TOPOLÓGICO
 # =============================================================================
 
 @dataclass
 class PlateauConfig:
-    """
-    Configuración para detección de mesetas con HDBSCAN.
+    """CONFIGURACIÓN PARA DETECCIÓN DE MESETAS CON HDBSCAN.
     
-    HDBSCAN PARAMETERS (Recomendado - Sin eps fijo)
-    -----------------------------------------------
-    min_cluster_size: Tamaño mínimo de un cluster para ser considerado meseta.
-                      RECOMENDADO: 10-30 para 1000+ trials.
-                      Más pequeño = más mesetas pequeñas detectadas.
-                      Más grande = solo mesetas muy pobladas.
-    
-    min_samples: Controla la "conservaduridad" del clustering.
-                 Valores altos = clusters más densos, menos ruido incluido.
-                 RECOMENDADO: 5-15 (usualmente igual o menor a min_cluster_size).
-    
-    cluster_selection_epsilon: (Opcional) Fusiona clusters muy cercanos.
-                               0.0 = sin fusión (más clusters pequeños).
-                               0.1-0.3 = fusiona clusters adyacentes.
-    
-    SOFT CLUSTERING - PROBABILIDADES
-    ---------------------------------
-    min_membership_probability: Probabilidad mínima para considerar un punto "puro".
-                                HDBSCAN asigna prob. de pertenencia a cada punto:
-                                - 0.9+ = Centro del cluster (muy confiable)
+    PARÁMETROS PRINCIPALES:
+    - min_cluster_size: Tamaño mínimo de cluster (10-30 para 1000+ trials)
+    - min_samples: Controla conservaduridad (5-15 típico)
+    - min_membership_probability: Prob. mínima para punto "puro" (0.75)
                                 - 0.5-0.9 = Borde del cluster (aceptable)
                                 - <0.5 = Punto dudoso (descartar)
                                 RECOMENDADO: 0.5-0.75
@@ -127,55 +98,33 @@ class PlateauConfig:
                         - "best": Trial con mejor score en el cluster
                         - "median": Trial con score mediano en el cluster
                         - "highest_prob": Trial con mayor probabilidad de pertenencia
-    
-    FALLBACK
-    --------
-    use_hdbscan: Si True (default), usa HDBSCAN. Si False, usa DBSCAN legacy.
-    eps: Solo usado si use_hdbscan=False (DBSCAN legacy).
     """
-    # HDBSCAN - Parámetros principales
-    min_cluster_size: int = 15       # Tamaño mínimo de meseta
-    min_samples: int = 8             # Conservaduridad del clustering
-    cluster_selection_epsilon: float = 0.0  # Fusión de clusters (0 = sin fusión)
+    # HDBSCAN - PARÁMETROS PRINCIPALES
+    min_cluster_size: int = 15
+    min_samples: int = 8
+    cluster_selection_epsilon: float = 0.0
     
-    # Soft Clustering - Filtrado por probabilidad
-    min_membership_probability: float = 0.5  # Solo puntos con >50% de confianza
+    # FILTRADO POR PROBABILIDAD
+    min_membership_probability: float = 0.5
     
-    # Filtering Fase 2 - Filtros secuenciales
-    min_trials_for_plateau: int = 10 # Mínimo tras filtrar
+    # FILTROS DE FASE 2
+    min_trials_for_plateau: int = 10
     
-    # NOTA: Los filtros aplicados son:
-    # 1. ROI >= 0% (elimina perdedores)
-    # 2. Score >= media (μ) (elimina mitad inferior)
+    # SELECCIÓN DE REPRESENTANTE
+    centroid_selection: str = "centroid"
     
-    # Selection
-    centroid_selection: str = "centroid"  # "centroid", "best", "median", "highest_prob"
-    
-    # Fallback a DBSCAN
+    # FALLBACK A DBSCAN
     use_hdbscan: bool = True
-    eps: float = 0.15  # Solo para DBSCAN legacy
+    eps: float = 0.15
     
-    # Legacy (no usado)
-    n_plateaus_to_refine: int = 3
-    
-    # Parámetros a incluir en el análisis (None = todos los numéricos)
+    # PARÁMETROS A ANALIZAR
     params_to_analyze: Optional[List[str]] = None
-    
-    # Excluir parámetros que empiezan con estos prefijos
-    exclude_prefixes: Tuple[str, ...] = ("__", "param_", "NOMBRE")
-    params_to_analyze: Optional[List[str]] = None
-    
-    # Excluir parámetros que empiezan con estos prefijos
     exclude_prefixes: Tuple[str, ...] = ("__", "param_", "NOMBRE")
 
 
 @dataclass
 class PlateauResult:
-    """
-    Resultado de una meseta detectada.
-    
-    Contiene información sobre el cluster encontrado y su representante robusto.
-    """
+    """RESULTADO DE UNA MESETA DETECTADA."""
     cluster_id: int
     n_trials: int
     mean_score: float
@@ -197,15 +146,13 @@ class PlateauResult:
     # Trials en este cluster
     trial_numbers: List[int]
     
-    # Densidad del cluster (trials / volumen)
+    # DENSIDAD DEL CLUSTER
     density_score: float = 0.0
 
 
 @dataclass
 class TopologyAnalysis:
-    """
-    Resultado completo del análisis topológico.
-    """
+    """RESULTADO COMPLETO DEL ANÁLISIS TOPOLÓGICO."""
     # Mesetas encontradas (ordenadas por score medio descendente)
     plateaus: List[PlateauResult]
     
@@ -226,19 +173,15 @@ class TopologyAnalysis:
 
 
 # =============================================================================
-# EXTRACCIÓN DE TRIALS
+# =============================================================================
+# 2. EXTRACCIÓN DE TRIALS
 # =============================================================================
 
 def extract_trials_data(
     study: "optuna.Study",
     config: PlateauConfig,
 ) -> Tuple[List[Dict[str, Any]], List[str]]:
-    """
-    Extrae datos de trials completados del estudio Optuna.
-    
-    Returns:
-        (lista de dicts con params, score y roi, lista de nombres de parámetros)
-    """
+    """EXTRAE DATOS DE TRIALS COMPLETADOS DEL ESTUDIO OPTUNA."""
     if not _OPTUNA_AVAILABLE:
         raise ImportError("Optuna no está disponible")
     
@@ -298,24 +241,7 @@ def filter_top_trials(
     config: PlateauConfig,
     verbose: bool = False,
 ) -> List[Dict[str, Any]]:
-    """
-    Filtra trials aplicando DOS filtros secuenciales:
-    
-    1. FILTRO ROI: Descarta trials con ROI < 0%
-       → Elimina estrategias perdedoras
-    
-    2. FILTRO MEDIA: Descarta trials con score < media (μ) GLOBAL
-       → La media se calcula sobre TODOS los trials de Fase 1
-       → NO sobre los que pasaron el filtro ROI
-    
-    Args:
-        trials_data: Lista de trials con scores y ROI
-        config: Configuración (no usada, filtros son fijos)
-        verbose: Si True, imprime información del filtrado
-    
-    Returns:
-        Lista filtrada con trials de calidad
-    """
+    """FILTRA TRIALS CON DOS FILTROS: ROI >= 0% Y SCORE >= MEDIA GLOBAL."""
     if not trials_data:
         return []
     
@@ -375,19 +301,14 @@ def filter_top_trials(
 
 
 # =============================================================================
-# NORMALIZACIÓN DE PARÁMETROS
+# 3. NORMALIZACIÓN DE PARÁMETROS
 # =============================================================================
 
 def normalize_params(
     trials_data: List[Dict[str, Any]],
     param_names: List[str],
 ) -> Tuple[np.ndarray, Dict[str, Tuple[float, float]]]:
-    """
-    Normaliza parámetros al rango [0, 1] para que DBSCAN funcione correctamente.
-    
-    Returns:
-        (matriz normalizada NxP, diccionario de rangos originales)
-    """
+    """NORMALIZA PARÁMETROS AL RANGO [0, 1] PARA CLUSTERING."""
     n_trials = len(trials_data)
     n_params = len(param_names)
     
@@ -577,17 +498,6 @@ def apply_clustering(
             print(f"   Puntos de ruido: {n_noise} ({100*n_noise/n_samples:.1f}%)")
     
     return labels, probabilities
-
-
-# Legacy alias para compatibilidad
-def apply_dbscan(
-    X: np.ndarray,
-    config: PlateauConfig,
-    auto_eps: bool = False,
-) -> np.ndarray:
-    """Legacy wrapper - usa apply_clustering internamente."""
-    labels, _ = apply_clustering(X, config, verbose=False)
-    return labels
 
 
 # =============================================================================
@@ -887,9 +797,6 @@ def analyze_topology(
     # 8. Ordenar mesetas por score medio (descendente)
     plateaus.sort(key=lambda p: p.mean_score, reverse=True)
     
-    # 8. Retornar TODAS las mesetas (el límite se aplica en plateau_optimizer)
-    # Ya no limitamos aquí: plateaus = plateaus[:config.n_plateaus_to_refine]
-    
     return TopologyAnalysis(
         plateaus=plateaus,
         noise_trials=noise_trials,
@@ -991,7 +898,7 @@ __all__ = [
     "analyze_topology",
     "extract_trials_data",
     "filter_top_trials",
-    "apply_dbscan",
+    "apply_clustering",
     "find_optimal_eps",
     
     # Utilidades

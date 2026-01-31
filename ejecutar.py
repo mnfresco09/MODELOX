@@ -1,12 +1,36 @@
+"""
+# =============================================================================
+#
+#     ███████╗     ██╗███████╗ ██████╗██╗   ██╗████████╗ █████╗ ██████╗
+#     ██╔════╝     ██║██╔════╝██╔════╝██║   ██║╚══██╔══╝██╔══██╗██╔══██╗
+#     █████╗       ██║█████╗  ██║     ██║   ██║   ██║   ███████║██████╔╝
+#     ██╔══╝  ██   ██║██╔══╝  ██║     ██║   ██║   ██║   ██╔══██║██╔══██╗
+#     ███████╗╚█████╔╝███████╗╚██████╗╚██████╔╝   ██║   ██║  ██║██║  ██║
+#     ╚══════╝ ╚════╝ ╚══════╝ ╚═════╝ ╚═════╝    ╚═╝   ╚═╝  ╚═╝╚═╝  ╚═╝
+#
+#     EJECUTAR.PY - PUNTO DE ENTRADA PRINCIPAL
+#
+# =============================================================================
+#
+#     FLUJO:
+#     1. Configuración de hilos para VM
+#     2. Carga de datos (feather/csv)
+#     3. Optimización bayesiana (CMA-ES / TPE / PLATEAU)
+#     4. Generación de reportes (Excel, gráficos)
+#
+# =============================================================================
+"""
+
 from __future__ import annotations
 
-# ============================================================================
-# [CRÍTICO] CONFIGURACIÓN DE ALTO RENDIMIENTO PARA VM (CLOUD)
-# ============================================================================
+
+# =============================================================================
+# 1. CONFIGURACIÓN DE ALTO RENDIMIENTO (ANTES DE IMPORTS)
+# =============================================================================
+
 import os
 import sys
 
-# CONFIGURACIÓN DE HILOS: FORZAMOS A 1 HILO POR PROCESO.
 os.environ["OMP_NUM_THREADS"] = "1"
 os.environ["MKL_NUM_THREADS"] = "1"
 os.environ["OPENBLAS_NUM_THREADS"] = "1"
@@ -14,13 +38,14 @@ os.environ["VECLIB_MAXIMUM_THREADS"] = "1"
 os.environ["NUMEXPR_NUM_THREADS"] = "1"
 os.environ["POLARS_MAX_THREADS"] = "1"
 
-# VARIABLES DE DEPURACIÓN
 os.environ.setdefault("MODELOX_TIMINGS", "1")
 os.environ.setdefault("MODELOX_TIMINGS_PRINT_EVERY", "10")
 
-# ============================================================================
-# IMPORTS DEL SISTEMA
-# ============================================================================
+
+# =============================================================================
+# 2. IMPORTS DEL SISTEMA
+# =============================================================================
+
 import csv
 import warnings
 import logging
@@ -28,26 +53,25 @@ import atexit
 import shutil
 from copy import deepcopy
 from dataclasses import dataclass, field
-from datetime import datetime
 from pathlib import Path
-from typing import Any, Dict, List, Optional, Protocol, Tuple
+from typing import Any, Dict, List, Optional, Protocol
 import re
 
-# CAPTURA SEGURA DE LA RUTA RAÍZ AL INICIO (EVITA ERROR EN ATEXIT)
 try:
     _PROJECT_ROOT = Path(__file__).resolve().parent
 except NameError:
-    # Fallback si __file__ no está definido (ej: shell interactiva)
     _PROJECT_ROOT = Path.cwd()
 
-# SILENCIAR ADVERTENCIAS
 warnings.filterwarnings("ignore", category=FutureWarning)
 warnings.filterwarnings("ignore", category=UserWarning)
 
-# ============================================================================
-# LOGGING SETUP
-# ============================================================================
+
+# =============================================================================
+# 3. CONFIGURACIÓN DE LOGGING
+# =============================================================================
+
 def setup_logging(level: int = logging.INFO) -> None:
+    """CONFIGURA EL SISTEMA DE LOGGING."""
     logging.basicConfig(
         level=level,
         format="[%(levelname)s] %(name)s: %(message)s",
@@ -63,12 +87,15 @@ def setup_logging(level: int = logging.INFO) -> None:
     except ImportError:
         pass
 
-setup_logging(level=logging.WARNING)
+
+_pending_log_level = None
 logger = logging.getLogger(__name__)
 
-# ============================================================================
-# IMPORTS DEL PROYECTO
-# ============================================================================
+
+# =============================================================================
+# 4. IMPORTS DEL PROYECTO
+# =============================================================================
+
 from general.configuracion import (
     ACTIVOS, ACTIVO_PRIMARIO, resolve_archivo_data, resolve_archivo_data_tf,
     resolve_qty_max_activo, resolve_qty_max_activo_range,
@@ -77,9 +104,7 @@ from general.configuracion import (
     GENERAR_PLOTS, MAX_ARCHIVOS_GUARDAR, USAR_EXCEL,
     PERTURBACION_ACTIVAR,
     OPTUNA_SAMPLER,
-    # Limpieza periódica
     CLEANUP_INTERVAL,
-    # Configuración de mesetas
     PLATEAU_EXPLORATION_RATIO,
     PLATEAU_EXPLORATION_SAMPLER,
     PLATEAU_MIN_CLUSTER_SIZE,
@@ -93,16 +118,18 @@ from general.configuracion import (
 )
 from modelox.core.data import load_data
 from modelox.core.runner import OptimizationRunner, OptunaConfig, PerturbationConfig
+
+_log_level_map = {"DEBUG": logging.DEBUG, "INFO": logging.INFO, "WARNING": logging.WARNING, "ERROR": logging.ERROR}
+_configured_log_level = _log_level_map.get(str(CONFIG.get("LOG_LEVEL", "WARNING")).upper(), logging.WARNING)
+setup_logging(level=_configured_log_level)
 from modelox.core.plateau_optimizer import (
-    PlateauOptimizer,
     PlateauOptimizerConfig,
-    PlateauOptimizationResult,
     run_plateau_optimization,
 )
 from modelox.core.topology import PlateauConfig
 from modelox.core.types import normalize_timeframe_to_suffix, BacktestConfig, filter_by_date, nuclear_cleanup, full_system_cleanup, TrialArtifacts
 from modelox.strategies.registry import instantiate_strategies
-from visual.excel import exportar_trades_excel_rapido, convertir_resumen_csv_a_excel
+from visual.excel import convertir_resumen_csv_a_excel
 from visual.grafico import plot_trades
 from visual.rich import (
     mostrar_cabecera_inicio, mostrar_fin_optimizacion,
@@ -615,11 +642,14 @@ def run_single_exit_type(
     )
 
     # 4. RUTAS DE SALIDA
-    # Estructura: resultados/ESTRATEGIA/TRAILING|FIXED/ACTIVO/GRAFICA|EXCEL|ROBUSTEZ
+    # Estructura: {RESULTADOS_BASE_DIR}/ESTRATEGIA/TRAILING|FIXED/ACTIVO/GRAFICA|EXCEL|ROBUSTEZ
+    # RESULTADOS_BASE_DIR se importa de CONFIG (configurable en configuracion.py)
+    from general.configuracion import CONFIG
+    resultados_base = CONFIG.get("RESULTADOS_BASE_DIR", "resultados")
     activo_safe = str(activo).upper()
     exit_type_folder = "TRAILING" if "trail" in str(exit_type).lower() else "FIXED"
     strategy_root_dir = os.path.join(
-        "resultados",
+        resultados_base,
         strategy_safe,
         exit_type_folder,
         activo_safe,
@@ -766,7 +796,24 @@ def run_single_exit_type(
         # =====================================================================
         # MODO CLÁSICO (CMA-ES o TPE)
         # =====================================================================
-        runner = OptimizationRunner(config=cfg_updated, n_trials=int(N_TRIALS), reporters=reporters)
+        
+        # [FIX v2.1] Configurar perturbación si está habilitada (antes se ignoraba en este modo)
+        perturbation_config = PerturbationConfig(enabled=False)  # Default desactivado
+        if PERTURBACION_ACTIVAR:
+            perturbation_config = PerturbationConfig(
+                enabled=True,
+                method=CONFIG.get("PERTURBACION_METHOD", "returns_perturbation"),
+                noise_factor=float(CONFIG.get("PERTURBACION_NOISE_SCALE", 0.5)),
+                block_size=int(CONFIG.get("PERTURBACION_BLOCK_SIZE", 360)),
+                seed=CONFIG.get("PERTURBACION_SEED", 42),
+            )
+        
+        runner = OptimizationRunner(
+            config=cfg_updated, 
+            n_trials=int(N_TRIALS), 
+            reporters=reporters,
+            perturbation_config=perturbation_config,  # Ahora se pasa la configuración
+        )
 
         # [CAMBIO v2.0] Usar sampler configurado (CMA-ES por defecto para scoring institucional)
         # CMA-ES aprende de los scores y favorece regiones estables (mesetas de parámetros)

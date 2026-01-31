@@ -1,36 +1,32 @@
-"""modelox/core/runner.py
-
-Runner Principal Unificado con Soporte para:
-- Backtesting Normal (sin perturbación)
-- Perturbación de Datos para Validación
-- Optimización con CMA-ES o TPE (configurable)
-
-ARQUITECTURA:
-=============
-El runner soporta DOS modos de operación:
-
-1. MODO NORMAL (perturbation_enabled=False):
-   - Cada trial usa los datos ORIGINALES
-   - Optuna optimiza parámetros buscando el mejor rendimiento
-
-2. MODO PERTURBACIÓN (perturbation_enabled=True):
-   - Cada trial usa datos PERTURBADOS con una semilla única
-   - Valida que la estrategia funcione en múltiples escenarios
-   - Detecta overfitting (si solo funciona con datos exactos)
-
-SAMPLERS DISPONIBLES:
-=====================
-- "CMA": CMA-ES (Covariance Matrix Adaptation Evolution Strategy)
-         RECOMENDADO para scoring institucional.
-         Aprende de los scores y favorece regiones estables.
-- "TPE": Tree-structured Parzen Estimator (clásico de Optuna)
-
-MÉTODOS DE PERTURBACIÓN PROFESIONALES:
-======================================
-- "returns_perturbation": Perturba retornos con ruido calibrado a volatilidad (RECOMENDADO)
-- "block_bootstrap": Block bootstrap sobre retornos (mantiene autocorrelación)  
-- "stationary_bootstrap": Politis & Romano 1994
-- "returns_shuffle": Shuffle de retornos (rompe autocorrelación)
+"""
+# =============================================================================
+#
+#     ██████╗ ██╗   ██╗███╗   ██╗███╗   ██╗███████╗██████╗
+#     ██╔══██╗██║   ██║████╗  ██║████╗  ██║██╔════╝██╔══██╗
+#     ██████╔╝██║   ██║██╔██╗ ██║██╔██╗ ██║█████╗  ██████╔╝
+#     ██╔══██╗██║   ██║██║╚██╗██║██║╚██╗██║██╔══╝  ██╔══██╗
+#     ██║  ██║╚██████╔╝██║ ╚████║██║ ╚████║███████╗██║  ██║
+#     ╚═╝  ╚═╝ ╚═════╝ ╚═╝  ╚═══╝╚═╝  ╚═══╝╚══════╝╚═╝  ╚═╝
+#
+#     RUNNER.PY - ORQUESTADOR PRINCIPAL DE OPTIMIZACIÓN
+#
+# =============================================================================
+#
+#     MODOS DE OPERACIÓN:
+#     - NORMAL: Cada trial usa datos originales
+#     - PERTURBACIÓN: Cada trial usa datos perturbados (anti-overfitting)
+#
+#     SAMPLERS:
+#     - "CMA": CMA-ES (recomendado para scoring institucional)
+#     - "TPE": Tree-structured Parzen Estimator (clásico)
+#
+#     PERTURBACIONES DISPONIBLES:
+#     - returns_perturbation: Ruido calibrado a volatilidad (RECOMENDADO)
+#     - block_bootstrap: Mantiene autocorrelación
+#     - stationary_bootstrap: Politis & Romano 1994
+#     - returns_shuffle: Rompe autocorrelación
+#
+# =============================================================================
 """
 
 from __future__ import annotations
@@ -53,7 +49,6 @@ from .engine import BacktestParams, calculate_performance_vectorized_numba
 from .metrics import resumen_metricas
 from .scoring import (
     score_optuna, 
-    score_unified,
     set_study_for_scorer,
 )
 from .types import (
@@ -63,29 +58,34 @@ from .types import (
     TrialArtifacts,
     normalize_timeframe_to_suffix,
 )
-from .data import load_data, prepare_multitimeframe_data
+from .data import prepare_multitimeframe_data
 from .exits import resolve_exit_settings_for_trial
 
-# Silenciar warnings experimentales de Optuna
+
+# =============================================================================
+# 1. CONFIGURACIÓN GLOBAL
+# =============================================================================
+
+# SILENCIAR WARNINGS DE OPTUNA
 warnings.filterwarnings("ignore", category=ExperimentalWarning)
 optuna.logging.set_verbosity(optuna.logging.WARNING)
 
-# Debug timings
-_TIMINGS_VERBOSE = os.environ.get("MODELOX_TIMINGS_VERBOSE", "0") in {"1", "true", "True", "YES", "yes"}
-_TIMINGS_PRINT_EVERY = int(os.environ.get("MODELOX_TIMINGS_PRINT_EVERY", "1"))
+# VARIABLES DE ENTORNO PARA DEBUG
+_TIMINGS_VERBOSE: bool = os.environ.get("MODELOX_TIMINGS_VERBOSE", "0") in {"1", "true", "True", "YES", "yes"}
+_TIMINGS_PRINT_EVERY: int = int(os.environ.get("MODELOX_TIMINGS_PRINT_EVERY", "1"))
+_CLEANUP_INTERVAL: int = int(os.environ.get("MODELOX_CLEANUP_INTERVAL", "100"))
+
 
 # =============================================================================
-# OPTIMIZACIÓN: Cache de señales base para vecinos
+# 2. CACHÉ DE SEÑALES PARA REUTILIZACIÓN
 # =============================================================================
+
 _SIGNALS_CACHE: Dict[str, pl.DataFrame] = {}
-_SIGNALS_CACHE_MAX = 8
-
-# Intervalo de limpieza periódica (cada N trials)
-_CLEANUP_INTERVAL = int(os.environ.get("MODELOX_CLEANUP_INTERVAL", "100"))
+_SIGNALS_CACHE_MAX: int = 8
 
 
 def _cache_signals(key: str, signals: pl.DataFrame) -> None:
-    """Cachea señales para reutilización en vecinos."""
+    """GUARDA SEÑALES EN CACHÉ PARA REUTILIZACIÓN."""
     global _SIGNALS_CACHE
     if len(_SIGNALS_CACHE) >= _SIGNALS_CACHE_MAX:
         _SIGNALS_CACHE.pop(next(iter(_SIGNALS_CACHE)))
@@ -93,132 +93,96 @@ def _cache_signals(key: str, signals: pl.DataFrame) -> None:
 
 
 def _get_cached_signals(key: str) -> Optional[pl.DataFrame]:
-    """Obtiene señales cacheadas."""
+    """OBTIENE SEÑALES DEL CACHÉ."""
     return _SIGNALS_CACHE.get(key)
 
 
 def clear_all_caches() -> None:
-    """Limpia todos los caches del sistema."""
+    """LIMPIA TODOS LOS CACHÉS DEL SISTEMA."""
     global _SIGNALS_CACHE
     _SIGNALS_CACHE.clear()
     gc.collect()
 
 
 def periodic_cleanup(trial_number: int, force: bool = False) -> None:
-    """
-    Limpieza periódica cada N trials para mantener velocidad constante.
+    """LIMPIEZA PERIÓDICA CADA N TRIALS.
     
-    Ejecuta:
-    1. Limpia cachés de señales
-    2. Fuerza garbage collection
-    3. En macOS, intenta liberar memoria comprimida
-    
-    Args:
-        trial_number: Número del trial actual
-        force: Si True, ejecuta limpieza sin importar el intervalo
+    EJECUTA:
+    - Limpia cachés de señales
+    - Fuerza garbage collection
+    - En macOS, libera memoria comprimida
     """
     if not force and trial_number % _CLEANUP_INTERVAL != 0:
         return
     
     if trial_number == 0:
-        return  # Skip primer trial
+        return
     
-    # Limpiar cachés
     clear_all_caches()
     
-    # Triple GC para liberar referencias cíclicas
     gc.collect()
     gc.collect()
     gc.collect()
     
-    # En macOS, liberar memoria si es posible
     import platform
     if platform.system() == "Darwin":
         try:
             import subprocess
             subprocess.run(['purge'], capture_output=True, timeout=2)
-        except:
+        except Exception:
             pass
 
 
 # =============================================================================
-# CONFIGURACIÓN
+# 3. DATACLASSES DE CONFIGURACIÓN
 # =============================================================================
 
 @dataclass(frozen=True)
 class OptunaConfig:
-    """
-    Configuración de Optuna.
+    """CONFIGURACIÓN DE OPTUNA.
     
-    PARALELIZACIÓN:
-    ===============
-    n_jobs controla el número de trials paralelos de Optuna.
-    
-    - n_jobs=1: Secuencial (default, más estable)
-    - n_jobs=2+: Paralelo (más rápido, requiere más RAM)
-    - n_jobs=-1: Usar todos los cores disponibles
-    
-    SAMPLER:
-    ========
-    sampler controla el algoritmo de búsqueda bayesiana.
-    
-    - "CMA": CMA-ES (Covariance Matrix Adaptation Evolution Strategy)
-             Recomendado para scoring institucional. Aprende de los scores.
-    - "TPE": Tree-structured Parzen Estimator (clásico de Optuna)
-    
-    IMPORTANTE: Si usas n_jobs>1, asegúrate de que tu sistema
-    tenga suficiente RAM (~500MB por worker extra).
+    ATRIBUTOS:
+    - seed: Semilla para reproducibilidad
+    - n_jobs: Trials paralelos (1=secuencial, -1=todos los cores)
+    - sampler: "CMA" (recomendado) o "TPE" (clásico)
     """
     seed: Optional[int] = None
-    n_jobs: int = 1  # Número de trials paralelos de Optuna
+    n_jobs: int = 1
     storage: Optional[str] = None
     study_name_prefix: str = "MODELOX"
-    sampler: str = "CMA"  # "CMA" o "TPE" - CMA-ES es el default institucional
+    sampler: str = "CMA"
 
 
 @dataclass
 class PerturbationConfig:
-    """
-    Configuración del Sistema de Perturbación de Datos.
+    """CONFIGURACIÓN DEL SISTEMA DE PERTURBACIÓN.
     
-    Cuando enabled=True, cada trial usa datos perturbados con una semilla única.
-    Esto permite validar que la estrategia no esté sobreajustada a los datos exactos.
-    
-    MÉTODOS DISPONIBLES:
-    - "returns_perturbation": Añade ruido gaussiano calibrado a retornos (RECOMENDADO)
-    - "block_bootstrap": Block bootstrap sobre retornos
-    - "stationary_bootstrap": Politis & Romano 1994
-    - "returns_shuffle": Shuffle completo de retornos
-    
-    noise_factor: Intensidad del ruido (0.0 = sin ruido, 1.0 = ruido igual a volatilidad)
-    block_size: Tamaño de bloque para métodos de bootstrap
+    MÉTODOS:
+    - returns_perturbation: Ruido gaussiano calibrado (RECOMENDADO)
+    - block_bootstrap: Mantiene autocorrelación
+    - stationary_bootstrap: Politis & Romano 1994
+    - returns_shuffle: Shuffle completo
     """
     enabled: bool = False
-    method: str = "returns_perturbation"  # Método por defecto (el más profesional)
-    noise_factor: float = 0.3  # 30% de la volatilidad como ruido
-    block_size: int = 100  # Tamaño de bloque para bootstrap
-    seed: Optional[int] = 42  # Semilla base (cada trial suma su número)
-    
-    # Verificación de que la perturbación se aplicó
-    verify_perturbation: bool = True  # Si True, verifica que los datos cambien
+    method: str = "returns_perturbation"
+    noise_factor: float = 0.3
+    block_size: int = 100
+    seed: Optional[int] = 42
+    verify_perturbation: bool = True
 
 
 # =============================================================================
-# FUNCIONES DE PERTURBACIÓN PROFESIONALES
+# 4. FUNCIONES DE PERTURBACIÓN PROFESIONALES
 # =============================================================================
 
 def _validate_ohlcv_coherence(df: pl.DataFrame) -> Tuple[bool, str]:
-    """
-    Valida que los datos OHLCV sean coherentes.
+    """VALIDA COHERENCIA OHLCV.
     
-    Reglas:
+    REGLAS:
     - High >= max(Open, Close)
     - Low <= min(Open, Close)
     - Low <= High
     - Todos los precios > 0
-    
-    Returns:
-        (is_valid, error_message)
     """
     open_arr = df["open"].to_numpy()
     high_arr = df["high"].to_numpy()
@@ -228,7 +192,6 @@ def _validate_ohlcv_coherence(df: pl.DataFrame) -> Tuple[bool, str]:
     max_oc = np.maximum(open_arr, close_arr)
     min_oc = np.minimum(open_arr, close_arr)
     
-    # Verificar coherencia
     high_valid = np.all(high_arr >= max_oc - 1e-10)
     low_valid = np.all(low_arr <= min_oc + 1e-10)
     hl_valid = np.all(low_arr <= high_arr + 1e-10)
@@ -252,24 +215,14 @@ def _ensure_ohlcv_coherence(
     low_arr: np.ndarray,
     close_arr: np.ndarray,
 ) -> Tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
-    """
-    Asegura coherencia OHLCV después de perturbación.
-    
-    Reglas aplicadas:
-    1. High >= max(Open, Close)
-    2. Low <= min(Open, Close)
-    3. Low <= High
-    4. Todos los precios > min_price
-    """
+    """ASEGURA COHERENCIA OHLCV DESPUÉS DE PERTURBACIÓN."""
     min_price = 0.01
     
-    # Asegurar precios positivos
     open_arr = np.maximum(open_arr, min_price)
     high_arr = np.maximum(high_arr, min_price)
     low_arr = np.maximum(low_arr, min_price)
     close_arr = np.maximum(close_arr, min_price)
     
-    # Asegurar coherencia
     max_oc = np.maximum(open_arr, close_arr)
     min_oc = np.minimum(open_arr, close_arr)
     
@@ -281,8 +234,9 @@ def _ensure_ohlcv_coherence(
 
 
 # =============================================================================
-# KERNEL NUMBA PARA PERTURBACIÓN RÁPIDA
+# 5. KERNEL NUMBA PARA PERTURBACIÓN
 # =============================================================================
+
 try:
     from numba import njit
     
@@ -291,15 +245,13 @@ try:
         close_arr: np.ndarray,
         noise: np.ndarray,
     ) -> np.ndarray:
-        """Kernel Numba para reconstruir precios desde retornos perturbados."""
+        """KERNEL NUMBA: RECONSTRUYE PRECIOS DESDE RETORNOS PERTURBADOS."""
         n = len(close_arr)
         log_returns = np.empty(n - 1, dtype=np.float64)
         
-        # Calcular log returns
         for i in range(n - 1):
             log_returns[i] = np.log(close_arr[i + 1] / close_arr[i])
         
-        # Añadir ruido y reconstruir
         perturbed_returns = log_returns + noise
         
         new_close = np.empty(n, dtype=np.float64)
@@ -321,32 +273,24 @@ def perturb_returns_professional(
     noise_factor: float = 0.3,
     seed: Optional[int] = None,
 ) -> pl.DataFrame:
-    """
-    PERTURBACIÓN PROFESIONAL DE RETORNOS (Método Quant Estándar)
-    
-    OPTIMIZADO: Usa kernel Numba para cálculos intensivos.
-    """
+    """PERTURBACIÓN PROFESIONAL DE RETORNOS (MÉTODO QUANT ESTÁNDAR)."""
     rng = np.random.default_rng(seed)
     
-    # Extraer arrays originales (views, no copias)
     close_arr = df["close"].to_numpy()
     n = len(close_arr)
     
     if n < 10:
         return df
     
-    # Calcular volatilidad
     log_returns = np.diff(np.log(np.maximum(close_arr, 1e-10)))
     volatility = np.std(log_returns)
     
     if volatility < 1e-10:
         return df
     
-    # Generar ruido
     noise_std = volatility * noise_factor
     noise = rng.normal(0, noise_std, len(log_returns))
     
-    # Reconstruir close (usar Numba si disponible)
     if _NUMBA_PERTURB_AVAILABLE:
         new_close = _perturb_returns_numba(close_arr.astype(np.float64), noise)
     else:
@@ -355,14 +299,12 @@ def perturb_returns_professional(
         new_close[0] = close_arr[0]
         new_close[1:] = close_arr[0] * np.exp(np.cumsum(perturbed_returns))
     
-    # Escalar OHLC
     scale = new_close / np.maximum(close_arr, 1e-10)
     
     open_arr = df["open"].to_numpy() * scale
     high_arr = df["high"].to_numpy() * scale
     low_arr = df["low"].to_numpy() * scale
     
-    # Asegurar coherencia
     new_open, new_high, new_low, new_close = _ensure_ohlcv_coherence(
         open_arr, high_arr, low_arr, new_close
     )
@@ -385,14 +327,9 @@ def perturb_block_bootstrap(
     """
     BLOCK BOOTSTRAP sobre retornos.
     
-    En lugar de reorganizar precios directamente (que causa saltos),
-    este método:
-    1. Calcula retornos logarítmicos
-    2. Divide en bloques de tamaño fijo
-    3. Muestrea bloques con reemplazo
-    4. Reconstruye precios desde los retornos muestreados
+    BLOCK BOOTSTRAP SOBRE RETORNOS.
     
-    Preserva autocorrelación de corto plazo dentro de bloques.
+    PRESERVA AUTOCORRELACIÓN DE CORTO PLAZO DENTRO DE BLOQUES.
     """
     rng = np.random.default_rng(seed)
     
@@ -475,12 +412,7 @@ def perturb_returns_shuffle(
     df: pl.DataFrame,
     seed: Optional[int] = None,
 ) -> pl.DataFrame:
-    """
-    SHUFFLE de retornos (rompe autocorrelación completamente).
-    
-    Mantiene la distribución de retornos pero cambia el orden temporal.
-    Útil para verificar si la estrategia depende de patrones temporales.
-    """
+    """SHUFFLE DE RETORNOS (ROMPE AUTOCORRELACIÓN COMPLETAMENTE)."""
     rng = np.random.default_rng(seed)
     
     close_arr = df["close"].to_numpy().astype(np.float64)
@@ -521,12 +453,7 @@ def apply_perturbation(
     config: PerturbationConfig,
     trial_number: int,
 ) -> Tuple[pl.DataFrame, int, Dict[str, Any]]:
-    """
-    Aplica perturbación a los datos según la configuración.
-    
-    Returns:
-        (df_perturbado, seed_usado, info_perturbacion)
-    """
+    """APLICA PERTURBACIÓN A LOS DATOS SEGÚN LA CONFIGURACIÓN."""
     if not config.enabled:
         return df, 0, {"perturbation_applied": False}
     
@@ -596,11 +523,11 @@ def apply_perturbation(
 
 
 # =============================================================================
-# HELPERS
+# 6. HELPERS Y UTILIDADES
 # =============================================================================
 
 def _slug(s: str) -> str:
-    """Genera un slug válido para nombres de estudio."""
+    """GENERA UN SLUG VÁLIDO PARA NOMBRES DE ESTUDIO."""
     s = s.strip().lower()
     s = re.sub(r"[^a-z0-9]+", "-", s)
     s = re.sub(r"-{2,}", "-", s).strip("-")
@@ -613,45 +540,22 @@ def create_study_for_strategy(
     strategy_name: str,
     activo: Optional[str] = None,
 ) -> optuna.study.Study:
-    """
-    Crea estudio Optuna con el sampler configurado (CMA-ES o TPE).
-    
-    CMA-ES (Covariance Matrix Adaptation Evolution Strategy):
-    - Aprende de los scores para adaptar la matriz de covarianza
-    - Ideal para encontrar "mesetas de parámetros" (soluciones robustas)
-    - Penaliza implícitamente los picos aislados (overfitting)
-    - Recomendado para el sistema de scoring institucional
-    
-    TPE (Tree-structured Parzen Estimator):
-    - Algoritmo clásico de Optuna
-    - Bueno para espacios mixtos con variables categóricas
-    
-    Args:
-        cfg: Configuración de Optuna (incluye sampler)
-        strategy_name: Nombre de la estrategia
-        activo: Nombre del activo (opcional)
-    """
+    """CREA ESTUDIO OPTUNA CON CMA-ES O TPE."""
     parts = [str(cfg.study_name_prefix), str(strategy_name)]
     if activo:
         parts.append(str(activo))
     study_name = _slug("_".join(parts))
     
-    # Seleccionar sampler según configuración
     sampler_type = cfg.sampler.upper() if cfg.sampler else "CMA"
     
     if sampler_type == "CMA":
-        # CMA-ES: Covariance Matrix Adaptation Evolution Strategy
-        # - Aprende de los scores para adaptar la búsqueda
-        # - Converge hacia regiones de alta calidad
-        # - Ideal para scoring institucional multiplicativo
         sampler = CmaEsSampler(
             seed=cfg.seed,
-            n_startup_trials=10,  # Trials aleatorios iniciales
+            n_startup_trials=10,
             warn_independent_sampling=False,
             consider_pruned_trials=False,
         )
     else:
-        # TPE: Tree-structured Parzen Estimator
         sampler = TPESampler(
             seed=cfg.seed,
             multivariate=True,
@@ -666,22 +570,22 @@ def create_study_for_strategy(
         load_if_exists=False,
     )
     
-    # Configurar el scorer global con el estudio para DSR
     set_study_for_scorer(study)
     
     return study
 
 
 # =============================================================================
-# COMPONENTES DEL PIPELINE
+# 7. COMPONENTES DEL PIPELINE
 # =============================================================================
 
 @dataclass
 class DataLoader:
-    """Maneja la carga de datos."""
+    """MANEJA LA CARGA DE DATOS."""
     
     @staticmethod
     def load_data(file_path: str) -> pl.DataFrame:
+        """CARGA DATOS DESDE ARCHIVO."""
         if file_path.endswith(".parquet"):
             df = pl.read_parquet(file_path)
         elif file_path.endswith(".csv"):
@@ -702,7 +606,7 @@ class DataLoader:
 
 @dataclass
 class SignalGenerator:
-    """Ejecuta la estrategia y retorna DataFrame con señales."""
+    """EJECUTA ESTRATEGIA Y RETORNA SEÑALES."""
     
     @staticmethod
     def generate_signals(
@@ -711,6 +615,7 @@ class SignalGenerator:
         params: Dict[str, Any],
         df_by_timeframe: Optional[Dict[str, pl.DataFrame]] = None,
     ) -> pl.DataFrame:
+        """GENERA SEÑALES DE TRADING."""
         base_tf = normalize_timeframe_to_suffix(params.get("__timeframe_base", "1h"))
         
         if hasattr(strategy, "get_required_timeframes") and callable(strategy.get_required_timeframes):
@@ -722,7 +627,6 @@ class SignalGenerator:
         
         signals_df = strategy.generate_signals(df, params)
         
-        # OPTIMIZACIÓN: Solo añadir columnas si no existen
         cols = signals_df.columns
         if "signal_long" not in cols:
             signals_df = signals_df.with_columns(pl.lit(False).alias("signal_long"))
@@ -734,9 +638,8 @@ class SignalGenerator:
 
 @dataclass
 class BacktestEngine:
-    """Ejecuta backtest y retorna métricas."""
+    """EJECUTA BACKTEST Y RETORNA MÉTRICAS."""
     
-    # Cache de BacktestParams para evitar recreación
     _params_cache: Dict[int, BacktestParams] = field(default_factory=dict)
     
     @staticmethod
@@ -747,6 +650,7 @@ class BacktestEngine:
         params: Dict[str, Any],
         strategy: Strategy,
     ) -> Tuple[pl.DataFrame, List[float], Dict[str, Any]]:
+        """EJECUTA UN BACKTEST COMPLETO."""
         backtest_params = BacktestParams.from_config_and_params(config, params)
         timeframe = params.get("__timeframe_base", "1h")
         
@@ -754,7 +658,6 @@ class BacktestEngine:
             df=df, signals=signals, params=backtest_params, strategy=strategy,
         )
         
-        # Obtener período de backtest del DataFrame de datos
         period_start = None
         period_end = None
         if "timestamp" in df.columns and df.height > 0:
@@ -778,26 +681,12 @@ class BacktestEngine:
 
 
 # =============================================================================
-# RUNNER PRINCIPAL UNIFICADO
+# 8. RUNNER PRINCIPAL DE OPTIMIZACIÓN
 # =============================================================================
 
 @dataclass
 class OptimizationRunner:
-    """
-    Runner de Optimización Bayesiana con soporte para CMA-ES y TPE.
-    
-    SAMPLERS:
-    - CMA-ES: Covariance Matrix Adaptation Evolution Strategy
-              - Aprende de los scores para adaptar la búsqueda
-              - Ideal para scoring institucional multiplicativo
-              - Favorece regiones estables (mesetas de parámetros)
-    - TPE: Tree-structured Parzen Estimator (clásico de Optuna)
-    
-    Soporta:
-    - Backtesting normal (sin perturbación)
-    - Perturbación de datos para validación
-    - Scoring institucional multiplicativo (PSR, DSR, K-Ratio, etc.)
-    """
+    """RUNNER DE OPTIMIZACIÓN BAYESIANA (CMA-ES / TPE)."""
     
     config: BacktestConfig
     n_trials: int

@@ -19,7 +19,7 @@ import base64
 import io
 from pathlib import Path
 from datetime import datetime
-from typing import Dict, List, Any, Optional, Tuple
+from typing import Dict, List, Any
 from dataclasses import dataclass, field
 import warnings
 warnings.filterwarnings('ignore')
@@ -28,18 +28,13 @@ warnings.filterwarnings('ignore')
 import matplotlib
 matplotlib.use('Agg')
 import matplotlib.pyplot as plt
-from matplotlib import cm
 from matplotlib.colors import LinearSegmentedColormap, Normalize
-from mpl_toolkits.mplot3d import Axes3D
 import matplotlib.gridspec as gridspec
-from matplotlib.patches import FancyBboxPatch, Circle, Wedge
-from matplotlib.lines import Line2D
-import matplotlib.patheffects as path_effects
+from matplotlib.patches import Circle, Wedge
 
 # Estadísticas
 from scipy import stats
 from scipy.ndimage import gaussian_filter
-from scipy.interpolate import RBFInterpolator, griddata
 
 
 # =============================================================================
@@ -126,6 +121,8 @@ class GlobalModelStats:
     total_params: int
     total_samples: int
     effective_dimensionality: float
+    mean_uncertainty: float = 0.0  # Incertidumbre media de los modelos
+    ci_coverage: float = 0.95  # Cobertura del intervalo de confianza
 
 
 @dataclass 
@@ -149,6 +146,7 @@ class ConclusionData:
     recommendations: List[str] = field(default_factory=list)
     warnings: List[str] = field(default_factory=list)
     confidence_statements: List[str] = field(default_factory=list)
+    main_conclusion: str = ""  # Conclusión principal generada
 
 
 # =============================================================================
@@ -167,7 +165,7 @@ class GlobalStatisticalAnalyzer:
         noise_levels = [r.noise_level for r in self.gpr_results.values()]
         
         if not r2_scores:
-            return GlobalModelStats(0, 0, 0, 0, "N/A", 0, 0, 0, 0, 0, 0)
+            return GlobalModelStats(0, 0, 0, 0, "N/A", 0, 0, 0, 0, 0, 0, 0.0, 0.95)
         
         mean_r2 = np.mean(r2_scores)
         std_r2 = np.std(r2_scores) if len(r2_scores) > 1 else 0
@@ -203,7 +201,8 @@ class GlobalStatisticalAnalyzer:
             mean_r2=mean_r2, std_r2=std_r2, min_r2=min(r2_scores), max_r2=max(r2_scores),
             overall_quality=quality, stability_score=stability, robustness_score=robustness,
             confidence_level=confidence, total_params=len(self.param_columns),
-            total_samples=len(self.df), effective_dimensionality=eff_dim
+            total_samples=len(self.df), effective_dimensionality=eff_dim,
+            mean_uncertainty=avg_noise, ci_coverage=0.95
         )
     
     def analyze_parameters(self) -> List[ParameterAnalysis]:
@@ -302,7 +301,13 @@ class GlobalStatisticalAnalyzer:
             if nonlin:
                 warns.append(f"Alta no linealidad en {', '.join(p.name.replace('param_','') for p in nonlin[:2])}. Considerar grid más fino.")
         
-        return ConclusionData(gs, pa, self.gpr_results, recs, warns, confs)
+        # Generar conclusión principal
+        main_conclusion = f"Análisis basado en {gs.total_samples} muestras con {gs.total_params} parámetros. "
+        main_conclusion += f"Calidad del modelo: {gs.overall_quality} (R² promedio: {gs.mean_r2:.3f}). "
+        if pa:
+            main_conclusion += f"Parámetro más influyente: {pa[0].name.replace('param_', '')}."
+        
+        return ConclusionData(gs, pa, self.gpr_results, recs, warns, confs, main_conclusion)
 
 
 # =============================================================================
@@ -1408,25 +1413,219 @@ class ProfessionalPDFGenerator:
         }
         
         try:
-            from jinja2 import Template
-            html = Template(self._get_template()).render(**context)
-            
+            # Intentar usar fpdf2 (puro Python, sin dependencias del sistema)
             try:
+                from fpdf import FPDF
+                return self._generate_with_fpdf(output_path, context, console)
+            except ImportError:
+                pass
+            
+            # Fallback: Intentar WeasyPrint (requiere librerías del sistema)
+            try:
+                from jinja2 import Template
                 from weasyprint import HTML
+                html = Template(self._get_template()).render(**context)
                 HTML(string=html).write_pdf(output_path)
                 console.print(f"[green]✅ PDF generado: {output_path}[/green]")
                 return output_path
             except ImportError:
-                html_path = output_path.replace('.pdf', '.html')
-                with open(html_path, 'w', encoding='utf-8') as f:
-                    f.write(html)
-                console.print(f"[yellow]⚠ WeasyPrint no disponible. HTML: {html_path}[/yellow]")
-                return html_path
+                pass
+            
+            # Último fallback: guardar como HTML
+            from jinja2 import Template
+            html = Template(self._get_template()).render(**context)
+            html_path = output_path.replace('.pdf', '.html')
+            with open(html_path, 'w', encoding='utf-8') as f:
+                f.write(html)
+            console.print(f"[yellow]⚠ Ni fpdf2 ni WeasyPrint disponibles. HTML: {html_path}[/yellow]")
+            console.print(f"[yellow]   Instala fpdf2: pip install fpdf2[/yellow]")
+            return html_path
                 
         except Exception as e:
             console.print(f"[red]❌ Error: {e}[/red]")
             import traceback
             traceback.print_exc()
+            return ""
+    
+    def _generate_with_fpdf(self, output_path: str, context: Dict, console) -> str:
+        """Genera PDF usando fpdf2 (puro Python, sin dependencias del sistema)."""
+        from fpdf import FPDF
+        
+        class PDF(FPDF):
+            def header(self):
+                try:
+                    self.set_fill_color(30, 58, 95)
+                    self.rect(0, 0, 210, 25, 'F')
+                    self.set_text_color(255, 255, 255)
+                    self.set_font('Helvetica', 'B', 16)
+                    self.set_y(8)
+                    self.cell(0, 10, 'MODELOX - Reporte de Analisis GPR', align='C')
+                    self.set_text_color(0, 0, 0)
+                    self.ln(20)
+                except:
+                    pass
+            
+            def footer(self):
+                try:
+                    self.set_y(-15)
+                    self.set_font('Helvetica', 'I', 8)
+                    self.set_text_color(128, 128, 128)
+                    self.cell(0, 10, f'MODELOX - Pagina {self.page_no()}', align='C')
+                except:
+                    pass
+        
+        pdf = PDF()
+        pdf.set_auto_page_break(auto=True, margin=20)
+        pdf.add_page()
+        
+        # === RESUMEN EJECUTIVO ===
+        try:
+            pdf.set_font('Helvetica', 'B', 14)
+            pdf.set_fill_color(248, 250, 252)
+            pdf.cell(0, 10, 'RESUMEN EJECUTIVO', fill=True, ln=True)
+            pdf.ln(3)
+            
+            pdf.set_font('Helvetica', '', 10)
+            pdf.cell(60, 7, f"Archivo: {context.get('filename', 'N/A')}")
+            pdf.cell(60, 7, f"Trials: {context.get('n_trials', 0):,}")
+            pdf.cell(60, 7, f"Fecha: {context.get('date', 'N/A')}", ln=True)
+            pdf.cell(60, 7, f"Parametros: {context.get('n_params', 0)}")
+            pdf.cell(60, 7, f"Metricas: {context.get('n_metrics', 0)}", ln=True)
+            pdf.ln(5)
+        except Exception as e:
+            console.print(f"[yellow]⚠ Advertencia en resumen: {e}[/yellow]")
+        
+        # === CALIDAD DEL MODELO ===
+        try:
+            gs = context.get('global_stats')
+            if gs:
+                quality = context.get('quality_class', 'moderate')
+                quality_text = {'excellent': 'EXCELENTE', 'good': 'BUENO', 'moderate': 'MODERADO', 'low': 'BAJO'}
+                quality_colors = {'excellent': (5, 150, 105), 'good': (59, 130, 246), 'moderate': (217, 119, 6), 'low': (220, 38, 38)}
+                
+                pdf.set_font('Helvetica', 'B', 12)
+                pdf.cell(0, 8, 'CALIDAD DEL MODELO', ln=True)
+                pdf.set_font('Helvetica', '', 10)
+                
+                r, g, b = quality_colors.get(quality, (128, 128, 128))
+                pdf.set_text_color(r, g, b)
+                pdf.set_font('Helvetica', 'B', 11)
+                pdf.cell(0, 7, f"Calidad General: {quality_text.get(quality, quality.upper())}", ln=True)
+                pdf.set_text_color(0, 0, 0)
+                pdf.set_font('Helvetica', '', 10)
+                
+                pdf.cell(90, 6, f"R2 Promedio: {getattr(gs, 'mean_r2', 0):.3f}")
+                pdf.cell(90, 6, f"R2 Minimo: {getattr(gs, 'min_r2', 0):.3f}", ln=True)
+                pdf.cell(90, 6, f"Incertidumbre Media: {getattr(gs, 'mean_uncertainty', 0):.3f}")
+                pdf.cell(90, 6, f"Cobertura CI: {getattr(gs, 'ci_coverage', 0.95):.1%}", ln=True)
+                pdf.ln(5)
+        except Exception as e:
+            console.print(f"[yellow]⚠ Advertencia en calidad: {e}[/yellow]")
+        
+        # === VALORES OPTIMOS ===
+        try:
+            if context.get('optimal'):
+                pdf.set_font('Helvetica', 'B', 12)
+                pdf.cell(0, 8, 'VALORES OPTIMOS POR METRICA', ln=True)
+                pdf.ln(2)
+                
+                for metric, params in context['optimal'].items():
+                    try:
+                        pdf.set_font('Helvetica', 'B', 10)
+                        pdf.set_fill_color(45, 90, 135)
+                        pdf.set_text_color(255, 255, 255)
+                        pdf.cell(0, 7, f"  {metric.upper()}", fill=True, ln=True)
+                        pdf.set_text_color(0, 0, 0)
+                        pdf.set_font('Helvetica', '', 9)
+                        
+                        for param, data in params.items():
+                            pdf.cell(50, 5, f"    {param}:")
+                            pdf.cell(40, 5, f"{data.get('value', 0):.4f}")
+                            pdf.cell(50, 5, f"Pred: {data.get('pred', 0):.4f}")
+                            pdf.cell(40, 5, f"[{data.get('ci_l', 0):.3f}, {data.get('ci_u', 0):.3f}]", ln=True)
+                        pdf.ln(2)
+                    except:
+                        pass
+        except Exception as e:
+            console.print(f"[yellow]⚠ Advertencia en optimos: {e}[/yellow]")
+        
+        # === GRAFICAS ===
+        try:
+            if self.figures:
+                pdf.add_page()
+                pdf.set_font('Helvetica', 'B', 14)
+                pdf.set_fill_color(248, 250, 252)
+                pdf.cell(0, 10, 'VISUALIZACIONES', fill=True, ln=True)
+                pdf.ln(5)
+                
+                img_count = 0
+                for name, fig_b64 in self.figures.items():
+                    try:
+                        if img_count > 0 and img_count % 2 == 0:
+                            pdf.add_page()
+                        
+                        img_data = base64.b64decode(fig_b64)
+                        img_path = f"/tmp/modelox_fig_{img_count}.png"
+                        with open(img_path, 'wb') as f:
+                            f.write(img_data)
+                        
+                        pdf.set_font('Helvetica', 'B', 10)
+                        pdf.cell(0, 6, name.replace('_', ' ').title(), ln=True)
+                        pdf.image(img_path, x=15, w=180)
+                        pdf.ln(5)
+                        
+                        import os
+                        os.remove(img_path)
+                        img_count += 1
+                    except Exception as img_err:
+                        pdf.set_font('Helvetica', 'I', 9)
+                        pdf.cell(0, 5, f"[Error cargando grafica: {name}]", ln=True)
+        except Exception as e:
+            console.print(f"[yellow]⚠ Advertencia en graficas: {e}[/yellow]")
+        
+        # === CONCLUSIONES ===
+        try:
+            pdf.add_page()
+            pdf.set_font('Helvetica', 'B', 14)
+            pdf.set_fill_color(248, 250, 252)
+            pdf.cell(0, 10, 'CONCLUSIONES', fill=True, ln=True)
+            pdf.ln(5)
+            
+            conclusions = context.get('conclusions')
+            if conclusions:
+                pdf.set_font('Helvetica', '', 10)
+                if hasattr(conclusions, 'main_conclusion') and conclusions.main_conclusion:
+                    pdf.multi_cell(0, 6, conclusions.main_conclusion)
+                    pdf.ln(3)
+                
+                if hasattr(conclusions, 'param_analyses') and conclusions.param_analyses:
+                    pdf.set_font('Helvetica', 'B', 11)
+                    pdf.cell(0, 8, 'Analisis por Parametro:', ln=True)
+                    pdf.set_font('Helvetica', '', 9)
+                    
+                    for analysis in conclusions.param_analyses:
+                        try:
+                            pdf.set_font('Helvetica', 'B', 9)
+                            param_name = getattr(analysis, 'name', 'param').replace('param_', '').replace('_', ' ').title()
+                            pdf.cell(0, 6, f"  {param_name}:", ln=True)
+                            pdf.set_font('Helvetica', '', 9)
+                            importance = getattr(analysis, 'importance', 0) * 100
+                            optimal_val = getattr(analysis, 'optimal_value', 0)
+                            summary = f"Importancia: {importance:.1f}%, Optimo: {optimal_val:.2f}"
+                            pdf.multi_cell(0, 5, f"    {summary}")
+                            pdf.ln(2)
+                        except:
+                            pass
+        except Exception as e:
+            console.print(f"[yellow]⚠ Advertencia en conclusiones: {e}[/yellow]")
+        
+        # Guardar PDF (esto SIEMPRE debe intentarse)
+        try:
+            pdf.output(output_path)
+            console.print(f"[green]✅ PDF generado (fpdf2): {output_path}[/green]")
+            return output_path
+        except Exception as e:
+            console.print(f"[red]❌ Error guardando PDF: {e}[/red]")
             return ""
 
 
