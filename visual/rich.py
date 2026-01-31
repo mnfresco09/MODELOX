@@ -18,11 +18,8 @@ from rich.table import Table
 from rich.text import Text
 from rich.columns import Columns
 
-# Importar configuración
-try:
-    from general.configuracion import VECINDARIO_MAX_DISPERSION
-except ImportError:
-    VECINDARIO_MAX_DISPERSION = 0.50
+# Valor por defecto para dispersión máxima (legacy)
+VECINDARIO_MAX_DISPERSION = 0.50
 
 
 # ============================================================================
@@ -135,6 +132,23 @@ def _score_color(is_best: bool) -> str:
     return THEME.GOLD if is_best else THEME.BLUE
 
 
+def _format_score(score: float) -> str:
+    """
+    Formatea el score para display.
+    
+    Scoring v2.0 rango [1, 1000]:
+        - score >= 100: mostrar como entero
+        - score >= 10: mostrar con 1 decimal
+        - score < 10: mostrar con 2 decimales
+    """
+    if score >= 100:
+        return f"{score:.0f}"
+    elif score >= 10:
+        return f"{score:.1f}"
+    else:
+        return f"{score:.2f}"
+
+
 # ============================================================================
 # MAIN TRIAL DISPLAY - Box Layout
 # ============================================================================
@@ -200,7 +214,7 @@ def mostrar_panel_elegante(
     s = _stats.obtener_promedios()
     best_str = ""
     if not is_best and s['mejor_score'] > float('-inf') and s['n_trials'] > 0:
-        best_str = f"  │  [{THEME.GOLD}]BEST {s['mejor_score']:.2f} TRIAL {s['mejor_trial']}[/]"
+        best_str = f"  │  [{THEME.GOLD}]BEST {_format_score(s['mejor_score'])} TRIAL {s['mejor_trial']}[/]"
     
     # Get cantidad for asset display
     cantidad = params.get("cantidad", params.get("__cantidad", None))
@@ -208,7 +222,7 @@ def mostrar_panel_elegante(
     
     header = (f"{asset_str}  │  {strat}  │  "
               f"TF {tf}  │  TRIAL [{THEME.WHITE}]{trial_num}[/]  │  "
-              f"[bold {score_c}]SCORE {score:.2f}{star}[/]{best_str}")
+              f"[bold {score_c}]SCORE {_format_score(score)}{star}[/]{best_str}")
     
     # ═══════════════════════════════════════════════════════════════════════
     # BOX 1: PERFORMANCE
@@ -273,7 +287,7 @@ def mostrar_panel_elegante(
                     f"PF [{THEME.TEXT}]{s['pf_medio']:.2f}[/]  │  "
                     f"SHARPE [{THEME.TEXT}]{s['sharpe_medio']:.2f}[/]  │  "
                     f"SQN [{THEME.TEXT}]{s['sqn_medio']:.2f}[/]  │  "
-                    f"SCORE [{THEME.TEXT}]{s['score_medio']:.2f}[/]")
+                    f"SCORE [{THEME.TEXT}]{_format_score(s['score_medio'])}[/]")
     
     # ═══════════════════════════════════════════════════════════════════════
     # BOX 3: PARAMETERS
@@ -514,7 +528,7 @@ def mostrar_evolucion_metricas(mostrar_cada_n: int = 25, forzar: bool = False) -
     
     grid.add_row("ROI", f"{s['roi_medio']:.2f}%", "SQN", f"{s['sqn_medio']:.3f}")
     grid.add_row("EXP", f"{s['expectativa_media']:.2f}", "SHARPE", f"{s['sharpe_medio']:.2f}")
-    grid.add_row("PF", f"{s['pf_medio']:.2f}", "SCORE", f"[{THEME.WHITE}]{s['score_medio']:.2f}[/]")
+    grid.add_row("PF", f"{s['pf_medio']:.2f}", "SCORE", f"[{THEME.WHITE}]{_format_score(s['score_medio'])}[/]")
     
     evo_box = Panel(
         grid,
@@ -612,6 +626,7 @@ def mostrar_cabecera_inicio(
     exit_type: str = "FIXED",
     strategy_exit_enabled: bool = False,
     perturbacion_activar: bool = False,
+    sampler_type: str = "CMA",
 ) -> None:
     """Display elegant startup header with comprehensive info - centered, white text."""
     os.system('cls' if os.name == 'nt' else 'clear')
@@ -648,10 +663,11 @@ def mostrar_cabecera_inicio(
     if archivo_data:
         info_grid.add_row("DATA", f"{archivo_data[-28:].upper()}")
     
-    # Main panel - white title, centered
+    # Main panel - white title with sampler type, centered
+    sampler_label = sampler_type.upper() if sampler_type else "CMA"
     header_panel = Panel(
         info_grid,
-        title=f"[bold {THEME.WHITE}]═══ MODELOX OPTIMIZATION ═══[/]",
+        title=f"[bold {THEME.WHITE}]═══ MODELOX OPTIMIZATION {sampler_label} ═══[/]",
         subtitle=f"[{THEME.DIM}]V3.0[/]",
         border_style=THEME.BORDER,
         box=box.DOUBLE,
@@ -725,9 +741,9 @@ def mostrar_trial_compacto(
     score_c = _score_color(is_best)
     
     # Info
-    info_rows = [("T#", str(trial_num)), ("SCORE", f"[{score_c}]{score:.2f}{star}[/]")]
+    info_rows = [("T#", str(trial_num)), ("SCORE", f"[{score_c}]{_format_score(score)}{star}[/]")]
     if best_so_far and not is_best:
-        info_rows.append(("BEST", f"{best_so_far:.2f}"))
+        info_rows.append(("BEST", f"{_format_score(best_so_far)}"))
     
     # Perf
     perf_rows = [

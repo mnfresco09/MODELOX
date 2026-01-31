@@ -42,7 +42,7 @@ import torch
 import gpytorch
 from gpytorch.models import ExactGP, ApproximateGP
 from gpytorch.means import ConstantMean
-from gpytorch.kernels import ScaleKernel, MaternKernel, InducingPointKernel
+from gpytorch.kernels import ScaleKernel, MaternKernel, InducingPointKernel, RQKernel
 from gpytorch.likelihoods import GaussianLikelihood
 from gpytorch.distributions import MultivariateNormal
 from gpytorch.mlls import ExactMarginalLogLikelihood, VariationalELBO
@@ -185,21 +185,36 @@ class ProfessionalUI:
         return table
     
     @staticmethod
-    def metric_result(metric: str, r2: float, noise: float, model_type: str, 
-                      n_samples: int, n_inducing: int = 0, time_elapsed: float = 0) -> Panel:
+    def metric_result(metric: str, r2: float, r2_cv: float, noise: float, model_type: str, 
+                      n_samples: int, n_inducing: int = 0, time_elapsed: float = 0,
+                      is_overfit: bool = False) -> Panel:
         """Muestra resultado de métrica con formato profesional."""
-        # Calidad visual
-        if r2 > 0.7:
+        # Calidad visual basada en R² CV (más realista)
+        if is_overfit:
+            quality = "[red]⚠⚠⚠⚠⚠[/red] SOBREAJUSTE"
+        elif r2_cv > 0.7:
             quality = "[green]■■■■■[/green] EXCELENTE"
-        elif r2 > 0.4:
+        elif r2_cv > 0.4:
             quality = "[yellow]■■■░░[/yellow] MODERADO"
         else:
             quality = "[red]■░░░░[/red] BAJO"
         
         content = Text()
-        content.append(f"R² SCORE:     ", style="grey70")
-        content.append(f"{r2:.4f} ", style="bold white")
+        content.append(f"R² TRAIN:     ", style="grey70")
+        content.append(f"{r2:.4f}\n", style="white")
+        content.append(f"R² CV:       ", style="grey70")
+        content.append(f"{r2_cv:.4f} ", style="bold white")
         content.append(f"({quality})\n")
+        
+        # Mostrar gap y advertencia de sobreajuste
+        gap = r2 - r2_cv
+        content.append(f"Δ (Train-CV): ", style="grey70")
+        if is_overfit:
+            content.append(f"{gap:.4f} ", style="bold red")
+            content.append(f"[⚠ DESIONIZACIÓN NO CONFIABLE]\n", style="red")
+        else:
+            content.append(f"{gap:.4f} [✓ OK]\n", style="white")
+        
         content.append(f"NOISE (σn):   ", style="grey70")
         content.append(f"{noise:.4f}\n", style="white")
         content.append(f"MODELO:       ", style="grey70")
@@ -698,10 +713,12 @@ COLORS = {
 class GPRResult:
     """Resultado del análisis GPR."""
     metric: str
-    r2_score: float
+    r2_score: float  # R² de entrenamiento (sobre todos los datos)
+    r2_cv_score: float  # R² de validación cruzada (K-Fold)
     noise_level: float
     length_scales: Dict[str, float]
     predictions: Dict[str, 'ParameterPrediction']
+    is_overfit: bool = False  # True si R²_train - R²_cv > umbral
 
 
 @dataclass
@@ -722,13 +739,34 @@ class ParameterPrediction:
 # =============================================================================
 
 class ExactGPModel(ExactGP):
-    """Modelo Exact GP con kernel Matérn 2.5 y ARD."""
+    """
+    Modelo Exact GP con kernel aditivo multi-escala.
+    
+    Kernel = Scale(Matérn_2.5) + Scale(RationalQuadratic)
+    
+    - Matérn(nu=2.5): Captura estructura LOCAL (picos específicos, variaciones rápidas)
+    - RationalQuadratic: Captura estructura GLOBAL (tendencias generales como 
+      "a mayor Stop Loss, mejor ROI")
+    
+    Ambos con ARD (Automatic Relevance Determination) para aprender importancia
+    de cada parámetro independientemente.
+    """
     def __init__(self, train_x, train_y, likelihood, n_features):
         super().__init__(train_x, train_y, likelihood)
         self.mean_module = ConstantMean()
-        self.covar_module = ScaleKernel(
+        
+        # Kernel aditivo: estructura local + estructura global
+        # Matérn 2.5: suavidad local, derivadas continuas
+        self.local_kernel = ScaleKernel(
             MaternKernel(nu=2.5, ard_num_dims=n_features)
         )
+        # RationalQuadratic: mezcla de RBFs con diferentes lengthscales
+        # Captura tendencias a múltiples escalas simultáneamente
+        self.global_kernel = ScaleKernel(
+            RQKernel(ard_num_dims=n_features)
+        )
+        # Kernel aditivo: K = K_local + K_global
+        self.covar_module = self.local_kernel + self.global_kernel
     
     def forward(self, x):
         mean_x = self.mean_module(x)
@@ -738,9 +776,14 @@ class ExactGPModel(ExactGP):
 
 class SparseGPModel(ApproximateGP):
     """
-    Sparse Variational GP (SVGP) con kernel Matérn 2.5 y ARD.
+    Sparse Variational GP (SVGP) con kernel aditivo multi-escala.
     Usa inducing points para aproximar el GP completo.
     Complejidad: O(NM²) vs O(N³) del Exact GP.
+    
+    Kernel = Scale(Matérn_2.5) + Scale(RationalQuadratic)
+    
+    - Matérn(nu=2.5): Captura estructura LOCAL (picos específicos)
+    - RationalQuadratic: Captura estructura GLOBAL (tendencias generales)
     """
     def __init__(self, inducing_points, n_features):
         # Variational distribution q(u) sobre los inducing points
@@ -757,9 +800,15 @@ class SparseGPModel(ApproximateGP):
         super().__init__(variational_strategy)
         
         self.mean_module = ConstantMean()
-        self.covar_module = ScaleKernel(
+        
+        # Kernel aditivo: estructura local + estructura global
+        self.local_kernel = ScaleKernel(
             MaternKernel(nu=2.5, ard_num_dims=n_features)
         )
+        self.global_kernel = ScaleKernel(
+            RQKernel(ard_num_dims=n_features)
+        )
+        self.covar_module = self.local_kernel + self.global_kernel
     
     def forward(self, x):
         mean_x = self.mean_module(x)
@@ -783,7 +832,16 @@ class GPROptimizer:
     - GPyTorch fast settings habilitados
     - torch.inference_mode() para predicciones (Optimización 6)
     
-    Kernel: Matérn(nu=2.5) con ARD (Automatic Relevance Determination)
+    Kernel Aditivo Multi-escala:
+        K = Scale(Matérn_2.5) + Scale(RationalQuadratic)
+        
+        - Matérn(nu=2.5): Estructura LOCAL - captura picos específicos y 
+          variaciones rápidas en los parámetros
+        - RationalQuadratic: Estructura GLOBAL - captura tendencias generales
+          (ej. "a mayor Stop Loss, mejor ROI")
+        
+        Ambos con ARD (Automatic Relevance Determination) para aprender
+        la importancia de cada parámetro independientemente.
     """
     
     # Cache LRU a nivel de clase para predicciones (Optimización 1)
@@ -1308,9 +1366,16 @@ class GPROptimizer:
         console.print(f"[grey50]      │ WARM-UP CHOLESKY: {t_eval*1000:.1f}ms[/grey50]")
         
         # Extraer hiperparámetros aprendidos
+        # Con kernel aditivo: local_kernel (Matérn) + global_kernel (RQ)
         try:
             self.learned_noise = self.likelihood.noise.item()
-            ls = self.model.covar_module.base_kernel.lengthscale.detach().numpy().flatten()
+            # Extraer lengthscales del kernel local (Matérn) - el más interpretable
+            # En kernel aditivo: model.local_kernel.base_kernel.lengthscale
+            if hasattr(self.model, 'local_kernel'):
+                ls = self.model.local_kernel.base_kernel.lengthscale.detach().numpy().flatten()
+            else:
+                # Fallback para kernel simple (no aditivo)
+                ls = self.model.covar_module.base_kernel.lengthscale.detach().numpy().flatten()
             self.learned_length_scales = ls
         except:
             self.learned_noise = 0.0
@@ -1395,6 +1460,92 @@ class GPROptimizer:
         ss_res = np.sum((y - y_pred) ** 2)
         ss_tot = np.sum((y - np.mean(y)) ** 2)
         return 1 - (ss_res / ss_tot) if ss_tot > 0 else 0.0
+    
+    def compute_cv_r2(self, X: np.ndarray, y: np.ndarray, n_folds: int = 5, 
+                      random_state: int = 42) -> Tuple[float, float, bool]:
+        """
+        Calcula R² con K-Fold Cross-Validation para detectar sobreajuste.
+        
+        Entrena en (K-1) folds y valida en el fold restante, rotando K veces.
+        Compara R²_train vs R²_cv para detectar si el modelo está "alucinando" patrones.
+        
+        Args:
+            X: Features de entrada
+            y: Target
+            n_folds: Número de folds (default 5 = 80% train / 20% val)
+            random_state: Semilla para reproducibilidad
+            
+        Returns:
+            Tuple[r2_train, r2_cv, is_overfit]:
+                - r2_train: R² promedio en datos de entrenamiento
+                - r2_cv: R² promedio en datos de validación (out-of-fold)
+                - is_overfit: True si (r2_train - r2_cv) > 0.15 (15% de caída)
+        """
+        from sklearn.model_selection import KFold
+        
+        n_samples = len(X)
+        
+        # Si muy pocos datos, no hacer CV (mínimo 2 samples por fold)
+        if n_samples < n_folds * 2:
+            r2_train = self.compute_r2(X, y)
+            console.print(f"[yellow]      │   ⚠ POCOS DATOS ({n_samples}) PARA CV, USANDO R² TRAIN[/yellow]")
+            return r2_train, r2_train, False
+        
+        kf = KFold(n_splits=n_folds, shuffle=True, random_state=random_state)
+        
+        r2_train_scores = []
+        r2_val_scores = []
+        
+        console.print(f"[grey50]      │   K-FOLD CV: {n_folds} FOLDS ({100*(n_folds-1)/n_folds:.0f}% TRAIN / {100/n_folds:.0f}% VAL)[/grey50]")
+        
+        for fold_idx, (train_idx, val_idx) in enumerate(kf.split(X)):
+            X_train, X_val = X[train_idx], X[val_idx]
+            y_train, y_val = y[train_idx], y[val_idx]
+            
+            # Entrenar modelo temporal en este fold
+            fold_gpr = GPROptimizer(n_restarts=self.n_restarts, 
+                                     training_iterations=self.training_iterations)
+            
+            # Suprimir output del entrenamiento de folds
+            with console.capture():
+                fold_gpr.fit(X_train, y_train, self.feature_names)
+            
+            # R² en train de este fold
+            y_pred_train, _ = fold_gpr.predict_batch(X_train)
+            ss_res_train = np.sum((y_train - y_pred_train) ** 2)
+            ss_tot_train = np.sum((y_train - np.mean(y_train)) ** 2)
+            r2_train = 1 - (ss_res_train / ss_tot_train) if ss_tot_train > 0 else 0.0
+            
+            # R² en validación (out-of-fold)
+            y_pred_val, _ = fold_gpr.predict_batch(X_val)
+            ss_res_val = np.sum((y_val - y_pred_val) ** 2)
+            ss_tot_val = np.sum((y_val - np.mean(y_val)) ** 2)
+            r2_val = 1 - (ss_res_val / ss_tot_val) if ss_tot_val > 0 else 0.0
+            
+            r2_train_scores.append(r2_train)
+            r2_val_scores.append(r2_val)
+            
+            # Limpiar modelo del fold
+            del fold_gpr
+        
+        # Promedios
+        r2_train_mean = np.mean(r2_train_scores)
+        r2_cv_mean = np.mean(r2_val_scores)
+        r2_cv_std = np.std(r2_val_scores)
+        
+        # Detectar sobreajuste: si R²_train - R²_cv > 15%, el modelo "alucina"
+        overfit_threshold = 0.15
+        gap = r2_train_mean - r2_cv_mean
+        is_overfit = gap > overfit_threshold
+        
+        # Mostrar resultados CV
+        if is_overfit:
+            console.print(f"[red]      │   ⚠ SOBREAJUSTE DETECTADO: R²_TRAIN={r2_train_mean:.3f} vs R²_CV={r2_cv_mean:.3f} (Δ={gap:.3f})[/red]")
+            console.print(f"[red]      │   ⚠ LA DESIONIZACIÓN NO ES CONFIABLE - EL MODELO ESTÁ 'ALUCINANDO' PATRONES[/red]")
+        else:
+            console.print(f"[grey50]      │   R²_TRAIN={r2_train_mean:.3f} | R²_CV={r2_cv_mean:.3f}±{r2_cv_std:.3f} (Δ={gap:.3f}) ✓[/grey50]")
+        
+        return r2_train_mean, r2_cv_mean, is_overfit
 
 
 # =============================================================================
@@ -2258,7 +2409,12 @@ class BayesianDenoisingAnalyzer:
         # Entrenar GPR
         gpr = GPROptimizer(n_restarts=5)
         gpr.fit(X_clean, y_clean, self.param_columns)
-        r2 = gpr.compute_r2(X_clean, y_clean)
+        
+        # R² de entrenamiento (optimista)
+        r2_train = gpr.compute_r2(X_clean, y_clean)
+        
+        # R² de validación cruzada (realista) - detecta sobreajuste
+        r2_train_cv, r2_cv, is_overfit = gpr.compute_cv_r2(X_clean, y_clean, n_folds=5)
         
         # Optimización 5: Calcular TODAS las dependencias parciales en UNA llamada
         predictions = compute_all_partial_dependences(
@@ -2271,8 +2427,9 @@ class BayesianDenoisingAnalyzer:
                        } if len(gpr.learned_length_scales) == len(self.param_columns) else {}
         
         result = GPRResult(
-            metric=metric, r2_score=r2, noise_level=gpr.learned_noise,
-            length_scales=length_scales, predictions=predictions
+            metric=metric, r2_score=r2_train, r2_cv_score=r2_cv, 
+            noise_level=gpr.learned_noise, length_scales=length_scales, 
+            predictions=predictions, is_overfit=is_overfit
         )
         
         total_time = time.perf_counter() - metric_start
@@ -2343,15 +2500,17 @@ class BayesianDenoisingAnalyzer:
                                 self.gpr_models[metric_name] = gpr
                                 self.gpr_results[metric_name] = gpr_result
                                 
-                                # Mostrar resultado con formato profesional
+                            # Mostrar resultado con formato profesional
                                 console.print(UI.metric_result(
                                     metric=metric_name,
                                     r2=gpr_result.r2_score,
+                                    r2_cv=gpr_result.r2_cv_score,
                                     noise=gpr_result.noise_level,
                                     model_type="SPARSE" if gpr.is_sparse else "EXACT",
                                     n_samples=gpr.original_size,
                                     n_inducing=gpr.n_inducing if gpr.is_sparse else 0,
-                                    time_elapsed=total_time
+                                    time_elapsed=total_time,
+                                    is_overfit=gpr_result.is_overfit
                                 ))
                             else:
                                 console.print(f"[yellow]  ⚠ {metric.upper()}: DATOS INSUFICIENTES[/yellow]")
@@ -2384,21 +2543,30 @@ class BayesianDenoisingAnalyzer:
                     fit_start = time.perf_counter()
                     gpr = GPROptimizer(n_restarts=5)
                     gpr.fit(X_clean, y_clean, self.param_columns)
-                    r2 = gpr.compute_r2(X_clean, y_clean)
+                    
+                    # R² de entrenamiento (optimista)
+                    r2_train = gpr.compute_r2(X_clean, y_clean)
+                    
+                    # R² de validación cruzada (realista) - detecta sobreajuste
+                    r2_train_cv, r2_cv, is_overfit = gpr.compute_cv_r2(X_clean, y_clean, n_folds=5)
                     fit_time = time.perf_counter() - fit_start
                     
                     # Reanudar progress
                     progress.start()
                     
-                    # Calidad
-                    if r2 > 0.7:
+                    # Calidad basada en R² de CV (más realista)
+                    if is_overfit:
+                        quality = "[red]⚠ SOBREAJUSTE[/red]"
+                    elif r2_cv > 0.7:
                         quality = "[green]EXCELENTE[/green]"
-                    elif r2 > 0.4:
+                    elif r2_cv > 0.4:
                         quality = "[yellow]MODERADO[/yellow]"
                     else:
                         quality = "[red]BAJO[/red]"
                     
-                    console.print(f"[grey70]  │  R² = {r2:.4f} ({quality}) - {tracker.format_duration(fit_time)}[/grey70]")
+                    console.print(f"[grey70]  │  R²_TRAIN = {r2_train:.4f} | R²_CV = {r2_cv:.4f} ({quality}) - {tracker.format_duration(fit_time)}[/grey70]")
+                    if is_overfit:
+                        console.print(f"[red]  │  ⚠ DESIONIZACIÓN NO CONFIABLE - MODELO SOBREAJUSTADO[/red]")
                     console.print(f"[grey50]  │  σn = {gpr.learned_noise:.4f}[/grey50]")
                     
                     if gpr.is_sparse:
@@ -2421,8 +2589,9 @@ class BayesianDenoisingAnalyzer:
                     
                     self.gpr_models[metric] = gpr
                     self.gpr_results[metric] = GPRResult(
-                        metric=metric, r2_score=r2, noise_level=gpr.learned_noise,
-                        length_scales=length_scales, predictions=predictions
+                        metric=metric, r2_score=r2_train, r2_cv_score=r2_cv,
+                        noise_level=gpr.learned_noise, length_scales=length_scales, 
+                        predictions=predictions, is_overfit=is_overfit
                     )
                     
                     total_time = time.perf_counter() - metric_start
@@ -2552,15 +2721,19 @@ class BayesianDenoisingAnalyzer:
     
     <h2>Resumen GPR</h2>
     <table>
-        <tr><th>Métrica</th><th>R²</th><th>Calidad</th><th>σn</th></tr>
+        <tr><th>Métrica</th><th>R² Train</th><th>R² CV</th><th>Calidad</th><th>σn</th><th>Estado</th></tr>
         {% for metric, result in results.items() %}
         <tr>
             <td><strong>{{ metric.upper() }}</strong></td>
             <td>{{ "%.4f"|format(result.r2_score) }}</td>
-            <td class="{{ 'metric-good' if result.r2_score > 0.7 else 'metric-moderate' if result.r2_score > 0.4 else 'metric-low' }}">
-                {{ 'EXCELENTE' if result.r2_score > 0.7 else 'MODERADO' if result.r2_score > 0.4 else 'BAJO' }}
+            <td>{{ "%.4f"|format(result.r2_cv_score) }}</td>
+            <td class="{{ 'metric-good' if result.r2_cv_score > 0.7 else 'metric-moderate' if result.r2_cv_score > 0.4 else 'metric-low' }}">
+                {{ 'EXCELENTE' if result.r2_cv_score > 0.7 else 'MODERADO' if result.r2_cv_score > 0.4 else 'BAJO' }}
             </td>
             <td>{{ "%.4f"|format(result.noise_level) }}</td>
+            <td class="{{ 'metric-low' if result.is_overfit else 'metric-good' }}">
+                {{ '⚠ SOBREAJUSTE' if result.is_overfit else '✓ OK' }}
+            </td>
         </tr>
         {% endfor %}
     </table>
@@ -2691,9 +2864,12 @@ class BayesianDenoisingAnalyzer:
                 # Resumen
                 resumen = [{
                     'Métrica': m.upper(),
-                    'R²': r.r2_score,
-                    'Calidad': 'EXCELENTE' if r.r2_score > 0.7 else 'MODERADO' if r.r2_score > 0.4 else 'BAJO',
-                    'σn': r.noise_level
+                    'R²_Train': r.r2_score,
+                    'R²_CV': r.r2_cv_score,
+                    'Calidad': 'EXCELENTE' if r.r2_cv_score > 0.7 else 'MODERADO' if r.r2_cv_score > 0.4 else 'BAJO',
+                    'σn': r.noise_level,
+                    'Sobreajuste': '⚠ SÍ' if r.is_overfit else 'NO',
+                    'Δ_R²': r.r2_score - r.r2_cv_score
                 } for m, r in self.gpr_results.items()]
                 pd.DataFrame(resumen).to_excel(writer, sheet_name='Resumen', index=False)
                 

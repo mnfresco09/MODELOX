@@ -120,6 +120,24 @@ OPTUNA_SEED = None      # SEMILLA ALEATORIA (NONE PARA VARIEDAD)
 OPTUNA_STORAGE = None   # NONE = EJECUCIÓN EN RAM (MÁS RÁPIDO)
 
 # ----------------------------------------------------------------------------
+# 1.4.A ALGORITMO DE OPTIMIZACIÓN (SAMPLER)
+# ----------------------------------------------------------------------------
+# SELECCIONA EL ALGORITMO DE BÚSQUEDA BAYESIANA:
+#
+#   "CMA"  = CMA-ES (Covariance Matrix Adaptation Evolution Strategy)
+#            - RECOMENDADO para scoring institucional
+#            - Mejor para encontrar "mesetas de parámetros" (robustez)
+#            - Adapta la matriz de covarianza según los scores
+#            - Ideal para espacios de búsqueda continuos
+#
+#   "TPE"  = Tree-structured Parzen Estimator
+#            - Algoritmo clásico de Optuna
+#            - Bueno para espacios mixtos (continuos + categóricos)
+#            - Más rápido en las primeras iteraciones
+#
+OPTUNA_SAMPLER = "CMA"  # <--- MODIFICA AQUÍ ("CMA" o "TPE")
+
+# ----------------------------------------------------------------------------
 # 1.4.0 LIMPIEZA PERIÓDICA DE MEMORIA (ANTI-SLOWDOWN)
 # ----------------------------------------------------------------------------
 # Cada N trials se limpia la memoria para mantener velocidad constante.
@@ -221,59 +239,19 @@ USAR_EXCEL = True          # Generar archivos Excel con resumen y trades
 PURGE_PYCACHE_ON_EXIT = True
 
 # ----------------------------------------------------------------------------
-# 1.10 SISTEMA DE SCORING UNIFICADO v7.0 (NEIGHBORHOOD ROBUSTNESS)
+# 1.10 SISTEMA DE SCORING UNIFICADO v8.0 (SIMPLIFICADO)
 # ----------------------------------------------------------------------------
-# Sistema de evaluación que combina CALIDAD × ACTIVIDAD × ROBUSTEZ
+# Sistema de evaluación: Score = Calidad × Actividad
 #
-# FÓRMULA: Score = Calidad_Raw × Factor_Actividad × Factor_Robustez
+# COMPONENTE DE CALIDAD:
+# - Rango: [0, 600]
+# - Normaliza Sharpe (per-trade), SQN, ROI, Drawdown usando tanh
+# - Sharpe per-trade: calidad promedio de cada disparo individual
 #
-# COMPONENTE DE CALIDAD (Calidad_Raw):
-# - Rango: [0, 1000]
-# - Normaliza Sharpe, SQN, ROI, Drawdown usando funciones tanh (sigmoides)
-# - Rendimientos decrecientes: mejorar Sharpe de 2→3 da más que 5→6
-#
-# COMPONENTE DE ACTIVIDAD (Factor_Actividad):
+# COMPONENTE DE ACTIVIDAD:
 # - Sigmoide logística centrada en 0.25 trades/día
 # - Si trades/día < 0.25 → factor cae hacia 0
 # - Si trades/día >= 0.5 → factor ~1.0
-#
-# COMPONENTE DE ROBUSTEZ (Factor_Robustez) - "TECHO DE CRISTAL":
-# - SIN TEST: Factor = 0.30 → Score máximo = 300 puntos
-#   Para superar 300, el optimizador DEBE buscar configs que activen el test
-#
-# - CON TEST: Factor = e^(-3.0 × Incertidumbre)
-#   - Incertidumbre = dispersión agregada (ROI, Sharpe, Drawdown)
-#   - Dispersión 0% → Factor = 1.0 (se liberan los 1000 puntos)
-#   - Dispersión ~23% → Factor = 0.5 (~500 puntos)
-#   - Dispersión ~40% → Factor = 0.30 (igual que sin test)
-#   - Dispersión >40% → Factor < 0.30 (PEOR que sin test)
-
-VECINDARIO_ACTIVAR = True             # ✓ ACTIVADO - Sistema de Neighborhood Fitness
-
-# ═══════════════════════════════════════════════════════════════════════════════
-# PARÁMETROS PRINCIPALES DE VECINDARIO (AJUSTAR AQUÍ)
-# ═══════════════════════════════════════════════════════════════════════════════
-VECINDARIO_N_NEIGHBORS = 10            # Número de vecinos a generar (K) → K+1 backtests por trial
-VECINDARIO_MAX_DISPERSION = 0.3     # Dispersión máxima permitida (CV) para aprobar robustez
-                                      # v7.0: Límite suavizado a 40% (antes 15%)
-                                      # El decaimiento exponencial ya penaliza la alta dispersión
-                                      # Más bajo = más estricto (ej: 0.25 = 25%)
-                                      # Más alto = más permisivo (ej: 0.50 = 50%)
-# ═══════════════════════════════════════════════════════════════════════════════
-
-VECINDARIO_PERTURBATION_STD = 0.05    # Desviación estándar del ruido gaussiano (5%)
-VECINDARIO_LAMBDA_PENALTY = 1.5       # Factor de penalización por varianza (Score = μ - λ·σ)
-VECINDARIO_SEED = 42                  # Semilla base para reproducibilidad
-VECINDARIO_EXCEL = True               # Generar Excel con detalle de vecinos
-VECINDARIO_GUARDAR_MEJORES = 5        # Guardar los N mejores trials en Excel
-
-# ═══════════════════════════════════════════════════════════════════════════════
-# CRITERIOS PARA HACER TEST DE VECINDARIO (v7.1)
-# Un trial SOLO recibe test de robustez si cumple TODOS estos criterios:
-# ═══════════════════════════════════════════════════════════════════════════════
-VECINDARIO_MIN_TRADES_DIA = 0.25      # Trades/día > 0.25
-VECINDARIO_MIN_PROFIT_FACTOR = 1.1    # Profit Factor > 1.1
-VECINDARIO_MIN_SHARPE = 1.25          # Sharpe > 1.25
 
 
 # =============================================================================
@@ -372,6 +350,7 @@ CONFIG = {
     "QTY_MAX_MAP": QTY_MAX_MAP, "QTY_MAX_RANGE_MAP": QTY_MAX_RANGE_MAP,
     "N_TRIALS": N_TRIALS, "OPTUNA_N_JOBS": OPTUNA_N_JOBS,
     "OPTUNA_SEED": OPTUNA_SEED, "OPTUNA_STORAGE": OPTUNA_STORAGE,
+    "OPTUNA_SAMPLER": OPTUNA_SAMPLER,  # CMA o TPE
     "COMBINACION_A_EJECUTAR": COMBINACION_A_EJECUTAR,
     "EXIT_TYPE": EXIT_TYPE, "RIESGO_POR_TRADE_PCT": RIESGO_POR_TRADE_PCT,
     "EXIT_SL_PCT": EXIT_SL_PCT, "EXIT_TP_PCT": EXIT_TP_PCT,
@@ -388,13 +367,4 @@ CONFIG = {
     "PERTURBACION_BLOCK_SIZE": PERTURBACION_BLOCK_SIZE,
     "PERTURBACION_SEED": PERTURBACION_SEED,
     "PERTURBACION_VERIFY": PERTURBACION_VERIFY,
-    # Vecindario (Neighborhood Fitness Aggregation)
-    "VECINDARIO_ACTIVAR": VECINDARIO_ACTIVAR,
-    "VECINDARIO_N_NEIGHBORS": VECINDARIO_N_NEIGHBORS,
-    "VECINDARIO_MAX_DISPERSION": VECINDARIO_MAX_DISPERSION,
-    "VECINDARIO_PERTURBATION_STD": VECINDARIO_PERTURBATION_STD,
-    "VECINDARIO_LAMBDA_PENALTY": VECINDARIO_LAMBDA_PENALTY,
-    "VECINDARIO_SEED": VECINDARIO_SEED,
-    "VECINDARIO_EXCEL": VECINDARIO_EXCEL,
-    "VECINDARIO_GUARDAR_MEJORES": VECINDARIO_GUARDAR_MEJORES,
 }

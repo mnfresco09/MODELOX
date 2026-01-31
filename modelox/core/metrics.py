@@ -762,51 +762,58 @@ def _get_annualization_factor(timeframe: Optional[str] = None, trades: Optional[
 def sharpe(
     trades: TradesDF,
     *,
-    annualize: bool = True,
+    annualize: bool = False,
     timeframe: Optional[str] = None
 ) -> float:
     """
-    Sharpe Ratio anualizado comparable entre timeframes.
+    Sharpe Ratio PER-TRADE (calidad por disparo individual).
 
-    El Sharpe Ratio mide el exceso de retorno por unidad de riesgo.
-    Para comparar estrategias en diferentes timeframes, se anualiza
-    usando la raíz cuadrada del número de observaciones por año.
+    FILOSOFÍA:
+    Mide la calidad promedio de cada trade individual, ignorando
+    cuántas veces dispara la estrategia al año. Esto permite comparar
+    la calidad intrínseca de los "disparos" entre estrategias.
 
     Fórmula:
-        Sharpe = (mean_return / std_return) * sqrt(N_annual)
+        Sharpe_per_trade = mean(returns) / std(returns)
+
+    Si annualize=True, escala por sqrt(N_trades) para dar una idea
+    de cómo se acumula la calidad con más trades, pero el default
+    es FALSE para medir la calidad pura por trade.
 
     Args:
         trades: DataFrame con los trades
-        annualize: Si True (default), anualiza el ratio
-        timeframe: Timeframe para cálculo preciso ('1m', '5m', '15m', '1h', etc.)
+        annualize: Si True, escala por sqrt(n_trades). Default=False
+        timeframe: Ignorado (mantenido por compatibilidad)
 
     Returns:
-        Sharpe Ratio (anualizado si annualize=True)
+        Sharpe Ratio per-trade (raw si annualize=False)
     """
     if _empty(trades):
         return 0.0
     r = _returns_series(trades)
-    if r.size == 0:
+    n_trades = r.size
+    if n_trades == 0:
         return 0.0
     mean = float(np.mean(r))
-    std = float(np.std(r, ddof=1)) if r.size > 1 else 0.0
+    std = float(np.std(r, ddof=1)) if n_trades > 1 else 0.0
     if std == 0:
         return 0.0
+    # Sharpe per-trade: calidad promedio de cada disparo
     ratio = mean / std
-    if annualize:
-        ann_factor = _get_annualization_factor(timeframe, trades)
-        ratio *= float(np.sqrt(ann_factor))
+    if annualize and n_trades > 1:
+        # Escalar por sqrt(N) para ver acumulación con más trades
+        ratio *= float(np.sqrt(n_trades))
     return float(ratio)
 
 
 def sortino(
     trades: TradesDF,
     *,
-    annualize: bool = True,
+    annualize: bool = False,
     timeframe: Optional[str] = None
 ) -> float:
     """
-    Sortino Ratio anualizado comparable entre timeframes.
+    Sortino Ratio PER-TRADE (calidad por disparo, penalizando solo pérdidas).
 
     Similar al Sharpe pero usa solo la desviación de retornos negativos
     (downside deviation), siendo más sensible al riesgo de pérdida.
@@ -816,27 +823,27 @@ def sortino(
     
     Esto penaliza la volatilidad a la baja pero no la volatilidad al alza.
 
-    Fórmula:
-        Sortino = (mean_return / downside_std) * sqrt(N_annual)
+    Fórmula per-trade:
+        Sortino_per_trade = mean_return / downside_std
 
     Args:
         trades: DataFrame con los trades
-        annualize: Si True (default), anualiza el ratio
-        timeframe: Timeframe para cálculo preciso ('1m', '5m', '15m', '1h', etc.)
+        annualize: Si True, escala por sqrt(n_trades). Default=False
+        timeframe: Ignorado (mantenido por compatibilidad)
 
     Returns:
-        Sortino Ratio (anualizado si annualize=True)
+        Sortino Ratio per-trade (raw si annualize=False)
     """
     if _empty(trades):
         return 0.0
     r = _returns_series(trades)
-    if r.size == 0:
+    n_trades = r.size
+    if n_trades == 0:
         return 0.0
     
     mean_ret = float(np.mean(r))
     
     # Downside deviation: sqrt(mean(min(r, 0)^2))
-    # Usamos todos los retornos pero solo contamos los negativos al cuadrado
     downside_sq = np.where(r < 0, r**2, 0.0)
     downside_var = float(np.mean(downside_sq))
     downside_std = float(np.sqrt(downside_var)) if downside_var > 0 else 0.0
@@ -845,9 +852,8 @@ def sortino(
         return 0.0
     
     ratio = mean_ret / downside_std
-    if annualize:
-        ann_factor = _get_annualization_factor(timeframe, trades)
-        ratio *= float(np.sqrt(ann_factor))
+    if annualize and n_trades > 1:
+        ratio *= float(np.sqrt(n_trades))
     return float(ratio)
 
 
@@ -1076,9 +1082,9 @@ def _resumen_metricas_numba_wrapper(
         mean_eq = float(np.mean(eq_arr))
         metrics["estabilidad"] = float(1.0 - (np.std(cambios) / mean_eq)) if mean_eq != 0 else 0.0
 
-    # Recalcular Sharpe y Sortino con anualización correcta por timeframe
-    metrics["sharpe"] = sharpe(trades, annualize=True, timeframe=timeframe)
-    metrics["sortino"] = sortino(trades, annualize=True, timeframe=timeframe)
+    # Recalcular Sharpe y Sortino - PER-TRADE (calidad por disparo)
+    metrics["sharpe"] = sharpe(trades, annualize=False)
+    metrics["sortino"] = sortino(trades, annualize=False)
 
     # Saldo sin comisiones
     if "pnl" in cols:
@@ -1169,8 +1175,8 @@ def _resumen_metricas_python(
         "count_shorts": n_trades_short,
         "num_shorts": n_trades_short,
         "riesgo_beneficio": riesgo_beneficio(trades),
-        "sharpe": sharpe(trades, annualize=True, timeframe=timeframe),
-        "sortino": sortino(trades, annualize=True, timeframe=timeframe),
+        "sharpe": sharpe(trades, annualize=False),
+        "sortino": sortino(trades, annualize=False),
         "profit_factor": profit_factor(trades),
         "payoff_ratio": payoff_ratio(trades),
         "calmar": calmar(trades, equity_curve),

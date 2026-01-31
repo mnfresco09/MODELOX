@@ -3,8 +3,7 @@
 Runner Principal Unificado con Soporte para:
 - Backtesting Normal (sin perturbación)
 - Perturbación de Datos para Validación
-- NSGA-II (Multi-Objetivo) y TPE (Single-Objetivo)
-- Análisis de Vecindario (Neighborhood Fitness Aggregation)
+- Optimización con CMA-ES o TPE (configurable)
 
 ARQUITECTURA:
 =============
@@ -13,27 +12,18 @@ El runner soporta DOS modos de operación:
 1. MODO NORMAL (perturbation_enabled=False):
    - Cada trial usa los datos ORIGINALES
    - Optuna optimiza parámetros buscando el mejor rendimiento
-   - Análisis de vecindario opcional para validar estabilidad
 
 2. MODO PERTURBACIÓN (perturbation_enabled=True):
    - Cada trial usa datos PERTURBADOS con una semilla única
    - Valida que la estrategia funcione en múltiples escenarios
    - Detecta overfitting (si solo funciona con datos exactos)
 
-ANÁLISIS DE VECINDARIO (NEIGHBORHOOD FITNESS):
-==============================================
-Evalúa estabilidad variando parámetros en un entorno local:
-- Genera K vecinos con perturbación gaussiana de parámetros
-- Ejecuta K+1 backtests (original + vecinos)
-- Score = μ - λ·σ (media penalizada por varianza)
-- Detecta "picos de aguja" vs "mesetas estables"
-
-IMPORTANTE: Los análisis de vecindario SIEMPRE usan los MISMOS datos que el
-trial original (df_trial). Esto significa que:
-- Si el trial usa datos ORIGINALES → vecinos usan datos ORIGINALES
-- Si el trial usa datos PERTURBADOS → vecinos usan ESOS MISMOS datos perturbados
-
-Esta consistencia es CRÍTICA para validar estabilidad de forma correcta.
+SAMPLERS DISPONIBLES:
+=====================
+- "CMA": CMA-ES (Covariance Matrix Adaptation Evolution Strategy)
+         RECOMENDADO para scoring institucional.
+         Aprende de los scores y favorece regiones estables.
+- "TPE": Tree-structured Parzen Estimator (clásico de Optuna)
 
 MÉTODOS DE PERTURBACIÓN PROFESIONALES:
 ======================================
@@ -57,20 +47,11 @@ import numpy as np
 import optuna
 import polars as pl
 from optuna.exceptions import ExperimentalWarning
-from optuna.samplers import NSGAIISampler, TPESampler
+from optuna.samplers import TPESampler, CmaEsSampler
 
 from .engine import BacktestParams, calculate_performance_vectorized_numba
 from .metrics import resumen_metricas
-# v7.0: Scoring unificado - todo está en scoring.py ahora
-from .scoring import (
-    score_optuna, 
-    nsga2_objectives, 
-    score_quality_only,
-    run_neighborhood_analysis,
-    NeighborhoodConfig,
-    NeighborhoodResult,
-    DEFAULT_NEIGHBORHOOD_CONFIG,
-)
+from .scoring import score_optuna, set_study_for_scorer
 from .types import (
     BacktestConfig,
     Reporter,
@@ -173,19 +154,22 @@ class OptunaConfig:
     - n_jobs=2+: Paralelo (más rápido, requiere más RAM)
     - n_jobs=-1: Usar todos los cores disponibles
     
+    SAMPLER:
+    ========
+    sampler controla el algoritmo de búsqueda bayesiana.
+    
+    - "CMA": CMA-ES (Covariance Matrix Adaptation Evolution Strategy)
+             Recomendado para scoring institucional. Aprende de los scores.
+    - "TPE": Tree-structured Parzen Estimator (clásico de Optuna)
+    
     IMPORTANTE: Si usas n_jobs>1, asegúrate de que tu sistema
     tenga suficiente RAM (~500MB por worker extra).
-    
-    VARIABLES DE ENTORNO RELACIONADAS:
-    - MODELOX_NEIGHBORHOOD_PARALLEL=1: Paralelizar análisis de vecinos (default ON)
-    - MODELOX_NEIGHBORHOOD_WORKERS=6: Workers para vecinos (default 6)
     """
     seed: Optional[int] = None
     n_jobs: int = 1  # Número de trials paralelos de Optuna
     storage: Optional[str] = None
     study_name_prefix: str = "MODELOX"
-    sampler: str = "tpe"  # "tpe" o "nsga2"
-    use_nsga2: bool = False  # Usar NSGA-II multi-objetivo
+    sampler: str = "CMA"  # "CMA" o "TPE" - CMA-ES es el default institucional
 
 
 @dataclass
@@ -624,56 +608,64 @@ def create_study_for_strategy(
     cfg: OptunaConfig,
     strategy_name: str,
     activo: Optional[str] = None,
-    use_trinity_objectives: bool = False,
 ) -> optuna.study.Study:
     """
-    Crea estudio Optuna con soporte para NSGA-II.
+    Crea estudio Optuna con el sampler configurado (CMA-ES o TPE).
+    
+    CMA-ES (Covariance Matrix Adaptation Evolution Strategy):
+    - Aprende de los scores para adaptar la matriz de covarianza
+    - Ideal para encontrar "mesetas de parámetros" (soluciones robustas)
+    - Penaliza implícitamente los picos aislados (overfitting)
+    - Recomendado para el sistema de scoring institucional
+    
+    TPE (Tree-structured Parzen Estimator):
+    - Algoritmo clásico de Optuna
+    - Bueno para espacios mixtos con variables categóricas
     
     Args:
-        cfg: Configuración de Optuna
+        cfg: Configuración de Optuna (incluye sampler)
         strategy_name: Nombre de la estrategia
         activo: Nombre del activo (opcional)
-        use_trinity_objectives: Si True, usa 3 objetivos (Trinidad del paper)
-            - Robust_DSR: MAXIMIZAR
-            - Worst_Case_CVaR: MINIMIZAR
-            - Equity_Stability_R2: MAXIMIZAR
     """
     parts = [str(cfg.study_name_prefix), str(strategy_name)]
     if activo:
         parts.append(str(activo))
     study_name = _slug("_".join(parts))
     
-    use_nsga2 = cfg.use_nsga2 or str(cfg.sampler).lower() == "nsga2"
+    # Seleccionar sampler según configuración
+    sampler_type = cfg.sampler.upper() if cfg.sampler else "CMA"
     
-    if use_nsga2:
-        sampler = NSGAIISampler(seed=cfg.seed)
-        
-        if use_trinity_objectives:
-            # TRINIDAD DE OBJETIVOS (Neighborhood Fitness Aggregation)
-            # 1. Robust_DSR: MAXIMIZAR (mayor es mejor)
-            # 2. Worst_Case_CVaR: MINIMIZAR (menor es mejor)
-            # 3. Equity_Stability_R2: MAXIMIZAR (mayor es mejor)
-            directions = ["maximize", "minimize", "maximize"]
-        else:
-            # Modo legacy: 2 objetivos
-            directions = ["maximize", "minimize"]  # quality ↑, drawdown ↓
-        
-        return optuna.create_study(
-            directions=directions,
-            sampler=sampler,
-            study_name=study_name,
-            storage=None,
-            load_if_exists=False,
+    if sampler_type == "CMA":
+        # CMA-ES: Covariance Matrix Adaptation Evolution Strategy
+        # - Aprende de los scores para adaptar la búsqueda
+        # - Converge hacia regiones de alta calidad
+        # - Ideal para scoring institucional multiplicativo
+        sampler = CmaEsSampler(
+            seed=cfg.seed,
+            n_startup_trials=10,  # Trials aleatorios iniciales
+            warn_independent_sampling=False,
+            consider_pruned_trials=False,
         )
     else:
-        sampler = TPESampler(seed=cfg.seed, multivariate=True, group=True)
-        return optuna.create_study(
-            direction="maximize",
-            sampler=sampler,
-            study_name=study_name,
-            storage=None,
-            load_if_exists=False,
+        # TPE: Tree-structured Parzen Estimator
+        sampler = TPESampler(
+            seed=cfg.seed,
+            multivariate=True,
+            group=True,
         )
+    
+    study = optuna.create_study(
+        direction="maximize",
+        sampler=sampler,
+        study_name=study_name,
+        storage=None,
+        load_if_exists=False,
+    )
+    
+    # Configurar el scorer global con el estudio para DSR
+    set_study_for_scorer(study)
+    
+    return study
 
 
 # =============================================================================
@@ -779,13 +771,19 @@ class BacktestEngine:
 @dataclass
 class OptimizationRunner:
     """
-    Runner de Optimización Unificado.
+    Runner de Optimización Bayesiana con soporte para CMA-ES y TPE.
+    
+    SAMPLERS:
+    - CMA-ES: Covariance Matrix Adaptation Evolution Strategy
+              - Aprende de los scores para adaptar la búsqueda
+              - Ideal para scoring institucional multiplicativo
+              - Favorece regiones estables (mesetas de parámetros)
+    - TPE: Tree-structured Parzen Estimator (clásico de Optuna)
     
     Soporta:
     - Backtesting normal (sin perturbación)
     - Perturbación de datos para validación
-    - NSGA-II (Multi-Objetivo) y TPE (Single-Objetivo)
-    - Análisis de Vecindario (Neighborhood Fitness Aggregation)
+    - Scoring institucional multiplicativo (PSR, DSR, K-Ratio, etc.)
     """
     
     config: BacktestConfig
@@ -796,10 +794,6 @@ class OptimizationRunner:
     
     # Configuración de perturbación
     perturbation_config: PerturbationConfig = field(default_factory=PerturbationConfig)
-    
-    # Configuración de Agregación de Fitness Vecinal
-    neighborhood_config: Optional[NeighborhoodConfig] = None
-    neighborhood_enabled: bool = True  # Activado por defecto
     
     # Estado interno
     _last_study: Optional[optuna.study.Study] = None
@@ -860,22 +854,12 @@ class OptimizationRunner:
             "mean_diff_pcts": [],
         }
         
-        use_nsga2 = self.optuna.use_nsga2 or str(self.optuna.sampler).lower() == "nsga2"
-        
-        if use_nsga2:
-            objective = self._create_nsga2_objective(df_base, df_map, strategy, base_tf)
-        else:
-            objective = self._create_single_objective(df_base, df_map, strategy, base_tf)
-        
-        # Determinar si usar Trinidad de objetivos
-        # (solo cuando NSGA-II + neighborhood están activos)
-        use_trinity = use_nsga2 and self.neighborhood_enabled
+        objective = self._create_single_objective(df_base, df_map, strategy, base_tf)
         
         study = create_study_for_strategy(
             cfg=self.optuna, 
             strategy_name=strategy.name, 
             activo=self.activo,
-            use_trinity_objectives=use_trinity,
         )
         
         study.optimize(
@@ -948,197 +932,6 @@ class OptimizationRunner:
         
         return params_rt
     
-    def _create_nsga2_objective(
-        self,
-        df_base: pl.DataFrame,
-        df_map: Dict[str, pl.DataFrame],
-        strategy: Strategy,
-        base_tf: str,
-    ) -> Callable[[optuna.trial.Trial], Tuple[float, ...]]:
-        """
-        Crea función objetivo para NSGA-II (Multi-Objetivo).
-        
-        MODOS DE OPERACIÓN:
-        
-        1. MODO NEIGHBORHOOD (neighborhood_enabled=True):
-           - Retorna TRINIDAD DE OBJETIVOS: (Robust_DSR, Worst_Case_CVaR, Equity_R2)
-           - Robust_DSR: MAXIMIZAR (Sharpe penalizado por vecindario y trials)
-           - Worst_Case_CVaR: MINIMIZAR (peor caso de riesgo de cola)
-           - Equity_R2: MAXIMIZAR (estabilidad de curva de equity)
-        
-        2. MODO LEGACY (neighborhood_enabled=False):
-           - Retorna 2 objetivos: (quality, drawdown)
-           - quality: MAXIMIZAR (score de calidad)
-           - drawdown: MINIMIZAR (máximo drawdown)
-        """
-        
-        def objective(trial: optuna.trial.Trial) -> Tuple[float, ...]:
-            # LIMPIEZA PERIÓDICA para mantener velocidad constante
-            periodic_cleanup(trial.number)
-            
-            params_rt = self._prepare_params(trial, strategy, base_tf)
-            entry_tf = params_rt["__timeframe_entry"]
-            df_entry = df_map.get(entry_tf, df_base)
-            
-            # ================================================================
-            # PERTURBACIÓN DE DATOS (COHERENTE PARA TODOS LOS TIMEFRAMES)
-            # ================================================================
-            # Cuando la perturbación está habilitada, TODOS los dataframes
-            # en df_map deben perturbarse con la MISMA semilla para mantener
-            # coherencia temporal entre timeframes.
-            # ================================================================
-            df_trial = df_entry
-            df_map_perturbed = df_map  # Por defecto, usar el original
-            perturb_info = {"perturbation_applied": False}
-            perturb_seed = 0
-            
-            if self.perturbation_config.enabled:
-                # Calcular semilla única para este trial
-                base_seed = self.perturbation_config.seed or 42
-                perturb_seed = base_seed + trial.number
-                
-                # Perturbar TODOS los timeframes con la misma semilla
-                df_map_perturbed = {}
-                for tf_key, tf_df in df_map.items():
-                    perturbed_df, _, tf_perturb_info = apply_perturbation(
-                        tf_df, self.perturbation_config, trial.number
-                    )
-                    df_map_perturbed[tf_key] = perturbed_df
-                    
-                    # Guardar info del timeframe de entrada
-                    if tf_key == entry_tf:
-                        df_trial = perturbed_df
-                        perturb_info = tf_perturb_info
-                
-                self._perturbation_stats["trials_perturbed"] += 1
-                if "mean_diff_pct" in perturb_info:
-                    # Limitar a últimos 100 valores para evitar memory bloat
-                    diffs = self._perturbation_stats["mean_diff_pcts"]
-                    diffs.append(perturb_info["mean_diff_pct"])
-                    if len(diffs) > 100:
-                        self._perturbation_stats["mean_diff_pcts"] = diffs[-100:]
-            
-            # Generar señales (usa df_map_perturbed para multi-timeframe)
-            signals_df = SignalGenerator.generate_signals(df_trial, strategy, params_rt, df_map_perturbed)
-            
-            # Ejecutar backtest
-            trades_df, equity_curve, metrics = BacktestEngine.run_backtest(
-                df_trial, signals_df, self.config, params_rt, strategy,
-            )
-            
-            if trades_df.is_empty():
-                if self.neighborhood_enabled:
-                    # Trinidad: (Robust_DSR min, CVaR max, R2 min)
-                    return (0.0, 100.0, 0.0)
-                else:
-                    return (0.1, 100.0)
-            
-            trial.set_user_attr("metricas", metrics)
-            
-            # Objetivos NSGA-II (legacy, se pueden sobrescribir)
-            quality, drawdown = nsga2_objectives(metrics)
-            score = float(score_optuna(metrics))
-            
-            # ================================================================
-            # SISTEMA DE EVALUACIÓN DE VECINDARIO
-            # ================================================================
-            neighborhood_result: Optional[NeighborhoodResult] = None
-            
-            # Helpers para backtest
-            # IMPORTANTE: Usar SIEMPRE el mismo df_trial y df_map_perturbed
-            # para garantizar coherencia cuando hay perturbación.
-            def _generate_signals_helper(_df, strat, params):
-                return SignalGenerator.generate_signals(df_trial, strat, params, df_map_perturbed)
-            
-            def _run_backtest_helper(_df, sigs, cfg, params, strat):
-                return BacktestEngine.run_backtest(df_trial, sigs, cfg, params, strat)
-            
-            # ================================================================
-            # NEIGHBORHOOD FITNESS - TRINIDAD DE OBJETIVOS
-            # ================================================================
-            if self.neighborhood_enabled:
-                neighborhood_cfg = self.neighborhood_config or DEFAULT_NEIGHBORHOOD_CONFIG
-                
-                if neighborhood_cfg.enabled:
-                    neighborhood_result = run_neighborhood_analysis(
-                        strategy=strategy,
-                        df=df_trial,
-                        params=params_rt,
-                        original_metrics=metrics,
-                        original_score=score,
-                        equity_curve=equity_curve,
-                        config=self.config,
-                        neighborhood_config=neighborhood_cfg,
-                        trial_number=trial.number,
-                        run_backtest_fn=_run_backtest_helper,
-                        generate_signals_fn=_generate_signals_helper,
-                    )
-                    
-                    trial.set_user_attr("neighborhood_result", neighborhood_result.to_dict())
-                    
-                    # Marcar info del vecindario
-                    params_rt["__neighborhood_score"] = neighborhood_result.aggregated_score
-                    params_rt["__robust_dsr"] = neighborhood_result.robust_dsr
-                    params_rt["__worst_cvar"] = neighborhood_result.worst_case_cvar
-                    params_rt["__equity_r2"] = neighborhood_result.equity_stability_r2
-                    
-                    # Score agregado para reporting
-                    score = neighborhood_result.aggregated_score
-            
-            # ================================================================
-            
-            # Crear artifacts
-            df_signals_for_artifacts = None
-            for reporter in self.reporters:
-                if hasattr(reporter, "needs_dataframe") and reporter.needs_dataframe(score):
-                    ohlc_cols = ["timestamp", "open", "high", "low", "close", "volume"]
-                    base_cols = [c for c in ohlc_cols if c in df_base.columns]
-                    signal_cols = [c for c in signals_df.columns if c not in base_cols]
-                    df_signals_for_artifacts = df_base.select(base_cols).hstack(
-                        signals_df.select(signal_cols)
-                    )
-                    break
-            
-            neighborhood_dict = neighborhood_result.to_dict() if neighborhood_result else None
-            
-            artifacts = TrialArtifacts(
-                strategy_name=strategy.name,
-                trial_number=trial.number,
-                params=params_rt,
-                params_reporting=params_rt,
-                score=score,
-                metrics=metrics,
-                df_signals=df_signals_for_artifacts,
-                trades=trades_df.to_pandas(),
-                equity_curve=equity_curve,
-                indicators_used=params_rt.get("__indicators_used", []),
-                perturbado=perturb_info.get("perturbation_applied", False),
-                perturb_seed=perturb_seed if perturb_info.get("perturbation_applied", False) else None,
-                neighborhood_result=neighborhood_dict,
-            )
-            
-            for reporter in self.reporters:
-                reporter.on_trial_end(artifacts)
-            
-            # ================================================================
-            # RETORNAR OBJETIVOS SEGÚN MODO
-            # ================================================================
-            if self.neighborhood_enabled and neighborhood_result:
-                # TRINIDAD DE OBJETIVOS:
-                # 1. Robust_DSR: MAXIMIZAR (mayor es mejor)
-                # 2. Worst_Case_CVaR: MINIMIZAR (menor es mejor)
-                # 3. Equity_Stability_R2: MAXIMIZAR (mayor es mejor)
-                return (
-                    neighborhood_result.robust_dsr,
-                    neighborhood_result.worst_case_cvar,
-                    neighborhood_result.equity_stability_r2,
-                )
-            else:
-                # Modo legacy: 2 objetivos
-                return (quality, drawdown)
-        
-        return objective
-    
     def _create_single_objective(
         self,
         df_base: pl.DataFrame,
@@ -1146,7 +939,7 @@ class OptimizationRunner:
         strategy: Strategy,
         base_tf: str,
     ) -> Callable[[optuna.trial.Trial], float]:
-        """Crea función objetivo para TPE (Single-Objective) con análisis de vecindario."""
+        """Crea función objetivo para TPE (Single-Objective)."""
         
         def objective(trial: optuna.trial.Trial) -> float:
             t0_total = time.perf_counter()
@@ -1161,10 +954,6 @@ class OptimizationRunner:
             # ================================================================
             # PERTURBACIÓN DE DATOS (COHERENTE PARA TODOS LOS TIMEFRAMES)
             # ================================================================
-            # Cuando la perturbación está habilitada, TODOS los dataframes
-            # en df_map deben perturbarse con la MISMA semilla para mantener
-            # coherencia temporal entre timeframes.
-            # ================================================================
             df_trial = df_entry
             df_map_perturbed = df_map  # Por defecto, usar el original
             perturb_info = {"perturbation_applied": False}
@@ -1190,13 +979,12 @@ class OptimizationRunner:
                 
                 self._perturbation_stats["trials_perturbed"] += 1
                 if "mean_diff_pct" in perturb_info:
-                    # Limitar a últimos 100 valores para evitar memory bloat
                     diffs = self._perturbation_stats["mean_diff_pcts"]
                     diffs.append(perturb_info["mean_diff_pct"])
                     if len(diffs) > 100:
                         self._perturbation_stats["mean_diff_pcts"] = diffs[-100:]
             
-            # Generar señales (usa df_map_perturbed para multi-timeframe)
+            # Generar señales
             t1_signals = time.perf_counter()
             signals_df = SignalGenerator.generate_signals(df_trial, strategy, params_rt, df_map_perturbed)
             t2_signals = time.perf_counter()
@@ -1214,81 +1002,16 @@ class OptimizationRunner:
             trial.set_user_attr("metricas", metrics)
             score = float(score_optuna(metrics))
             
-            # ================================================================
-            # NEIGHBORHOOD FITNESS AGGREGATION
-            # ================================================================
-            # Evalúa robustez mediante variación de parámetros:
-            #    - Genera K vecinos con perturbación gaussiana de parámetros
-            #    - Ejecuta K+1 backtests (original + vecinos)
-            #    - Score = μ - λ·σ (media penalizada por varianza)
-            #    - Detecta "picos de aguja" vs "mesetas"
-            # ================================================================
-            
-            neighborhood_result: Optional[NeighborhoodResult] = None
-            
-            # Helpers para backtest
-            # IMPORTANTE: Usar SIEMPRE el mismo df_trial y df_map_perturbed
-            # para garantizar coherencia cuando hay perturbación.
-            def _generate_signals_helper(_df, strat, params):
-                return SignalGenerator.generate_signals(df_trial, strat, params, df_map_perturbed)
-            
-            def _run_backtest_helper(_df, sigs, cfg, params, strat):
-                return BacktestEngine.run_backtest(df_trial, sigs, cfg, params, strat)
-            
-            # ================================================================
-            # NEIGHBORHOOD FITNESS AGGREGATION
-            # ================================================================
-            if self.neighborhood_enabled:
-                neighborhood_cfg = self.neighborhood_config or DEFAULT_NEIGHBORHOOD_CONFIG
-                
-                if neighborhood_cfg.enabled:
-                    # CRÍTICO: Usar df_trial (mismos datos del trial, perturbados o no)
-                    neighborhood_result = run_neighborhood_analysis(
-                        strategy=strategy,
-                        df=df_trial,
-                        params=params_rt,
-                        original_metrics=metrics,
-                        original_score=score,
-                        equity_curve=equity_curve,
-                        config=self.config,
-                        neighborhood_config=neighborhood_cfg,
-                        trial_number=trial.number,
-                        run_backtest_fn=_run_backtest_helper,
-                        generate_signals_fn=_generate_signals_helper,
-                    )
-                    
-                    trial.set_user_attr("neighborhood_result", neighborhood_result.to_dict())
-                    
-                    # USAR SCORE AGREGADO: μ - λ·σ
-                    score = neighborhood_result.aggregated_score
-                    
-                    # Marcar info del vecindario en params para reporting
-                    params_rt["__neighborhood_score"] = neighborhood_result.aggregated_score
-                    params_rt["__neighborhood_mean"] = neighborhood_result.mean_score
-                    params_rt["__neighborhood_std"] = neighborhood_result.std_score
-                    params_rt["__neighborhood_n_tested"] = neighborhood_result.n_neighbors_tested
-                    params_rt["__robust_dsr"] = neighborhood_result.robust_dsr
-            
-            # ================================================================
-            
             t_total = time.perf_counter() - t0_total
             
             if _TIMINGS_VERBOSE and (trial.number % _TIMINGS_PRINT_EVERY == 0):
                 perturb_str = f" [P]" if perturb_info.get("perturbation_applied", False) else ""
-                neighb_info = ""
-                if neighborhood_result:
-                    neighb_info = (
-                        f" │ neighb {neighborhood_result.n_neighbors_successful}/{neighborhood_result.n_neighbors_tested} "
-                        f"μ={neighborhood_result.mean_score:.1f} σ={neighborhood_result.std_score:.1f} "
-                        f"→{neighborhood_result.aggregated_score:.1f} "
-                        f"{neighborhood_result.execution_time_ms:.0f}ms"
-                    )
                 print(
                     f"  ⏱ TRIAL {trial.number:3d}{perturb_str} │ "
                     f"signals {(t2_signals - t1_signals)*1000:6.1f}ms │ "
                     f"backtest {(t2_backtest - t1_backtest)*1000:6.1f}ms │ "
                     f"total {t_total*1000:6.1f}ms │ "
-                    f"trades {len(trades_df):5d}{neighb_info}"
+                    f"trades {len(trades_df):5d}"
                 )
             
             # Crear artifacts
@@ -1303,8 +1026,6 @@ class OptimizationRunner:
                     )
                     break
             
-            neighborhood_dict = neighborhood_result.to_dict() if neighborhood_result else None
-            
             artifacts = TrialArtifacts(
                 strategy_name=strategy.name,
                 trial_number=trial.number,
@@ -1318,7 +1039,6 @@ class OptimizationRunner:
                 indicators_used=params_rt.get("__indicators_used", []),
                 perturbado=perturb_info.get("perturbation_applied", False),
                 perturb_seed=perturb_seed if perturb_info.get("perturbation_applied", False) else None,
-                neighborhood_result=neighborhood_dict,
             )
             
             for reporter in self.reporters:
@@ -1371,21 +1091,16 @@ class OptimizationRunner:
 
 def cleanup_parallel_resources():
     """
-    Limpia todos los recursos de paralelización.
+    Limpia todos los recursos de optimización.
     
     Llamar al final de la optimización para liberar:
-    - Pool de threads de análisis de vecindario
     - Caches de señales
     - Garbage collector
     """
-    try:
-        from .scoring import shutdown_neighbor_pool
-        shutdown_neighbor_pool()
-    except Exception:
-        pass
-    
     clear_all_caches()
     gc.collect()
+
+
 # =============================================================================
 # ALIAS DE COMPATIBILIDAD
 # =============================================================================
