@@ -56,4 +56,7 @@ __all__ = [
     # Mesetas (importar explícitamente cuando se necesiten)
     # "PlateauConfig", "PlateauResult", "TopologyAnalysis", "analyze_topology",
     # "PlateauOptimizer", "PlateauOptimizerConfig", "run_plateau_optimization",
+    
+    # Cyclic Coordinate Descent (importar explícitamente cuando se necesiten)
+    # "CyclicOptimizerConfig", "CyclicCoordinateOptimizer", "run_cyclic_optimization",
 ]

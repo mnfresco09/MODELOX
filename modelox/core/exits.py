@@ -43,10 +43,10 @@ DEFAULT_EXIT_TRAIL_DIST_PCT: float = 3.0
 DEFAULT_OPTIMIZE_EXITS: bool = True
 
 # RANGOS PARA OPTUNA (min, max, step)
-DEFAULT_EXIT_SL_PCT_RANGE: tuple = (1.0, 50.0, 1.0)
+DEFAULT_EXIT_SL_PCT_RANGE: tuple = (5.0, 30.0, 1.0)
 DEFAULT_EXIT_TP_PCT_RANGE: tuple = (20.0, 40.0, 1.0)
-DEFAULT_EXIT_TRAIL_ACT_PCT_RANGE: tuple = (1.0, 50.0, 1.0)
-DEFAULT_EXIT_TRAIL_DIST_PCT_RANGE: tuple = (0.5, 20.0, 0.5)
+DEFAULT_EXIT_TRAIL_ACT_PCT_RANGE: tuple = (7.0, 35.0, 1.0)
+DEFAULT_EXIT_TRAIL_DIST_PCT_RANGE: tuple = (0.5, 5.0, 0.5)
 
 
 # =============================================================================

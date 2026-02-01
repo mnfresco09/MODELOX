@@ -757,6 +757,34 @@ class PlateauOptimizer:
         parametros_optuna = getattr(strategy, "parametros_optuna", {})
         params = {}
         
+        # Si parametros_optuna está vacío, usar centroid_params directamente para parámetros fijos
+        if not parametros_optuna and centroid_params:
+            # Copiar todos los parámetros del centroide que no están en bounds
+            for name, value in centroid_params.items():
+                if name not in bounds:
+                    params[name] = int(round(value)) if isinstance(value, float) and value == int(value) else value
+            
+            # Sugerir solo los parámetros en bounds (exit params)
+            for name, (bound_min, bound_max) in bounds.items():
+                # Inferir tipo del centroid o usar float por defecto
+                if centroid_params and name in centroid_params:
+                    ref_value = centroid_params[name]
+                    is_int = isinstance(ref_value, int) or (isinstance(ref_value, float) and ref_value == int(ref_value))
+                else:
+                    is_int = False
+                
+                if is_int:
+                    low, high = int(bound_min), int(bound_max)
+                    if low > high:
+                        low, high = high, low
+                    params[name] = trial.suggest_int(name, low, high) if low != high else low
+                else:
+                    if bound_min > bound_max:
+                        bound_min, bound_max = bound_max, bound_min
+                    params[name] = trial.suggest_float(name, bound_min, bound_max) if abs(bound_max - bound_min) > 1e-10 else bound_min
+            
+            return params
+        
         for name, spec in parametros_optuna.items():
             if name in bounds:
                 # Restringir al rango de la meseta

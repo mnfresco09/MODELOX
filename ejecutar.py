@@ -200,8 +200,10 @@ class ExcelReporter(BaseReporter):
     def on_trial_end(self, artifacts: TrialArtifacts) -> None:
         params_src = getattr(artifacts, "params_reporting", None) or artifacts.params
         activo = None
+        cycle_number = None
         if isinstance(params_src, dict):
             activo = params_src.get("__activo") or params_src.get("ACTIVO") or params_src.get("activo")
+            cycle_number = params_src.get("__cycle_number")  # Extraer número de ciclo
         
         self._activo = activo
         score = artifacts.score if artifacts.score is not None else 0.0
@@ -217,6 +219,7 @@ class ExcelReporter(BaseReporter):
             "perturbado": artifacts.perturbado,
             "perturb_seed": artifacts.perturb_seed,
             "strategy_name": artifacts.strategy_name,
+            "cycle_number": cycle_number,  # Guardar número de ciclo
         }
         self._resumen_rows.append(resumen_row)
 
@@ -294,16 +297,24 @@ class ExcelReporter(BaseReporter):
             return
         
         all_keys = set()
+        has_cycle = False  # Verificar si algún row tiene cycle_number
         for row in self._resumen_rows:
             all_keys.add("trial")
             all_keys.add("score")
             all_keys.add("strategy")
+            if row.get("cycle_number") is not None:
+                has_cycle = True
             if row.get("metrics"):
                 all_keys.update(row["metrics"].keys())
             if row.get("params"):
                 all_keys.update(f"param_{k}" for k in row["params"].keys())
         
-        columns = ["trial", "score", "strategy"]
+        # Columnas base: trial, cycle (si existe), score, strategy
+        columns = ["trial"]
+        if has_cycle:
+            columns.append("cycle")
+        columns.extend(["score", "strategy"])
+        
         metric_cols = sorted([k for k in all_keys if k not in columns and not k.startswith("param_")])
         param_cols = sorted([k for k in all_keys if k.startswith("param_")])
         columns.extend(metric_cols)
@@ -319,6 +330,9 @@ class ExcelReporter(BaseReporter):
                     "score": row["score"],
                     "strategy": row["strategy_name"],
                 }
+                # Agregar cycle si está disponible
+                if has_cycle:
+                    csv_row["cycle"] = row.get("cycle_number", "")
                 if row.get("metrics"):
                     csv_row.update(row["metrics"])
                 if row.get("params"):
@@ -681,8 +695,153 @@ def run_single_exit_type(
 
     # 6. RUNNER - Seleccionar modo de optimización
     use_plateau_mode = str(OPTUNA_SAMPLER).upper() == "PLATEAU"
+    use_cyclic_mode = str(OPTUNA_SAMPLER).upper() == "CYCLIC"
     
-    if use_plateau_mode:
+    if use_cyclic_mode:
+        # =====================================================================
+        # MODO DESCENSO DE COORDENADAS CÍCLICO
+        # =====================================================================
+        # Optimiza un parámetro a la vez mientras fija los demás.
+        # Repite ciclos hasta convergencia.
+        
+        from modelox.core.cyclic_optimizer import (
+            CyclicOptimizerConfig,
+            run_cyclic_optimization,
+        )
+        
+        # Importar configuración CYCLIC desde configuracion.py
+        try:
+            from general.configuracion import (
+                CYCLIC_USE_N_TRIALS,
+                CYCLIC_MAX_CYCLES,
+                CYCLIC_MIN_CYCLES,
+                CYCLIC_CONVERGENCE_THRESHOLD,
+                CYCLIC_PARAM_MIN_TRIALS,
+                CYCLIC_PARAM_MAX_TRIALS,
+                CYCLIC_PARAM_PATIENCE,
+                CYCLIC_PARAM_MIN_IMPROVEMENT,
+                CYCLIC_TRIALS_PER_PARAM_FIXED,
+                CYCLIC_USE_PLATEAU,
+                CYCLIC_PLATEAU_TOLERANCE,
+                CYCLIC_PLATEAU_MIN_POINTS,
+                CYCLIC_GROUP_EXITS,
+                CYCLIC_PARAM_SAMPLER,
+                CYCLIC_VERBOSE,
+                CYCLIC_INCLUDE_EXITS,
+            )
+        except ImportError:
+            # Valores por defecto si no están definidos
+            CYCLIC_USE_N_TRIALS = False
+            CYCLIC_MAX_CYCLES = 15
+            CYCLIC_MIN_CYCLES = 3
+            CYCLIC_CONVERGENCE_THRESHOLD = 0.02
+            CYCLIC_PARAM_MIN_TRIALS = 20
+            CYCLIC_PARAM_MAX_TRIALS = 200
+            CYCLIC_PARAM_PATIENCE = 15
+            CYCLIC_PARAM_MIN_IMPROVEMENT = 0.001
+            CYCLIC_TRIALS_PER_PARAM_FIXED = None
+            CYCLIC_USE_PLATEAU = True
+            CYCLIC_PLATEAU_TOLERANCE = 0.02
+            CYCLIC_PLATEAU_MIN_POINTS = 5
+            CYCLIC_GROUP_EXITS = True
+            CYCLIC_PARAM_SAMPLER = "tpe"
+            CYCLIC_VERBOSE = True
+            CYCLIC_INCLUDE_EXITS = True
+        
+        cyclic_cfg = CyclicOptimizerConfig(
+            use_n_trials=bool(CYCLIC_USE_N_TRIALS),
+            n_trials_total=int(N_TRIALS),  # Usa N_TRIALS global
+            trials_per_param_fixed=CYCLIC_TRIALS_PER_PARAM_FIXED,
+            max_cycles=int(CYCLIC_MAX_CYCLES),
+            min_cycles=int(CYCLIC_MIN_CYCLES),
+            convergence_threshold=float(CYCLIC_CONVERGENCE_THRESHOLD),
+            param_min_trials=int(CYCLIC_PARAM_MIN_TRIALS),
+            param_max_trials=int(CYCLIC_PARAM_MAX_TRIALS),
+            param_patience=int(CYCLIC_PARAM_PATIENCE),
+            param_min_improvement=float(CYCLIC_PARAM_MIN_IMPROVEMENT),
+            use_plateau_centroid=bool(CYCLIC_USE_PLATEAU),
+            plateau_tolerance=float(CYCLIC_PLATEAU_TOLERANCE),
+            plateau_min_points=int(CYCLIC_PLATEAU_MIN_POINTS),
+            group_exit_params=bool(CYCLIC_GROUP_EXITS),
+            param_sampler=str(CYCLIC_PARAM_SAMPLER),
+            verbose=bool(CYCLIC_VERBOSE),
+            include_exit_params=bool(CYCLIC_INCLUDE_EXITS),
+        )
+        
+        # Configurar perturbación si está habilitada
+        perturbation_config = None
+        if PERTURBACION_ACTIVAR:
+            perturbation_config = PerturbationConfig(
+                enabled=True,
+                method=CONFIG.get("PERTURBACION_METHOD", "returns_perturbation"),
+                noise_factor=float(CONFIG.get("PERTURBACION_NOISE_SCALE", 0.5)),
+                block_size=int(CONFIG.get("PERTURBACION_BLOCK_SIZE", 360)),
+                seed=CONFIG.get("PERTURBACION_SEED", 42),
+            )
+        
+        # Carga diferida de timeframes extra
+        entry_tf = getattr(strategy, "timeframe_entry", None) or timeframe_base
+        exit_tf = getattr(strategy, "timeframe_exit", None) or timeframe_base
+        needed_tfs = [timeframe_base, entry_tf, exit_tf]
+        
+        for tf in needed_tfs:
+            tf_suf = normalize_timeframe_to_suffix(tf)
+            if tf_suf in tf_cache:
+                continue
+            
+            if resolve_archivo_data_tf_func:
+                try:
+                    path_tf = resolve_archivo_data_tf_func(activo, tf, formato="parquet")
+                    df_tf = load_data(path_tf)
+                    if fecha_inicio and fecha_fin:
+                        df_tf = filter_by_date(df_tf, fecha_inicio, fecha_fin)
+                    tf_cache[tf_suf] = df_tf
+                except Exception as e:
+                    logger.warning(f"No se pudo cargar TF extra {tf}: {e}")
+        
+        try:
+            # Ejecutar optimización cíclica
+            cyclic_result = run_cyclic_optimization(
+                df=df_filtrado,
+                strategy=strategy,
+                backtest_config=cfg_updated,
+                reporters=reporters,
+                cyclic_config=cyclic_cfg,
+                df_by_timeframe=tf_cache,
+                base_timeframe=timeframe_base,
+                activo=activo,
+                perturbation_config=perturbation_config,
+            )
+            
+            # Mostrar resultado final
+            mostrar_fin_optimizacion(
+                total_trials=cyclic_result.total_trials,
+                best_score=cyclic_result.best_score,
+                best_trial=cyclic_result.total_trials,  # El último trial es el mejor refinado
+                estrategia=strategy_name,
+            )
+            
+            # Notificar a reporters
+            for reporter in reporters:
+                if hasattr(reporter, "on_strategy_end"):
+                    try:
+                        # Usar el primer estudio para compatibilidad
+                        if cyclic_result.studies:
+                            reporter.on_strategy_end(strategy_name, cyclic_result.studies[0])
+                    except Exception:
+                        pass
+                        
+        except KeyboardInterrupt:
+            raise
+        except Exception as e:
+            logger.error(f"Error en optimización cíclica {strategy_name}: {e}")
+            import traceback
+            traceback.print_exc()
+        finally:
+            del reporters
+            nuclear_cleanup()
+    
+    elif use_plateau_mode:
         # =====================================================================
         # MODO TOPÓGRAFO DE MESETAS (3 FASES)
         # =====================================================================

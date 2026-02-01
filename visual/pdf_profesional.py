@@ -1019,18 +1019,119 @@ class ProfessionalFigureGenerator:
 # =============================================================================
 
 class ProfessionalPDFGenerator:
-    def __init__(self, gpr_results: Dict, gpr_models: Dict, df, param_columns: List[str], filepath: str = None):
+    def __init__(self, gpr_results: Dict, gpr_models: Dict, df, param_columns: List[str], 
+                 filepath: str = None, param_metric_curves: Dict = None):
         self.gpr_results = gpr_results
         self.gpr_models = gpr_models
         self.df = df
         self.param_columns = param_columns
         self.filepath = filepath
+        self.param_metric_curves = param_metric_curves or {}  # {metric: {param: ParameterMetricCurve}}
         
         self.analyzer = GlobalStatisticalAnalyzer(gpr_results, gpr_models, df, param_columns)
         self.conclusions = self.analyzer.generate_conclusions()
         
         self.fig_gen = ProfessionalFigureGenerator(gpr_results, gpr_models, df, param_columns)
         self.figures = self.fig_gen.generate_all()
+        
+        # Generar figuras de curvas parámetro-métrica si hay datos
+        if self.param_metric_curves:
+            self._generate_param_metric_figures()
+    
+    def _to_b64(self, fig, dpi=180) -> str:
+        """Convierte figura a base64."""
+        buf = io.BytesIO()
+        fig.savefig(buf, format='png', dpi=dpi, bbox_inches='tight',
+                   facecolor='white', edgecolor='none', pad_inches=0.02)
+        buf.seek(0)
+        b64 = base64.b64encode(buf.read()).decode()
+        plt.close(fig)
+        return b64
+    
+    def _clean_name(self, name: str) -> str:
+        """Limpia nombre de parámetro."""
+        return name.replace('param_', '').replace('_', ' ').title()[:18]
+    
+    def _generate_param_metric_figures(self):
+        """
+        Genera las figuras de curvas parámetro vs métrica usando los datos
+        precalculados de param_metric_curves.
+        Solo muestra línea de tendencia fina azul oscuro.
+        """
+        for metric, param_curves in self.param_metric_curves.items():
+            if not param_curves:
+                continue
+            
+            n_params = len(param_curves)
+            n_cols = min(3, n_params)
+            n_rows = (n_params + n_cols - 1) // n_cols
+            
+            fig, axes = plt.subplots(n_rows, n_cols, figsize=(5*n_cols, 4*n_rows))
+            
+            if n_params == 1:
+                axes = np.array([[axes]])
+            elif n_rows == 1:
+                axes = axes.reshape(1, -1)
+            
+            for idx, (param_name, curve) in enumerate(param_curves.items()):
+                row, col = idx // n_cols, idx % n_cols
+                ax = axes[row, col]
+                
+                # Solo línea de tendencia fina azul oscuro
+                if len(curve.trend_x) > len(curve.unique_params):
+                    # Curva de tendencia suavizada
+                    ax.plot(curve.trend_x, curve.trend_y, color='#1a365d', 
+                           linewidth=1.5, alpha=0.9, label=f'Tendencia (R²={curve.r2_trend:.2f})')
+                else:
+                    # Conectar puntos directamente si no hay suficientes datos
+                    ax.plot(curve.unique_params, curve.mean_metrics, color='#1a365d', 
+                           linewidth=1.5, alpha=0.9)
+                
+                # Marcar punto óptimo con estrella
+                ax.scatter([curve.optimal_param], [curve.optimal_metric], c=COLORS['gold'], s=200, marker='*',
+                          edgecolors='white', linewidths=1.5, zorder=10)
+                ax.axvline(curve.optimal_param, color=COLORS['gold'], linestyle=':', alpha=0.4, linewidth=1)
+                ax.axhline(curve.optimal_metric, color=COLORS['gold'], linestyle=':', alpha=0.4, linewidth=1)
+                
+                # Anotación del óptimo
+                ax.annotate(f'ÓPTIMO\n{curve.optimal_param:.2f} → {curve.optimal_metric:.2f}', 
+                           (curve.optimal_param, curve.optimal_metric), xytext=(10, 15), textcoords='offset points',
+                           fontsize=8, fontweight='bold', color=COLORS['success'],
+                           bbox=dict(boxstyle='round,pad=0.3', fc='white', ec=COLORS['gold'], 
+                                    alpha=0.95, linewidth=1.5),
+                           arrowprops=dict(arrowstyle='->', color=COLORS['gold'], lw=1.5))
+                
+                # Etiquetas
+                clean_param = self._clean_name(param_name)
+                ax.set_xlabel(clean_param, fontsize=10, fontweight='bold')
+                ax.set_ylabel(metric.upper(), fontsize=10, fontweight='bold')
+                ax.set_title(f'{clean_param} vs {metric.upper()}', fontsize=11, fontweight='bold')
+                
+                # Estilo limpio
+                ax.spines['top'].set_visible(False)
+                ax.spines['right'].set_visible(False)
+                ax.grid(True, alpha=0.15, linestyle='-', linewidth=0.3)
+                
+                # Info de muestras
+                ax.text(0.02, 0.98, f'n={curve.total_samples:,}',
+                       transform=ax.transAxes, fontsize=7, va='top',
+                       bbox=dict(boxstyle='round', facecolor='white', alpha=0.8))
+                
+                if curve.r2_trend > 0:
+                    ax.legend(loc='lower right', fontsize=7)
+            
+            # Ocultar ejes vacíos
+            for idx in range(n_params, n_rows * n_cols):
+                row, col = idx // n_cols, idx % n_cols
+                axes[row, col].axis('off')
+            
+            fig.suptitle(f'{metric.upper()} — Análisis de Parámetros Individuales\n'
+                        f'(Línea de tendencia sobre media agrupada)',
+                        fontsize=13, fontweight='bold', color=COLORS['primary'], y=1.02)
+            plt.tight_layout()
+            
+            # Guardar como figura
+            self.figures[f'param_curves_{metric}'] = self._to_b64(fig)
     
     def _get_template(self) -> str:
         return '''<!DOCTYPE html>
@@ -1631,7 +1732,8 @@ class ProfessionalPDFGenerator:
 
 def generate_professional_report(gpr_results: Dict, gpr_models: Dict, df, 
                                   param_columns: List[str], filepath: str = None,
-                                  output_path: str = None) -> str:
+                                  output_path: str = None,
+                                  param_metric_curves: Dict = None) -> str:
     """Genera reporte PDF profesional."""
-    gen = ProfessionalPDFGenerator(gpr_results, gpr_models, df, param_columns, filepath)
+    gen = ProfessionalPDFGenerator(gpr_results, gpr_models, df, param_columns, filepath, param_metric_curves)
     return gen.generate(output_path)

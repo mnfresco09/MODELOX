@@ -117,13 +117,22 @@ FECHA_FIN_PLOT = "2021-03-15"
 # 3. CONFIGURACIÓN DE OPTIMIZACIÓN
 # =============================================================================
 
-N_TRIALS = 15000
+N_TRIALS = 75000
 OPTUNA_N_JOBS = -1
 OPTUNA_SEED = None
 OPTUNA_STORAGE = None
 
-# SAMPLER: "PLATEAU" (RECOMENDADO), "CMA" O "TPE"
-OPTUNA_SAMPLER = "PLATEAU"
+# SAMPLER: "PLATEAU" (RECOMENDADO), "CYCLIC", "CMA", "TPE", "GP" o "BOTORCH"
+# - PLATEAU: Optimización en 3 fases (exploración + clustering + refinamiento)
+# - CYCLIC: Descenso de Coordenadas Cíclico - Optimiza un parámetro a la vez
+#           Repite ciclos hasta convergencia. Ideal para encontrar interacciones.
+# - CMA: CMA-ES - Estrategia evolutiva adaptativa
+# - TPE: Tree-Parzen Estimator - Bayesiano con árboles
+# - GP: Gaussian Process (Optuna v4.0+) - Bayesiano clásico con procesos gaussianos
+#       Equilibra exploración/explotación vía incertidumbre. Ideal para <20 dimensiones.
+# - BOTORCH: GP avanzado con BoTorch (requiere: pip install botorch optuna-integration)
+#       Soporta restricciones complejas y optimización multiobjetivo
+OPTUNA_SAMPLER = "CYCLIC"
 
 # TOPÓGRAFO DE MESETAS - FASE 1
 PLATEAU_EXPLORATION_RATIO = 0.67
@@ -141,11 +150,61 @@ PLATEAU_MIN_TRIALS_POR_MESETA = 50
 PLATEAU_CENTROID_SELECTION = "centroid"
 PLATEAU_AUTO_EPS = True
 
+# =============================================================================
+# DESCENSO DE COORDENADAS CÍCLICO (CYCLIC COORDINATE DESCENT)
+# =============================================================================
+# Optimiza un parámetro a la vez mientras fija los demás.
+# Repite ciclos hasta que los parámetros converjan (no cambien).
+#
+# DOS MODOS DE OPERACIÓN:
+# - CYCLIC_USE_N_TRIALS = True  → Usa N_TRIALS: hace ciclos hasta consumir todos los trials
+# - CYCLIC_USE_N_TRIALS = False → Usa convergencia: para cuando no hay variación
+#
+# ANALOGÍA: Como afinar instrumentos en una banda:
+# - Ajustas la Batería (RSI) primero
+# - Luego la Guitarra (EMA) con la batería ya fijada
+# - Vuelves a la Batería porque ahora la Guitarra cambió
+# - Repites hasta que todo suene perfecto
+# =============================================================================
+
+# MODO DE OPERACIÓN
+CYCLIC_USE_N_TRIALS = True         # True = usa N_TRIALS, False = usa convergencia
+
+# PARÁMETROS DE CICLO
+CYCLIC_MAX_CYCLES = 50              # Máximo de ciclos (seguridad, aplica en ambos modos)
+CYCLIC_MIN_CYCLES = 3               # MÍNIMO 3 vueltas garantizadas
+CYCLIC_CONVERGENCE_THRESHOLD = 0.02 # Umbral de convergencia entre ciclos (2%) - solo modo convergencia
+
+# Convergencia ADAPTATIVA por parámetro (sin número fijo de trials) - solo modo convergencia
+CYCLIC_PARAM_MIN_TRIALS = 20        # Mínimo trials antes de evaluar convergencia
+CYCLIC_PARAM_MAX_TRIALS = 200       # Máximo trials por parámetro (seguridad)
+CYCLIC_PARAM_PATIENCE = 15          # Trials sin mejora para converger parámetro
+CYCLIC_PARAM_MIN_IMPROVEMENT = 0.001 # Mejora mínima para considerar progreso (0.1%)
+
+# Trials por parámetro en MODO N_TRIALS (CYCLIC_USE_N_TRIALS = True)
+# Se calcula automáticamente: N_TRIALS / (num_params * ciclos_estimados)
+# O se puede forzar un valor fijo:
+CYCLIC_TRIALS_PER_PARAM_FIXED = None  # None = auto, o poner número (ej: 100)
+
+# MESETAS: Usar centroide de meseta en lugar del mejor valor exacto
+# Más robusto contra overfitting - las mesetas se recalculan cada ciclo
+CYCLIC_USE_PLATEAU = True           # True = fija con centroide de meseta, False = valor exacto
+CYCLIC_PLATEAU_TOLERANCE = 0.02     # 2% tolerancia para definir meseta (scores similares)
+CYCLIC_PLATEAU_MIN_POINTS = 5       # Mínimo puntos para considerar meseta válida
+
+# AGRUPAR EXITS: Optimizar SL/TP (o SL/Trail) juntos como un bloque
+# Tiene sentido porque SL y TP están relacionados (ratio riesgo/beneficio)
+CYCLIC_GROUP_EXITS = True           # True = exits juntos, False = uno a uno
+
+CYCLIC_PARAM_SAMPLER = "tpe"        # Sampler interno: "tpe" o "random"
+CYCLIC_VERBOSE = True               # Mostrar progreso detallado
+CYCLIC_INCLUDE_EXITS = True         # Incluir SL/TP/Trailing en optimización cíclica
+
 # LIMPIEZA DE MEMORIA
 CLEANUP_INTERVAL = 100
 
 # PERTURBACIÓN (ANTI-OVERFITTING)
-PERTURBACION_ACTIVAR = True
+PERTURBACION_ACTIVAR = False
 PERTURBACION_METHOD = "returns_perturbation"
                                                # "stationary_bootstrap" = Politis&Romano 1994
                                                # "returns_shuffle" = Shuffle simple de retornos
@@ -326,7 +385,7 @@ CONFIG = {
     "QTY_MAX_MAP": QTY_MAX_MAP, "QTY_MAX_RANGE_MAP": QTY_MAX_RANGE_MAP,
     "N_TRIALS": N_TRIALS, "OPTUNA_N_JOBS": OPTUNA_N_JOBS,
     "OPTUNA_SEED": OPTUNA_SEED, "OPTUNA_STORAGE": OPTUNA_STORAGE,
-    "OPTUNA_SAMPLER": OPTUNA_SAMPLER,  # PLATEAU, CMA o TPE
+    "OPTUNA_SAMPLER": OPTUNA_SAMPLER,  # PLATEAU, CMA, TPE, GP o BOTORCH
     "COMBINACION_A_EJECUTAR": COMBINACION_A_EJECUTAR,
     "EXIT_TYPE": EXIT_TYPE, "RIESGO_POR_TRADE_PCT": RIESGO_POR_TRADE_PCT,
     "EXIT_SL_PCT": EXIT_SL_PCT, "EXIT_TP_PCT": EXIT_TP_PCT,

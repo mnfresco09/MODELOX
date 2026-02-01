@@ -45,6 +45,20 @@ import polars as pl
 from optuna.exceptions import ExperimentalWarning
 from optuna.samplers import TPESampler, CmaEsSampler
 
+# GPSampler (Gaussian Process) - Optuna v4.0+
+try:
+    from optuna.samplers import GPSampler
+    _GP_AVAILABLE = True
+except ImportError:
+    _GP_AVAILABLE = False
+
+# BoTorchSampler alternativo (requiere botorch instalado)
+try:
+    from optuna_integration import BoTorchSampler
+    _BOTORCH_AVAILABLE = True
+except ImportError:
+    _BOTORCH_AVAILABLE = False
+
 from .engine import BacktestParams, calculate_performance_vectorized_numba
 from .metrics import resumen_metricas
 from .scoring import (
@@ -144,7 +158,14 @@ class OptunaConfig:
     ATRIBUTOS:
     - seed: Semilla para reproducibilidad
     - n_jobs: Trials paralelos (1=secuencial, -1=todos los cores)
-    - sampler: "CMA" (recomendado) o "TPE" (clásico)
+    - sampler: Algoritmo de muestreo:
+        * "CMA" (recomendado) - CMA-ES: Estrategia evolutiva adaptativa
+        * "TPE" - Tree-Parzen Estimator: Bayesiano con árboles
+        * "GP" - Gaussian Process: Optimización Bayesiana clásica (Optuna v4.0+)
+                 Equilibra exploración/explotación vía incertidumbre del modelo GP
+                 Mejor para espacios pequeños (<20 dimensiones)
+        * "BOTORCH" - GP con backend BoTorch (requiere pip install botorch optuna-integration)
+                 Soporta restricciones complejas y optimización multiobjetivo
     """
     seed: Optional[int] = None
     n_jobs: int = 1
@@ -548,14 +569,52 @@ def create_study_for_strategy(
     
     sampler_type = cfg.sampler.upper() if cfg.sampler else "CMA"
     
-    if sampler_type == "CMA":
+    if sampler_type == "GP" and _GP_AVAILABLE:
+        # GPSampler: Procesos Gaussianos (Optuna v4.0+)
+        # Modela la función objetivo como un proceso gaussiano
+        # Equilibra exploración (alta incertidumbre) y explotación (alta predicción)
+        sampler = GPSampler(
+            seed=cfg.seed,
+            n_startup_trials=10,  # Trials aleatorios iniciales para construir el modelo
+        )
+    elif sampler_type == "GP" and not _GP_AVAILABLE:
+        import warnings
+        warnings.warn("GPSampler no disponible (requiere Optuna v4.0+). Usando CmaEsSampler.")
         sampler = CmaEsSampler(
             seed=cfg.seed,
             n_startup_trials=10,
             warn_independent_sampling=False,
             consider_pruned_trials=False,
         )
-    else:
+    elif sampler_type == "BOTORCH" and _BOTORCH_AVAILABLE:
+        # BoTorchSampler: GP avanzado con backend BoTorch
+        # Usa Expected Improvement como función de adquisición
+        sampler = BoTorchSampler(
+            seed=cfg.seed,
+            n_startup_trials=10,
+        )
+    elif sampler_type == "BOTORCH" and not _BOTORCH_AVAILABLE:
+        if _GP_AVAILABLE:
+            import warnings
+            warnings.warn("BoTorchSampler no disponible. Usando GPSampler.")
+            sampler = GPSampler(seed=cfg.seed, n_startup_trials=10)
+        else:
+            import warnings
+            warnings.warn("BoTorchSampler no disponible. Usando CmaEsSampler.")
+            sampler = CmaEsSampler(
+                seed=cfg.seed,
+                n_startup_trials=10,
+                warn_independent_sampling=False,
+                consider_pruned_trials=False,
+            )
+    elif sampler_type == "CMA":
+        sampler = CmaEsSampler(
+            seed=cfg.seed,
+            n_startup_trials=10,
+            warn_independent_sampling=False,
+            consider_pruned_trials=False,
+        )
+    else:  # TPE o cualquier otro
         sampler = TPESampler(
             seed=cfg.seed,
             multivariate=True,

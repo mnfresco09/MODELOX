@@ -242,6 +242,131 @@ class ProfessionalUI:
 
 UI = ProfessionalUI()
 
+
+# =============================================================================
+# PROMPT CON TIMEOUT Y CUENTA ATRÁS
+# =============================================================================
+
+def prompt_with_timeout(prompt_text: str, default: str, timeout: int = 18, 
+                        choices: List[str] = None) -> str:
+    """
+    Muestra un prompt con cuenta atrás. Si no hay input en 'timeout' segundos,
+    devuelve el valor por defecto automáticamente.
+    
+    Args:
+        prompt_text: Texto del prompt
+        default: Valor por defecto
+        timeout: Segundos de espera (default 18)
+        choices: Lista de opciones válidas (opcional)
+    
+    Returns:
+        Valor introducido o default si hay timeout
+    """
+    import sys
+    import select
+    import termios
+    import tty
+    import shutil
+    
+    # Obtener ancho del terminal
+    term_width = shutil.get_terminal_size().columns
+    
+    # Truncar default si es muy largo para evitar wrap
+    default_display = default
+    if len(default) > 50:
+        default_display = default[:25] + "..." + default[-20:]
+    
+    # Construir texto base del prompt
+    if choices:
+        choices_str = "/".join(choices)
+        base_text = f"{prompt_text} [{choices_str}] ({default_display}): "
+    else:
+        base_text = f"{prompt_text} ({default_display}): "
+    
+    # Guardar configuración del terminal
+    old_settings = termios.tcgetattr(sys.stdin)
+    
+    try:
+        # Configurar terminal para lectura no bloqueante
+        tty.setcbreak(sys.stdin.fileno())
+        
+        input_chars = []
+        start_time = time.time()
+        last_countdown = timeout + 1
+        
+        # Imprimir línea inicial
+        sys.stdout.write(f"\r\033[K{base_text}")  # \033[K = borrar hasta fin de línea
+        sys.stdout.flush()
+        
+        while True:
+            remaining = timeout - int(time.time() - start_time)
+            
+            # Actualizar solo el contador (misma línea)
+            if remaining != last_countdown and remaining >= 0:
+                user_input = ''.join(input_chars)
+                # \033[K = borrar desde cursor hasta fin de línea
+                line = f"\r\033[K{base_text}{user_input} \033[93m⏱ {remaining:2d}s\033[0m"
+                sys.stdout.write(line)
+                sys.stdout.flush()
+                last_countdown = remaining
+            
+            # Timeout alcanzado
+            if remaining <= 0:
+                sys.stdout.write(f"\n  \033[92m✓ Auto-seleccionado:\033[0m {default_display}\n")
+                sys.stdout.flush()
+                return default
+            
+            # Verificar si hay input disponible (espera 0.1s)
+            if select.select([sys.stdin], [], [], 0.1)[0]:
+                char = sys.stdin.read(1)
+                
+                # Enter - confirmar input
+                if char == '\n' or char == '\r':
+                    result = ''.join(input_chars).strip()
+                    if not result:
+                        result = default
+                    # Validar choices si existen
+                    if choices and result not in choices:
+                        result = default
+                    sys.stdout.write("\n")
+                    sys.stdout.flush()
+                    return result
+                
+                # Backspace
+                elif char == '\x7f' or char == '\x08':
+                    if input_chars:
+                        input_chars.pop()
+                        user_input = ''.join(input_chars)
+                        line = f"\r\033[K{base_text}{user_input} \033[93m⏱ {remaining:2d}s\033[0m"
+                        sys.stdout.write(line)
+                        sys.stdout.flush()
+                
+                # Ctrl+C
+                elif char == '\x03':
+                    sys.stdout.write("\n\033[91mCancelado\033[0m\n")
+                    sys.stdout.flush()
+                    raise KeyboardInterrupt
+                
+                # Carácter normal
+                elif char.isprintable():
+                    input_chars.append(char)
+                    sys.stdout.write(char)
+                    sys.stdout.flush()
+    
+    except Exception as e:
+        # Fallback a prompt normal si hay error
+        sys.stdout.write("\n")
+        sys.stdout.flush()
+        if choices:
+            return Prompt.ask(prompt_text, choices=choices, default=default)
+        else:
+            return Prompt.ask(prompt_text, default=default)
+    
+    finally:
+        # Restaurar configuración del terminal
+        termios.tcsetattr(sys.stdin, termios.TCSADRAIN, old_settings)
+
+
 # Suprimir warnings
 warnings.filterwarnings("ignore", category=RuntimeWarning)
 warnings.filterwarnings("ignore", category=UserWarning)
@@ -280,8 +405,8 @@ GPR_MIN_DELTA = 0.001
 # SPARSE_GP_ENABLED: Activa/desactiva Sparse GP (SVGP)
 #   - True:  Usa Sparse Variational GP con inducing points (más rápido para N > 1000)
 #   - False: Usa Exact GP (más preciso pero O(N³) en memoria/tiempo)
-SPARSE_GP_ENABLED = False
-SPARSE_INDUCING_POINTS = 500
+SPARSE_GP_ENABLED = True
+SPARSE_INDUCING_POINTS = 150
 
 # ============================================================================
 # CONFIGURACIÓN DE RENDIMIENTO AVANZADO
@@ -757,6 +882,42 @@ class ParameterPrediction:
     upper_ci: np.ndarray
     raw_data_x: np.ndarray
     raw_data_y: np.ndarray
+
+
+@dataclass
+class ParameterMetricPoint:
+    """Un punto en la curva parámetro vs métrica (media agrupada)."""
+    param_value: float
+    metric_mean: float
+    metric_std: float
+    sample_count: int
+
+
+@dataclass
+class ParameterMetricCurve:
+    """
+    Análisis de un parámetro individual vs una métrica.
+    Agrupa por valor de parámetro y calcula media de la métrica.
+    """
+    param_name: str
+    metric_name: str
+    # Datos agrupados
+    unique_params: np.ndarray       # Valores únicos del parámetro
+    mean_metrics: np.ndarray        # Media de métrica por valor
+    std_metrics: np.ndarray         # Std de métrica por valor
+    sample_counts: np.ndarray       # Número de muestras por valor
+    # Curva de tendencia ajustada
+    trend_x: np.ndarray             # X suavizado para la tendencia
+    trend_y: np.ndarray             # Y de la tendencia polinomial
+    trend_ci_lower: np.ndarray      # Banda inferior de confianza
+    trend_ci_upper: np.ndarray      # Banda superior de confianza
+    # Óptimo encontrado
+    optimal_param: float            # Valor óptimo del parámetro
+    optimal_metric: float           # Métrica en el óptimo
+    # Estadísticas
+    total_samples: int
+    trend_degree: int               # Grado del polinomio ajustado
+    r2_trend: float                 # R² del ajuste de tendencia
 
 
 # =============================================================================
@@ -1777,6 +1938,7 @@ class BayesianDenoisingAnalyzer:
         self.selected_metrics: List[str] = []
         self.gpr_models: Dict[str, GPROptimizer] = {}
         self.gpr_results: Dict[str, GPRResult] = {}
+        self.param_metric_curves: Dict[str, Dict[str, ParameterMetricCurve]] = {}  # {metric: {param: curve}}
         self.figures_base64: Dict[str, str] = {}
         configure_style()
         # Registrar limpieza automática al salir
@@ -2512,6 +2674,156 @@ class BayesianDenoisingAnalyzer:
         tracker.end_process('gpr_analysis')
         return self.gpr_results
     
+    def compute_parameter_metric_curves(self) -> Dict[str, Dict[str, ParameterMetricCurve]]:
+        """
+        Calcula las curvas de parámetro vs métrica con medias agrupadas.
+        Para cada métrica seleccionada y cada parámetro:
+        - Agrupa por valor único del parámetro
+        - Calcula media y std de la métrica
+        - Ajusta curva de tendencia polinomial
+        - Encuentra el óptimo
+        
+        Returns:
+            Dict[metric_name, Dict[param_name, ParameterMetricCurve]]
+        """
+        console.print(Rule("[bold blue]📊 ANÁLISIS DE PARÁMETROS INDIVIDUALES"))
+        tracker.start_process('param_curves', 'Curvas Parámetro-Métrica')
+        
+        results: Dict[str, Dict[str, ParameterMetricCurve]] = {}
+        
+        for metric in self.selected_metrics:
+            if metric not in self.df.columns:
+                continue
+            
+            results[metric] = {}
+            metric_data = self.df[metric].to_numpy()
+            
+            for param in self.param_columns:
+                param_data = self.df[param].to_numpy()
+                
+                # Filtrar NaN
+                valid_mask = ~(np.isnan(param_data) | np.isnan(metric_data))
+                param_valid = param_data[valid_mask]
+                metric_valid = metric_data[valid_mask]
+                
+                if len(param_valid) < 3:
+                    continue
+                
+                # ═══════════════════════════════════════════════════════════════
+                # MÉTODO: BINNING + MEDIA POR BIN
+                # Divide el rango del parámetro en N_BINS segmentos y calcula
+                # la media de la métrica en cada bin. Esto elimina TODO el ruido.
+                # ═══════════════════════════════════════════════════════════════
+                
+                N_BINS = 25  # Número de segmentos (ajustar para más/menos suavidad)
+                
+                param_min = param_valid.min()
+                param_max = param_valid.max()
+                
+                # Crear bins
+                bin_edges = np.linspace(param_min, param_max, N_BINS + 1)
+                bin_centers = (bin_edges[:-1] + bin_edges[1:]) / 2
+                
+                # Calcular media y std por bin
+                bin_means = []
+                bin_stds = []
+                bin_counts = []
+                valid_bins = []
+                valid_centers = []
+                
+                for i in range(N_BINS):
+                    # Datos en este bin
+                    in_bin = (param_valid >= bin_edges[i]) & (param_valid < bin_edges[i+1])
+                    # Incluir el último valor en el último bin
+                    if i == N_BINS - 1:
+                        in_bin = (param_valid >= bin_edges[i]) & (param_valid <= bin_edges[i+1])
+                    
+                    values_in_bin = metric_valid[in_bin]
+                    
+                    if len(values_in_bin) > 0:
+                        bin_means.append(np.mean(values_in_bin))
+                        bin_stds.append(np.std(values_in_bin) if len(values_in_bin) > 1 else 0)
+                        bin_counts.append(len(values_in_bin))
+                        valid_bins.append(i)
+                        valid_centers.append(bin_centers[i])
+                
+                if len(valid_centers) < 2:
+                    continue
+                
+                bin_means = np.array(bin_means)
+                bin_stds = np.array(bin_stds)
+                bin_counts = np.array(bin_counts)
+                valid_centers = np.array(valid_centers)
+                
+                # Guardar como unique_params para compatibilidad
+                unique_params = valid_centers
+                mean_metrics = bin_means
+                std_metrics = bin_stds
+                counts = bin_counts
+                
+                # Crear curva suave interpolando los bins
+                from scipy.ndimage import gaussian_filter1d
+                
+                # Grid final para la curva
+                trend_x = np.linspace(valid_centers.min(), valid_centers.max(), 200)
+                
+                # Interpolar y suavizar ligeramente
+                trend_y = np.interp(trend_x, valid_centers, bin_means)
+                
+                # Suavizado gaussiano ligero para conectar los bins suavemente
+                trend_y = gaussian_filter1d(trend_y, sigma=5)
+                
+                # Calcular R² (correlación entre bins)
+                if len(bin_means) > 2:
+                    ss_tot = np.sum((bin_means - np.mean(bin_means))**2)
+                    y_pred = np.interp(valid_centers, trend_x, trend_y)
+                    ss_res = np.sum((bin_means - y_pred)**2)
+                    r2_trend = max(0, 1 - (ss_res / (ss_tot + 1e-10)))
+                else:
+                    r2_trend = 0.0
+                
+                # Banda de confianza
+                std_interp = np.interp(trend_x, valid_centers, bin_stds)
+                std_interp = gaussian_filter1d(std_interp, sigma=5)
+                trend_ci_lower = trend_y - std_interp
+                trend_ci_upper = trend_y + std_interp
+                
+                # Óptimo: máximo de la curva
+                opt_idx = np.argmax(trend_y)
+                optimal_param = trend_x[opt_idx]
+                optimal_metric = trend_y[opt_idx]
+                degree = N_BINS  # Indicar que usamos binning
+                
+                # Crear objeto resultado
+                curve = ParameterMetricCurve(
+                    param_name=param,
+                    metric_name=metric,
+                    unique_params=unique_params,
+                    mean_metrics=mean_metrics,
+                    std_metrics=std_metrics,
+                    sample_counts=counts,
+                    trend_x=trend_x,
+                    trend_y=trend_y,
+                    trend_ci_lower=trend_ci_lower,
+                    trend_ci_upper=trend_ci_upper,
+                    optimal_param=optimal_param,
+                    optimal_metric=optimal_metric,
+                    total_samples=len(param_valid),
+                    trend_degree=degree,
+                    r2_trend=r2_trend
+                )
+                
+                results[metric][param] = curve
+        
+        self.param_metric_curves = results
+        
+        # Mostrar resumen
+        total_curves = sum(len(params) for params in results.values())
+        console.print(f"[dim]   📈 {total_curves} curvas calculadas ({len(results)} métricas × {len(self.param_columns)} parámetros)[/dim]")
+        
+        tracker.end_process('param_curves')
+        return results
+    
     def generate_all_figures(self):
         """Genera figuras en paralelo."""
         console.print(Rule("[bold blue]🎨 GENERACIÓN DE VISUALIZACIONES"))
@@ -2901,19 +3213,28 @@ def main():
     console.print(UI.section("PASO 6: VISUALIZACIONES"))
     analyzer.generate_all_figures()
     
+    # PASO 6.5: Análisis de parámetros individuales
+    console.print(UI.section("PASO 6.5: ANÁLISIS PARÁMETROS INDIVIDUALES"))
+    analyzer.compute_parameter_metric_curves()
+    
     # PASO 7: PDF
     console.print(UI.section("PASO 7: GENERACIÓN PDF"))
     base = Path(analyzer.filepath).stem
     
-    # Preguntar tipo de PDF
-    pdf_type = Prompt.ask(
+    # Preguntar tipo de PDF (con timeout de 18s)
+    pdf_type = prompt_with_timeout(
         "  [white]TIPO DE REPORTE[/white]",
-        choices=["profesional", "simple"],
-        default="profesional"
+        default="profesional",
+        timeout=18,
+        choices=["profesional", "simple"]
     )
     
     if pdf_type == "profesional":
-        pdf_path = Prompt.ask("  [white]ARCHIVO PDF[/white]", default=f"reporte_gpr_profesional_{base}.pdf")
+        pdf_path = prompt_with_timeout(
+            "  [white]ARCHIVO PDF[/white]", 
+            default=f"reporte_gpr_profesional_{base}.pdf",
+            timeout=18
+        )
         try:
             from visual.pdf_profesional import generate_professional_report
             pdf_result = generate_professional_report(
@@ -2922,7 +3243,8 @@ def main():
                 df=analyzer.df,
                 param_columns=analyzer.param_columns,
                 filepath=analyzer.filepath,
-                output_path=pdf_path
+                output_path=pdf_path,
+                param_metric_curves=analyzer.param_metric_curves  # NUEVO
             )
         except ImportError as e:
             console.print(f"[yellow]⚠ Error importando PDF profesional: {e}[/yellow]")
@@ -2933,7 +3255,11 @@ def main():
             console.print("[yellow]  Usando generador simple...[/yellow]")
             pdf_result = analyzer.generate_pdf_report(pdf_path)
     else:
-        pdf_path = Prompt.ask("  [white]ARCHIVO PDF[/white]", default=f"reporte_gpr_{base}.pdf")
+        pdf_path = prompt_with_timeout(
+            "  [white]ARCHIVO PDF[/white]", 
+            default=f"reporte_gpr_{base}.pdf",
+            timeout=18
+        )
         pdf_result = analyzer.generate_pdf_report(pdf_path)
     
     # PASO 8: Excel
