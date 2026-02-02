@@ -405,8 +405,8 @@ GPR_MIN_DELTA = 0.001
 # SPARSE_GP_ENABLED: Activa/desactiva Sparse GP (SVGP)
 #   - True:  Usa Sparse Variational GP con inducing points (más rápido para N > 1000)
 #   - False: Usa Exact GP (más preciso pero O(N³) en memoria/tiempo)
-SPARSE_GP_ENABLED = True
-SPARSE_INDUCING_POINTS = 150
+SPARSE_GP_ENABLED = False
+SPARSE_INDUCING_POINTS = 500
 
 # ============================================================================
 # CONFIGURACIÓN DE RENDIMIENTO AVANZADO

@@ -55,7 +55,7 @@ TIMEFRAMES = [1]
 #
 # =============================================================================
 
-SELECCION_RANGO = "2,3"
+SELECCION_RANGO = "all"
 
 _RANGOS_FECHAS = {
     1:     ("2020-01-01", "2021-07-28"),
@@ -117,7 +117,7 @@ FECHA_FIN_PLOT = "2021-03-15"
 # 3. CONFIGURACIÓN DE OPTIMIZACIÓN
 # =============================================================================
 
-N_TRIALS = 75000
+N_TRIALS = 1000
 OPTUNA_N_JOBS = -1
 OPTUNA_SEED = None
 OPTUNA_STORAGE = None
@@ -132,7 +132,7 @@ OPTUNA_STORAGE = None
 #       Equilibra exploración/explotación vía incertidumbre. Ideal para <20 dimensiones.
 # - BOTORCH: GP avanzado con BoTorch (requiere: pip install botorch optuna-integration)
 #       Soporta restricciones complejas y optimización multiobjetivo
-OPTUNA_SAMPLER = "CYCLIC"
+OPTUNA_SAMPLER = "tpe"
 
 # TOPÓGRAFO DE MESETAS - FASE 1
 PLATEAU_EXPLORATION_RATIO = 0.67
@@ -204,7 +204,7 @@ CYCLIC_INCLUDE_EXITS = True         # Incluir SL/TP/Trailing en optimización c�
 CLEANUP_INTERVAL = 100
 
 # PERTURBACIÓN (ANTI-OVERFITTING)
-PERTURBACION_ACTIVAR = False
+PERTURBACION_ACTIVAR = True
 PERTURBACION_METHOD = "returns_perturbation"
                                                # "stationary_bootstrap" = Politis&Romano 1994
                                                # "returns_shuffle" = Shuffle simple de retornos
