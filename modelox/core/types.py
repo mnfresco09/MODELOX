@@ -85,6 +85,7 @@ class BacktestConfig:
     exit_tp_pct: float = 14.0
     exit_trail_act_pct: float = 15.0
     exit_trail_dist_pct: float = 3.0
+    allow_custom_exits: bool = False
     
     # -------------------------------------------------------------------------
     # OPTIMIZACIÓN OPTUNA

@@ -91,24 +91,62 @@ def _normalize_exit_values(
     tp_pct: float,
     trail_act_pct: float,
     trail_dist_pct: float,
+    *,
+    allow_custom_exits: bool,
 ) -> tuple:
     """
     NORMALIZA Y VALIDA VALORES DE EXIT
     
     Reglas:
-    - Todos positivos (abs)
+    - Si allow_custom_exits=True, se aceptan ceros y tipos custom
     - En trailing, tp_pct puede ser 0
-    - trail_dist_pct <= trail_act_pct
+    - trail_dist_pct <= trail_act_pct (clamp)
     """
-    sl_pct = abs(sl_pct) if sl_pct != 0 else 1.0
-    
+    exit_type = str(exit_type).strip().lower()
+    allowed_types = {"pnl_fixed", "pnl_trailing"}
+
+    if allow_custom_exits:
+        sl_pct = abs(float(sl_pct))
+        tp_pct = abs(float(tp_pct))
+        trail_act_pct = abs(float(trail_act_pct))
+        trail_dist_pct = abs(float(trail_dist_pct))
+        if trail_act_pct > 0 and trail_dist_pct > trail_act_pct:
+            trail_dist_pct = trail_act_pct
+        return float(sl_pct), float(tp_pct), float(trail_act_pct), float(trail_dist_pct)
+
+    if exit_type not in allowed_types:
+        raise ValueError(
+            f"exit_type inválido: {exit_type}. Usa pnl_fixed o pnl_trailing, "
+            "o habilita salidas personalizadas."
+        )
+
+    sl_pct = float(sl_pct)
+    tp_pct = float(tp_pct)
+    trail_act_pct = float(trail_act_pct)
+    trail_dist_pct = float(trail_dist_pct)
+
+    if sl_pct <= 0:
+        raise ValueError(
+            "exit_sl_pct debe ser > 0. Para permitir 0, habilita salidas personalizadas."
+        )
+
     if exit_type == "pnl_trailing":
-        tp_pct = abs(tp_pct) if tp_pct != 0 else 0.0
+        if tp_pct < 0:
+            raise ValueError(
+                "exit_tp_pct no puede ser negativo en pnl_trailing. "
+                "Para permitir 0, habilita salidas personalizadas."
+            )
+        if trail_act_pct <= 0 or trail_dist_pct <= 0:
+            raise ValueError(
+                "exit_trail_act_pct y exit_trail_dist_pct deben ser > 0 en pnl_trailing. "
+                "Para permitir 0, habilita salidas personalizadas."
+            )
     else:
-        tp_pct = abs(tp_pct) if tp_pct != 0 else 1.0
-    
-    trail_act_pct = abs(trail_act_pct) if trail_act_pct != 0 else 0.5
-    trail_dist_pct = abs(trail_dist_pct) if trail_dist_pct != 0 else 0.25
+        if tp_pct <= 0:
+            raise ValueError(
+                "exit_tp_pct debe ser > 0 en pnl_fixed. "
+                "Para permitir 0, habilita salidas personalizadas."
+            )
     
     # DISTANCIA NO PUEDE SUPERAR ACTIVACIÓN
     if trail_dist_pct > trail_act_pct:
@@ -121,7 +159,12 @@ def _normalize_exit_values(
 # 4. RESOLUCIÓN DE PARÁMETROS
 # =============================================================================
 
-def resolve_exit_settings_for_trial(*, trial: Any, config: Any) -> ExitSettings:
+def resolve_exit_settings_for_trial(
+    *,
+    trial: Any,
+    config: Any,
+    allow_custom_exits: bool = False,
+) -> ExitSettings:
     """
     RESUELVE PARÁMETROS DE SALIDA PARA UN TRIAL
     
@@ -131,6 +174,11 @@ def resolve_exit_settings_for_trial(*, trial: Any, config: Any) -> ExitSettings:
     3. Defaults de este archivo
     """
     optimize_exits = bool(getattr(config, "optimize_exits", DEFAULT_OPTIMIZE_EXITS))
+    allow_custom_exits = bool(
+        allow_custom_exits
+        or getattr(config, "allow_custom_exits", False)
+        or getattr(config, "strategy_exit_enabled", False)
+    )
     exit_type = str(getattr(config, "exit_type", DEFAULT_EXIT_TYPE)).strip().lower()
     
     # VALORES BASE
@@ -161,7 +209,12 @@ def resolve_exit_settings_for_trial(*, trial: Any, config: Any) -> ExitSettings:
     
     # NORMALIZAR
     sl_pct, tp_pct, trail_act_pct, trail_dist_pct = _normalize_exit_values(
-        exit_type, sl_pct, tp_pct, trail_act_pct, trail_dist_pct
+        exit_type,
+        sl_pct,
+        tp_pct,
+        trail_act_pct,
+        trail_dist_pct,
+        allow_custom_exits=allow_custom_exits,
     )
     
     return ExitSettings(
@@ -180,9 +233,19 @@ def exit_settings_from_params(params: Dict[str, Any]) -> ExitSettings:
     tp_pct = float(params.get("__exit_tp_pct", params.get("exit_tp_pct", DEFAULT_EXIT_TP_PCT)))
     trail_act_pct = float(params.get("__exit_trail_act_pct", params.get("exit_trail_act_pct", DEFAULT_EXIT_TRAIL_ACT_PCT)))
     trail_dist_pct = float(params.get("__exit_trail_dist_pct", params.get("exit_trail_dist_pct", DEFAULT_EXIT_TRAIL_DIST_PCT)))
-    
+    allow_custom_exits = bool(
+        params.get("__strategy_exit_enabled")
+        or params.get("strategy_exit_enabled")
+        or params.get("allow_custom_exits")
+    )
+
     sl_pct, tp_pct, trail_act_pct, trail_dist_pct = _normalize_exit_values(
-        exit_type, sl_pct, tp_pct, trail_act_pct, trail_dist_pct
+        exit_type,
+        sl_pct,
+        tp_pct,
+        trail_act_pct,
+        trail_dist_pct,
+        allow_custom_exits=allow_custom_exits,
     )
     
     return ExitSettings(
@@ -402,4 +465,3 @@ def find_exits_vectorized(
                 exit_reasons[i] = 4
     
     return exit_indices, exit_prices, exit_reasons
-

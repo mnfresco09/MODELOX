@@ -856,7 +856,11 @@ class PlateauOptimizer:
         params_rt["__strategy_exit_enabled"] = bool(getattr(strategy, "SALIDAS_PERSONALIZADAS", False))
         
         # Resolver configuración de salida
-        exit_settings = resolve_exit_settings_for_trial(trial=trial, config=self.config)
+        exit_settings = resolve_exit_settings_for_trial(
+            trial=trial,
+            config=self.config,
+            allow_custom_exits=bool(getattr(strategy, "SALIDAS_PERSONALIZADAS", False)),
+        )
         params_rt["__exit_type"] = exit_settings.exit_type
         params_rt["__exit_sl_pct"] = exit_settings.sl_pct
         params_rt["__exit_tp_pct"] = exit_settings.tp_pct
