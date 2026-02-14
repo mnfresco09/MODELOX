@@ -1,8 +1,23 @@
 """
-MODELOX Terminal Interface v3.0 - Classic Institutional Design
-===============================================================
-Elegant, clean, professional terminal display.
-Neutral tones with selective color highlighting.
+================================================================================
+VISUAL/RICH.PY — INTERFAZ DE TERMINAL INSTITUCIONAL
+================================================================================
+
+PROPÓSITO:
+    Renderizado de métricas y tablas en terminal con diseño limpio y profesional.
+    Usa la librería `rich` para paneles, tablas y colores semánticos.
+
+ESTILO:
+    - Neutral y elegante (Gris/Azul/Dorado).
+    - Evita el "arcoíris" excesivo.
+    - Resalta solo lo importante (ROI positivo, Best Trial).
+
+COMPONENTES:
+    - `mostrar_panel_elegante`: Dashboard principal por trial.
+    - `mostrar_cabecera_inicio`: Resumen de configuración al arrancar.
+    - `mostrar_evolucion_inline`: Barra de progreso minimalista.
+
+================================================================================
 """
 
 from __future__ import annotations

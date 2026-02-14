@@ -1,49 +1,18 @@
-"""  
+"""
 ================================================================================
-MODELOX - Dynamic Multi-Strategy Trading Charts (v6.1 UNIFIED WARMUP)
+VISUAL/GRAFICO.PY — MOTOR GRÁFICO VECTORIZADO (ZERO-LAG)
 ================================================================================
-100% dynamic indicator detection - Compatible with any strategy (1, 2, N...).
 
-ARCHITECTURE v6.1 - ZERO-LAG + GLOBAL WARMUP:
+PROPÓSITO:
+    Generación de gráficos interactivos ligeros y dinámicos.
+    Usa arquitectura Zero-Lag de alineación (SATA) para sincronización perfecta
+    entre velas, indicadores y señales.
 
-1. SINGLE AUTHORITATIVE TIMESTAMP ARRAY (SATA)
-   - ts_q = authoritative timestamps from candle data
-   - ALL data (indicators, markers) references ts_q indices
-   - Eliminates any possibility of desynchronization
-
-2. StrictAlignmentMapper CLASS
-   - Maps indicator values to ts_q using O(1) hash lookup
-   - Handles NaN values as None (gaps in line series)
-   - Guarantees: indicator[i] corresponds to candle[i]
-
-3. GLOBAL WARM-UP PERIOD (v6.1 - DATA SLICING)
-   - Detects max period from all *_period params (mfi_period, atr_period, etc.)
-   - SLICES all data (candles + volume + indicators) from warmup point
-   - Chart visually starts at candle[max_warmup]
-   - Trade markers within warmup period are filtered out
-   - Result: Clean, synchronized chart where everything starts together
-
-4. CENTRALIZED TIMESTAMP NORMALIZATION
-   - _normalize_timestamps_to_unix() is the ONLY timestamp converter
-   - Ensures consistent datetime64 -> Unix seconds conversion
-   - Supports any datetime64 precision (ns, us, ms, s)
-
-5. CROSS-PANEL MARKER MIRRORING
-   - Markers use exact candle timestamps (no approximation)
-   - Markers appear on price chart AND indicator panels
-   - Zero pixel deviation between chart elements
-
-6. DYNAMIC OPTUNA PARAMETER BINDING
-   - Reference lines read from trial params (overbought, oversold)
-   - Panel names include period (e.g., "MFI (14)")
-   - Entry/exit levels visualized as horizontal lines
-
-PERFORMANCE:
-- orjson for 10x faster JSON serialization
-- Vectorized numpy operations (no row-by-row iteration)
-- Data quantization (2-4 decimal precision)
-- Unix Int64 timestamps (minimal payload)
-- Polars-first processing
+FUNCIONALIDAD:
+    1. Alineación vectorizada O(log n) de indicadores.
+    2. Detección automática de indicadores desde la estrategia.
+    3. Normalización centralizada de timestamps (Unix int64).
+    4. Serialización ultra-rápida (orjson) para el frontend.
 
 ================================================================================
 """

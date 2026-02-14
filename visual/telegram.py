@@ -1,5 +1,19 @@
 """
-visual/telegram.py — Notificaciones Telegram minimalistas para MODELOX.
+================================================================================
+VISUAL/TELEGRAM.PY — NOTIFICACIONES EN TIEMPO REAL
+================================================================================
+
+PROPÓSITO:
+    Sistema de alertas minimalista y eficiente para Telegram.
+    Envía notificaciones de trades, inicios de sesión y resultados de optimización.
+
+CARACTERÍSTICAS:
+    - Uso asíncrono (threading) para no bloquear el trading.
+    - Formato HTML limpio.
+    - Soporte para credenciales vía variables de entorno.
+    - Filtro de mensajes redundantes.
+
+================================================================================
 """
 
 from __future__ import annotations

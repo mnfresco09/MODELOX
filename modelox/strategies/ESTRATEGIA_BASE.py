@@ -1,15 +1,33 @@
 from __future__ import annotations
 
-"""================================================================================
-ESTRATEGIA BASE (MODELOX) - BASE MAESTRA PARA TODAS LAS ESTRATEGIAS
+"""
+================================================================================
+MODELOX/STRATEGIES/ESTRATEGIA_BASE.PY — BASE MAESTRA PARA ESTRATEGIAS
 ================================================================================
 
-OBJETIVO
-  ESTE ARCHIVO DEFINE EL CONTRATO OFICIAL ENTRE:
-    - RUNNER  (OPTUNA + MULTI-TF)
-    - STRATEGY (GENERACION DE SEÑALES)
-    - ENGINE   (SIMULACION DE TRADES, NUMBA)
-    - REPORTERS (RICH / EXCEL / PLOTS)
+OBJETIVO:
+  Define el contrato oficial entre:
+    - RUNNER  (Optuna + Multi-TF)
+    - STRATEGY (Generación de señales)
+    - ENGINE   (Simulación de trades, Numba)
+    - REPORTERS (Rich / Excel / Plots)
+
+FILOSOFÍA:
+  1. VELOCIDAD REAL: Polars End-to-End (Zero Pandas en loops).
+  2. VECTORIZACIÓN: Nada de iteraciones por fila en Python.
+  3. LAZY EVALUATION: Minimizar .collect() (ideal: 1 por trial).
+  4. COLUMNAS MÍNIMAS: Devolver solo timestamp y señales.
+
+CONTRATO DE INPUT (df):
+  - Polars DataFrame con OHLCV.
+  - Multi-Timeframe (MTF) ya aplicado (anti-lookahead garantizado).
+
+CONTRATO DE OUTPUT (signals_df):
+  - timestamp + signal_long (bool) + signal_short (bool).
+  - Indicadores adicionales opcionales para plot.
+
+================================================================================
+"""
 
 PRIORIDAD #1: VELOCIDAD REAL
   - POLARS END-TO-END (ZERO PANDAS)

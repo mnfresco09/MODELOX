@@ -1,15 +1,19 @@
 #!/usr/bin/env python3
 """
 ================================================================================
-📄 GENERADOR DE PDF PROFESIONAL V2 - MODELOX
+VISUAL/PDF_PROFESIONAL.PY — MOTOR DE REPORTES PDF CIENTÍFICOS
 ================================================================================
 
-Sistema avanzado de generación de reportes PDF con:
-- Gráficas 3D de superficie topográfica SUAVIZADA
-- Análisis estadístico y probabilístico global
-- Métricas de robustez y estabilidad
-- Conclusiones automáticas
-- Diseño profesional de nivel institucional
+PROPÓSITO:
+    Generación de informes PDF de alta calidad para análisis profundo.
+    Incluye gráficos 3D de superficies de respuesta, análisis de sensibilidad
+    y métricas de robustez del modelo.
+
+CARACTERÍSTICAS:
+    - Gráficos Vectoriales (Matplotlib Pro Style).
+    - Mapas de calor y superficies 3D para optimización.
+    - Análisis estadístico automático (R², Estabilidad, Confianza).
+    - Diseño institucional limpio (colores corporativos).
 
 ================================================================================
 """

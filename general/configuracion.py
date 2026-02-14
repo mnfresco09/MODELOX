@@ -1,21 +1,29 @@
-"""general/configuracion.py
+"""
+================================================================================
+GENERAL/CONFIGURACION.PY — CONFIGURACIÓN MAESTRA DEL SISTEMA
+================================================================================
 
-CONFIGURACIÓN MAESTRA DEL SISTEMA MODELOX
-==========================================
+PROPÓSITO:
+    Archivo ÚNICO para configurar backtests, optimizaciones y trading real.
+    Centraliza parámetros de activo, fechas, capital y estrategias.
 
-Este archivo es el ÚNICO que necesitas tocar para configurar tus backtests.
-Todo lo demás se ajusta automáticamente.
+CONTENIDO:
+     1. EJECUCIÓN                 — Estrategias a correr (IDs)
+     2. DATOS                     — Activo, timeframe base, rango fechas
+     3. OPTIMIZACIÓN (OPTUNA)     — Trials, sampler, perturbación
+     4. CAPITAL & RIESGO          — Saldo inicial, comisiones, apalancamiento
+     5. SALIDAS & RESULTADOS      — Plots, Excel, limpieza
 
-FLUJO RESUMIDO:
-  1. Eliges ACTIVO, ESTRATEGIA y TIMEFRAME
-  2. Defines el RANGO DE FECHAS para el backtest
-  3. Ajustas capital, comisiones y apalancamiento
-  4. Ejecutas  →  python ejecutar.py
-  5. Los resultados se guardan en  resultados/
+USO:
+    1. Ajustar parámetros en este archivo.
+    2. Ejecutar `python ejecutar.py` para backtest/optimización.
+    3. Resultados en carpeta `resultados/`.
 
-DATOS:
-  Los datos se cargan desde  <CARPETA_DATOS>/<ACTIVO>_ohlcv_1m.<FORMATO>
-  y se resamplean automáticamente al TIMEFRAME_BASE que elijas.
+NOTAS:
+    - Los datos se resamplean automáticamente desde 1m.
+    - Optuna busca combinaciones óptimas si N_TRIALS > 1.
+
+================================================================================
 """
 
 from __future__ import annotations

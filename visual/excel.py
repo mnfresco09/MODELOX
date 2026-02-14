@@ -1,12 +1,19 @@
 """
 ================================================================================
-VISUAL/EXCEL.PY - Dashboard Quant Profesional (Smart Param Detection)
+VISUAL/EXCEL.PY — DASHBOARD QUANT EN EXCEL
 ================================================================================
-Módulo de exportación de resultados.
-Filtra agresivamente métricas secundarias para que en "Parámetros"
-solo queden los inputs reales de la estrategia.
 
-Autor: Sistema MODELOX
+PROPÓSITO:
+    Generación de reportes Excel profesionales con:
+    1. Filtrado inteligente de métricas (elimina ruido).
+    2. Separación clara entre INPUTS (Parámetros) y OUTPUTS (Métricas).
+    3. Formato condicional automático (Barras de datos, Escalas de color).
+
+FUNCIONALIDAD:
+    - `ExcelReporter`: Clase principal que se integra con el Runner.
+    - Genera `RESUMEN.csv` incremental (seguridad contra crash).
+    - Convierte a `.xlsx` con estilos al finalizar.
+
 ================================================================================
 """
 

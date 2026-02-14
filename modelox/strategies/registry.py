@@ -1,4 +1,26 @@
+"""
+================================================================================
+MODELOX/STRATEGIES/REGISTRY.PY — SISTEMA DE DESCUBRIMIENTO DE ESTRATEGIAS
+================================================================================
+
+PROPÓSITO:
+    Gestiona el descubrimiento automático, carga y validación de estrategias 
+    en el directorio `modelox/strategies/`.
+
+FUNCIONALIDAD:
+    1. Auto-descubrimiento de clases que heredan de `Strategy`.
+    2. Validación de interfaz (métodos requeridos, tipos).
+    3. Carga selectiva por ID (evita cargar todas las estrategias si no se usan).
+    4. Prevención de conflictos de IDs y nombres.
+
+USO PRINCIPAL:
+    - `discover_strategies()`: Retorna dict {nombre: clase}
+    - `instantiate_strategies(only_id=...)`: Carga e instancia una estrategia.
+
+================================================================================
+"""
 from __future__ import annotations
+
 
 import importlib
 import importlib.util
