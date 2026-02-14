@@ -1,0 +1,36 @@
+# ============================================================
+# MODELOX v7.0.0 - Dependencias del proyecto
+# ============================================================
+# Instalar con: pip install -r requirements.txt
+# ============================================================
+
+# --- Core numérico ---
+numpy>=1.24,<2.0
+numba>=0.57
+
+# --- DataFrames ---
+pandas>=2.0
+polars>=0.20
+pyarrow>=14.0
+
+# --- Científico / ML ---
+scipy>=1.10
+scikit-learn>=1.3
+hdbscan>=0.8.33
+kneed>=0.8
+
+# --- Optimización ---
+optuna>=3.4
+
+# --- Visualización ---
+matplotlib>=3.7
+rich>=13.0
+
+# --- Excel / Reportes ---
+openpyxl>=3.1
+jinja2>=3.1
+
+# --- HTTP / API ---
+requests>=2.31
+
+

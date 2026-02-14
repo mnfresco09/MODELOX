@@ -1,0 +1,48 @@
+# ===========================================================
+# MODELOX — .gitignore
+# ===========================================================
+
+# --- Entorno virtual ---
+.venv/
+venv/
+env/
+
+# --- Python cache ---
+__pycache__/
+*.py[cod]
+*$py.class
+*.pyo
+*.pyc
+
+# --- Datos (demasiado grandes para GitHub) ---
+datos/
+data/
+*.feather
+*.parquet
+
+# --- Resultados (se regeneran) ---
+resultados/
+
+# --- macOS ---
+.DS_Store
+.AppleDouble
+.LSOverride
+._*
+
+# --- IDE ---
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# --- Distribución / Build ---
+dist/
+build/
+*.egg-info/
+*.egg
+*.so
+*.dylib
+
+# --- Logs ---
+*.log
