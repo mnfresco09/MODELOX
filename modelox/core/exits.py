@@ -40,6 +40,84 @@ EJEMPLO:
     - Stake = 100€, sl_pct = 8%  → Salir si pierdo 8€
     - Stake = 100€, tp_pct = 14% → Salir si gano 14€
 
+IMPORTANTE: USO DE VELAS DE 1 MINUTO PARA SALIDAS
+
+REGLA FUNDAMENTAL:
+    Las SALIDAS (SL/TP/Trailing) deben SIEMPRE evaluarse usando velas de 1 minuto,
+    independientemente del timeframe configurado para las ENTRADAS.
+
+JUSTIFICACIÓN:
+    - Si usas timeframe de 5m, 15m, 1h, etc. para señales de entrada, pero el
+      precio toca tu SL durante esa vela, NO puedes esperar al cierre de la vela
+      para salir. El SL se habría ejecutado en el momento exacto que se tocó.
+    
+    - Usando velas de 1m para salidas, obtienes precisión casi tick-a-tick
+      sin perder rendimiento computacional.
+
+IMPLEMENTACIÓN:
+
+    1. BACKTESTING (engine.py):
+       - Si el timeframe de entrada es > 1m, obtener TAMBIÉN datos de 1m
+       - Evaluar salidas iterando vela por vela de 1m
+       - Ajustar precio de salida al high/low REAL de la vela 1m donde se tocó
+    
+    2. TRADING EN VIVO (trader.py):
+       - Obtener velas de 1m en paralelo al timeframe de señales
+       - Verificar SL/TP/Trailing cada vela de 1m
+       - Ejecutar orden de cierre cuando se detecte toque de nivel
+    
+    3. AJUSTE DE PRECIOS:
+       - SL tocado en LONG → exit_price = sl_price (no el low de la vela)
+       - TP tocado en LONG → exit_price = tp_price (no el high de la vela)
+       - SL tocado en SHORT → exit_price = sl_price (no el high de la vela)
+       - TP tocado en SHORT → exit_price = tp_price (no el low de la vela)
+       
+       Esto simula la ejecución REAL donde la orden se llena al nivel exacto,
+       no al extremo de la vela (que sería demasiado optimista).
+    
+    4. TRAILING STOP:
+       - La DISTANCIA del trailing se calcula al CIERRE de la vela PREVIA
+       - Ejemplo LONG: 
+         * Vela N cierra en 100€, trailing_distance = 2€
+         * trailing_level = 98€
+         * En vela N+1, si low toca 98€ → salir a 98€
+       
+       - El trailing_level se ACTUALIZA cada vela:
+         * LONG: Si nuevo high > high previo → actualizar trailing hacia arriba
+         * SHORT: Si nuevo low < low previo → actualizar trailing hacia abajo
+    
+    5. SLIPPAGE Y REALISMO:
+       - Los precios calculados (sl_price, tp_price, trailing_level) son TEÓRICOS
+       - En trading real, puede haber slippage (especialmente en mercado rápido)
+       - BingX ejecuta órdenes SL/TP como STOP_MARKET, no LIMIT
+       - El precio final puede diferir ligeramente del nivel configurado
+
+EJEMPLO PRÁCTICO:
+
+    Configuración:
+    - Timeframe señales: 5m
+    - Timeframe salidas: 1m (SIEMPRE)
+    - Entry: LONG @ 50,000€
+    - SL: 49,500€
+    - TP: 51,000€
+    
+    Escenario:
+    - Vela 5m en curso: open=50,000, high=50,200, low=49,400, close=50,100
+    
+    Sin velas 1m (INCORRECTO):
+    - Se esperaría al cierre de la vela 5m para detectar que low=49,400 < SL
+    - Exit price = 49,400 o 50,100 (close) → INCORRECTO
+    
+    Con velas 1m (CORRECTO):
+    - Minuto 2 de la vela 5m: low=49,450 → SL aún no tocado
+    - Minuto 3 de la vela 5m: low=49,480 → SL tocado!
+    - Exit price = 49,500 (el SL exacto) → CORRECTO
+    - No esperamos al cierre de la vela 5m
+
+REFERENCIA DE IMPLEMENTACIÓN:
+    Ver engine.py → find_exits_numba() para la lógica Numba optimizada
+    Ver trader.py → check_and_update_positions() para trading en vivo
+
 ================================================================================
 """
 
@@ -71,8 +149,8 @@ DEFAULT_EXIT_TRAIL_DIST_PCT = 3.0            # Distancia del trailing
 
 DEFAULT_OPTIMIZE_EXITS = True
 
-DEFAULT_EXIT_SL_PCT_RANGE = (7.0, 27.0, 1.0)
-DEFAULT_EXIT_TP_PCT_RANGE = (20.0, 40.0, 1.0)
+DEFAULT_EXIT_SL_PCT_RANGE = (14.0, 30.0, 2.0)
+DEFAULT_EXIT_TP_PCT_RANGE = (10.0, 40.0, 2.0)
 DEFAULT_EXIT_TRAIL_ACT_PCT_RANGE = (10.0, 28.0, 1.0)
 DEFAULT_EXIT_TRAIL_DIST_PCT_RANGE = (2.0, 8.0, 0.5)
 

@@ -838,10 +838,12 @@ class ElegantRichReporter:
 
     saldo_inicial: float = 300.0
     activo: str = ""
+    n_trials_total: int = 0
     mostrar_evolucion_cada: int = 50
     mostrar_evolucion_inline: bool = False
     _best_score: float = field(default=float("-inf"), init=False, repr=False)
     _initialized: bool = field(default=False, init=False, repr=False)
+    _notified_pcts: set = field(default_factory=set, init=False, repr=False)
 
     def needs_dataframe(self, score: float) -> bool:
         return False
@@ -884,8 +886,6 @@ class ElegantRichReporter:
             tf_exit = str(artifacts.params.get("__timeframe_exit", ""))
 
         params_for_reporting = artifacts.params.copy() if artifacts.params else {}
-        if '__qty_max_activo' in params_for_reporting:
-            params_for_reporting['cantidad'] = params_for_reporting['__qty_max_activo']
         
         # Extraer rango de meses para datos sintéticos
         rango_meses = params_for_reporting.get('__rango_meses', None)
@@ -918,12 +918,45 @@ class ElegantRichReporter:
                     drawdown=M.get(metrics, "drawdown"),
                     sqn=M.get(metrics, "sqn"),
                     winrate=M.get(metrics, "winrate"),
+                    sharpe=M.get(metrics, "sharpe"),
+                    profit_factor=M.get(metrics, "profit_factor"),
                     trades_dia=M.get(metrics, "trades_por_dia"),
                     n_longs=M.get_int(metrics, "n_trades_long"),
                     n_shorts=M.get_int(metrics, "n_trades_short"),
+                    n_trials_total=self.n_trials_total,
                 )
             except Exception:
                 pass
+        
+        # Notificar Telegram progreso cada X%
+        if self.n_trials_total > 0:
+            pct = int(100 * _stats.n / self.n_trials_total)
+            # Usar intervalo configurable desde telegram.py
+            try:
+                from visual.telegram import PROGRESO_CADA_PCT
+                step = PROGRESO_CADA_PCT
+            except Exception:
+                step = 10
+            for milestone in range(step, 100, step):
+                if pct >= milestone and milestone not in self._notified_pcts:
+                    self._notified_pcts.add(milestone)
+                    try:
+                        from visual.telegram import notificar_progreso_optimizacion
+                        s = _stats.obtener_promedios()
+                        notificar_progreso_optimizacion(
+                            pct_completado=milestone,
+                            trial_actual=_stats.n,
+                            n_trials_total=self.n_trials_total,
+                            roi_medio=s["roi_medio"],
+                            pf_medio=s["pf_medio"],
+                            sharpe_medio=s["sharpe_medio"],
+                            sqn_medio=s["sqn_medio"],
+                            score_medio=s["score_medio"],
+                            best_score=s["mejor_score"],
+                            best_trial=s["mejor_trial"],
+                        )
+                    except Exception:
+                        pass
 
     def on_strategy_end(self, strategy_name: str, study) -> None:
         self._initialized = False

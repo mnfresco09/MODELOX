@@ -92,7 +92,6 @@ from general.configuracion import (
     # Activos y datos
     ACTIVOS, ACTIVO_PRIMARIO, 
     resolve_archivo_data, resolve_archivo_data_tf,
-    resolve_qty_max_activo, resolve_qty_max_activo_range,
     # Configuración general
     CONFIG, COMBINACION_A_EJECUTAR,
     # Timeframe
@@ -320,12 +319,9 @@ def main() -> None:
                     comision_pct=float(CONFIG["COMISION_PCT"]),
                     comision_sides=int(CONFIG["COMISION_SIDES"]),
                     saldo_minimo_operativo=float(CONFIG["SALDO_MINIMO_OPERATIVO"]),
-                    qty_max_activo=float(resolve_qty_max_activo(activo)),
                     saldo_usado=float(CONFIG["SALDO_USADO"]),
                     apalancamiento_max=float(CONFIG["APALANCAMIENTO_MAX"]),
                     riesgo_por_trade_pct=float(CONFIG["RIESGO_POR_TRADE_PCT"]),
-                    optimize_qty_max_activo=bool(CONFIG["OPTIMIZAR_QTY_ACTIVO"]),
-                    qty_max_activo_range=tuple(resolve_qty_max_activo_range(activo)),
                     exit_sl_pct=float(CONFIG["EXIT_SL_PCT"]),
                     exit_tp_pct=float(CONFIG["EXIT_TP_PCT"]),
                     exit_trail_act_pct=float(CONFIG["EXIT_TRAIL_ACT_PCT"]),

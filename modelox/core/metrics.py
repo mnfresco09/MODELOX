@@ -275,14 +275,24 @@ if NUMBA_METRICS_AVAILABLE:
         if var_pnl < 0:
             var_pnl = 0.0
         std_pnl = np.sqrt(var_pnl * n / (n - 1)) if n > 1 else 0.0
-        sqn = np.sqrt(float(n)) * (mean_pnl / std_pnl) if std_pnl > 0 else 0.0
+        sqn = np.sqrt(float(n)) * (mean_pnl / std_pnl) if std_pnl > 1e-12 else 0.0
+        # Clamp SQN to reasonable range
+        if sqn > 100.0:
+            sqn = 100.0
+        elif sqn < -100.0:
+            sqn = -100.0
 
         mean_ret = sum_returns / n
         var_ret = (sum_returns_sq / n) - (mean_ret * mean_ret)
         if var_ret < 0:
             var_ret = 0.0
         std_ret = np.sqrt(var_ret * n / (n - 1)) if n > 1 else 0.0
-        sharpe = mean_ret / std_ret if std_ret > 0 else 0.0
+        # Guard: std_ret near-zero with few trades causes explosion
+        sharpe = mean_ret / std_ret if std_ret > 1e-8 else 0.0
+        if sharpe > 100.0:
+            sharpe = 100.0
+        elif sharpe < -100.0:
+            sharpe = -100.0
 
         # Sortino: usa downside deviation (desviación de retornos negativos respecto a 0)
         # La fórmula correcta es: sqrt(mean(min(r, 0)^2)) - esto da la "semi-desviación"
@@ -290,7 +300,11 @@ if NUMBA_METRICS_AVAILABLE:
         # para ser consistentes con la práctica común en trading
         downside_var = sum_neg_returns_sq / n if n > 0 else 0.0
         downside_std = np.sqrt(downside_var) if downside_var > 0 else 0.0
-        sortino = mean_ret / downside_std if downside_std > 0 else 0.0
+        sortino = mean_ret / downside_std if downside_std > 1e-8 else 0.0
+        if sortino > 100.0:
+            sortino = 100.0
+        elif sortino < -100.0:
+            sortino = -100.0
 
         profit_factor = sum_wins / sum_losses if sum_losses > 0 else np.nan
         avg_win = sum_wins / n_wins if n_wins > 0 else 0.0
@@ -889,14 +903,15 @@ def sharpe(
         return 0.0
     mean = float(np.mean(r))
     std = float(np.std(r, ddof=1)) if n_trades > 1 else 0.0
-    if std == 0:
+    if std < 1e-8:
         return 0.0
     # Sharpe per-trade: calidad promedio de cada disparo
     ratio = mean / std
     if annualize and n_trades > 1:
         # Escalar por sqrt(N) para ver acumulación con más trades
         ratio *= float(np.sqrt(n_trades))
-    return float(ratio)
+    # Clamp to reasonable range — no real Sharpe exceeds ±100
+    return float(max(-100.0, min(100.0, ratio)))
 
 
 def sortino(
@@ -941,13 +956,14 @@ def sortino(
     downside_var = float(np.mean(downside_sq))
     downside_std = float(np.sqrt(downside_var)) if downside_var > 0 else 0.0
     
-    if downside_std == 0:
+    if downside_std < 1e-8:
         return 0.0
     
     ratio = mean_ret / downside_std
     if annualize and n_trades > 1:
         ratio *= float(np.sqrt(n_trades))
-    return float(ratio)
+    # Clamp to reasonable range — no real Sortino exceeds ±100
+    return float(max(-100.0, min(100.0, ratio)))
 
 
 def profit_factor(trades: TradesDF) -> float:

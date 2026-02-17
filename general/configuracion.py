@@ -46,7 +46,7 @@ from modelox.core.types import normalize_timeframe_to_suffix
 # 1.0 ESTRATEGIAS A EJECUTAR
 # ----------------------------------------------------------------------------
 # Los IDs corresponden a los archivos en  modelox/strategies/
-COMBINACION_A_EJECUTAR = [4]
+COMBINACION_A_EJECUTAR = [3]
 # ----------------------------------------------------------------------------
 # 1.1 SELECCIÓN DE ACTIVOS Y DATOS
 # ----------------------------------------------------------------------------
@@ -88,7 +88,7 @@ FORMATO_DATOS = "feather"
 #   - 3-10     → prueba rápida (minutos)
 #   - 50-100   → exploración decente (horas)
 #   - 500-1000 → búsqueda exhaustiva (muchas horas)
-N_TRIALS = 5
+N_TRIALS = 50
 
 # OPTUNA_N_JOBS = cuántos cores de CPU usar en paralelo.
 #   -1 = todos los disponibles (recomendado)
@@ -127,53 +127,31 @@ SALDO_MINIMO_OPERATIVO = 300.0  # Si el saldo baja de aquí, deja de operar
 #   Binance Spot:  0.001  (0.1%)
 #   Binance Futuros Taker: 0.0005 (0.05%)
 #   Bybit Taker:   0.0006 (0.06%)
-COMISION_PCT = 0.0005
+COMISION_PCT = 0.0003
 
 # ¿Cobra comisión al abrir, al cerrar, o ambas?
 #   1 = solo al abrir la posición
 #   2 = al abrir Y al cerrar (más realista)
-COMISION_SIDES = 1
+COMISION_SIDES = 2
 
 # ----------------------------------------------------------------------------
 # 1.4 TAMAÑO DE POSICIÓN (POSITION SIZING)
 # ----------------------------------------------------------------------------
 # Cuánto arriesgas por operación.
 #
+# La cantidad (qty) se calcula DINÁMICAMENTE en cada trade:
+#   qty = (SALDO_USADO × APALANCAMIENTO_MAX) / precio_entrada
+#
 # Ejemplo con BTC a 100.000$:
 #   SALDO_USADO=100, APALANCAMIENTO_MAX=60
-#   → Posición máxima: 100 × 60 = 6.000$ (0.06 BTC)
-#   → Pero QTY_MAX_MAP["BTC"]=0.045 limita a 0.045 BTC (4.500$)
+#   → Volumen: 100 × 60 = 6.000$
+#   → qty = 6.000 / 100.000 = 0.06 BTC
+#
+# Si BTC baja a 50.000$:
+#   → qty = 6.000 / 50.000 = 0.12 BTC (más unidades, mismo volumen)
 #
 SALDO_USADO = 100.0           # Colateral fijo por operación ($)
-APALANCAMIENTO_MAX = 60       # Apalancamiento máximo permitido
-
-# Cantidad máxima (lotes) que puedes comprar por activo.
-# Esto evita posiciones absurdamente grandes.
-QTY_MAX_MAP = {
-    "BTC":     0.045,    # ≈ 4.500$ a 100k
-    "ETH":     1.5,      # ≈ 4.500$ a 3k
-    "GOLD":    1.25,     # ≈ 1.25 onzas
-    "SILVER":  40.0,     # ≈ 40 onzas
-    "SP500":   1.0,      # ≈ 1 contrato
-    "NASDAQ":  0.25,     # ≈ 0.25 contratos
-    "BIST100": 1.0,      # ≈ 1 contrato
-}
-
-# ¿Dejar que Optuna optimice la cantidad por operación?
-#   False = usa QTY_MAX_MAP fijo (recomendado al principio)
-#   True  = Optuna prueba diferentes tamaños dentro de QTY_MAX_RANGE_MAP
-OPTIMIZAR_QTY_ACTIVO = False
-
-# Rango de búsqueda: (mínimo, máximo, paso)
-QTY_MAX_RANGE_MAP = {
-    "BTC":     (0.01, 0.08, 0.005),
-    "ETH":     (0.5, 3.0, 0.25),
-    "GOLD":    (0.5, 2.5, 0.5),
-    "SILVER":  (10.0, 80.0, 10.0),
-    "SP500":   (0.5, 2.0, 0.5),
-    "NASDAQ":  (0.05, 0.5, 0.05),
-    "BIST100": (0.5, 2.0, 0.5),
-}
+APALANCAMIENTO_MAX = 25       # Apalancamiento máximo permitido
 
 # ----------------------------------------------------------------------------
 # 2.1 TIMEFRAME BASE (RESOLUCIÓN DE OPERACIÓN)
@@ -216,8 +194,8 @@ TIMEFRAMES = [TIMEFRAME_BASE]  # No tocar — se deriva de TIMEFRAME_BASE
 #   NASDAQ   : 2010-11-14 → 2025-12-31
 #   BIST100  : 2024-02-12 → 2026-02-09 (solo 1h)
 #
-FECHA_INICIO = "2020-01-01"
-FECHA_FIN    = "2025-05-07"
+FECHA_INICIO = "2022-03-01"
+FECHA_FIN    = "2025-09-07"
 
 # ── MODO DE USO DEL RANGO ──
 #
@@ -241,8 +219,8 @@ MESES_POR_TRIAL = 6  # Solo aplica si USAR_RANGOS_POR_TRIAL = True
 
 # Fechas para el gráfico detallado de trades (zoom visual).
 # Esto NO afecta al backtest, solo al gráfico HTML que se genera.
-FECHA_INICIO_PLOT = "2010-12-01"
-FECHA_FIN_PLOT = "2011-03-15"
+FECHA_INICIO_PLOT = "2024-01-01"
+FECHA_FIN_PLOT = "2024-03-15"
 
 # ── PERTURBACIÓN DE DATOS (anti-overfitting) ──
 #
@@ -251,11 +229,11 @@ FECHA_FIN_PLOT = "2011-03-15"
 #
 #   True  = Activada (recomendado con muchos trials)
 #   False = Datos originales sin modificar
-PERTURBACION_ACTIVAR = False
+PERTURBACION_ACTIVAR = True
 
 # Intensidad del ruido: 0.1 = suave, 0.5 = moderado, 1.0 = agresivo.
 # 0.5 significa que el ruido es ~50% de la volatilidad real del activo.
-PERTURBACION_NOISE_SCALE = 0.5
+PERTURBACION_NOISE_SCALE = 0.65
 
 PERTURBACION_SEED = 42               # Semilla (int = reproducible, None = aleatorio)
 PERTURBACION_VERIFY = True           # Verificar que OHLCV sigue siendo coherente
@@ -361,16 +339,6 @@ def resolve_archivo_data(activo):
 
 ARCHIVO_DATA = resolve_archivo_data_tf(ACTIVO_PRIMARIO)
 
-def resolve_qty_max_activo(activo):
-    a = _ACTIVO_ALIASES.get(str(activo).upper().strip(), str(activo).upper().strip())
-    return float(QTY_MAX_MAP.get(a, 3.0))
-
-def resolve_qty_max_activo_range(activo):
-    a = _ACTIVO_ALIASES.get(str(activo).upper().strip(), str(activo).upper().strip())
-    return tuple(QTY_MAX_RANGE_MAP.get(a, (0.01, 5.0, 0.01)))
-
-QTY_MAX_ACTIVO = resolve_qty_max_activo(ACTIVO_PRIMARIO)
-
 
 # =============================================================================
 # [SECCIÓN 4] DICCIONARIO UNIFICADO EXPORTABLE
@@ -399,11 +367,6 @@ CONFIG = {
     "COMISION_PCT": COMISION_PCT,
     "COMISION_SIDES": COMISION_SIDES,
     "SALDO_MINIMO_OPERATIVO": SALDO_MINIMO_OPERATIVO,
-    # Position sizing
-    "QTY_MAX_ACTIVO": QTY_MAX_ACTIVO,
-    "OPTIMIZAR_QTY_ACTIVO": OPTIMIZAR_QTY_ACTIVO,
-    "QTY_MAX_MAP": QTY_MAX_MAP,
-    "QTY_MAX_RANGE_MAP": QTY_MAX_RANGE_MAP,
     "RIESGO_POR_TRADE_PCT": 0.10,  # Legacy (no usado con SALDO_USADO fijo)
     # Optuna
     "N_TRIALS": N_TRIALS,

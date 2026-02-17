@@ -107,9 +107,9 @@ class BacktestConfig:
     comision_pct: float                          # Comisión por lado (%)
     comision_sides: int = 2                      # Lados con comisión (1 o 2)
     saldo_minimo_operativo: float = 1.0          # Mínimo para seguir operando ($)
-    qty_max_activo: float = float("inf")         # Límite de cantidad máxima
 
     # ─── POSITION SIZING ─────────────────────────────────────────────────
+    # qty = (saldo_usado × apalancamiento_max) / precio_entrada
     saldo_usado: float = 75.0                    # Margen fijo por trade ($)
     apalancamiento_max: float = 60.0             # Apalancamiento máximo (x)
     riesgo_por_trade_pct: float = 0.10           # Riesgo % por trade (legacy)
@@ -130,10 +130,6 @@ class BacktestConfig:
     exit_tp_pct_range: tuple[float, float, float] = (20.0, 40.0, 1.0)
     exit_trail_act_pct_range: tuple[float, float, float] = (10.0, 28.0, 1.0)
     exit_trail_dist_pct_range: tuple[float, float, float] = (2.0, 8.0, 0.5)
-
-    # ─── OPTIMIZACIÓN DE CANTIDAD POR ACTIVO ─────────────────────────────
-    optimize_qty_max_activo: bool = False
-    qty_max_activo_range: tuple[float, float, float] = (0.01, 5.0, 0.01)
 
 
 # =============================================================================

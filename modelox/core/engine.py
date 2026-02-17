@@ -94,7 +94,6 @@ class BacktestParams:
     comision_pct: float
     comision_sides: int
     saldo_minimo_operativo: float
-    qty_max_activo: float
     saldo_usado: float
     apalancamiento_max: float
     exit_type: str
@@ -112,7 +111,6 @@ class BacktestParams:
             comision_pct=float(config.comision_pct),
             comision_sides=int(getattr(config, "comision_sides", 2)),
             saldo_minimo_operativo=float(config.saldo_minimo_operativo),
-            qty_max_activo=float(config.qty_max_activo),
             saldo_usado=float(getattr(config, "saldo_usado", 75.0)),
             apalancamiento_max=float(getattr(config, "apalancamiento_max", 60.0)),
             exit_type=str(params.get("__exit_type", getattr(config, "exit_type", "pnl_fixed"))),
@@ -416,7 +414,6 @@ def _simulate_trades_sequential(
     fee_rate: float,
     min_op: float,
     apalancamiento_max: float,
-    qty_max: float,
     saldo_usado_cfg: float,
     is_trailing: bool,
     sl_pct: float,
@@ -470,10 +467,9 @@ def _simulate_trades_sequential(
         # Calcular saldo_usado real
         saldo_usado = min(saldo_usado_cfg, current_balance)
         
-        # Calcular qty escalada al saldo disponible
+        # Calcular qty dinámica: volumen completo / precio de entrada
         volumen_max = saldo_usado * apalancamiento_max
-        qty_calculated = volumen_max / entry_p if entry_p > 0 else 0.0
-        qty = min(qty_max, qty_calculated)
+        qty = volumen_max / entry_p if entry_p > 0 else 0.0
         
         if qty <= 0:
             continue
@@ -706,7 +702,6 @@ def calculate_performance_vectorized_numba(
     fee_rate = float(params.comision_pct)
     min_op = float(params.saldo_minimo_operativo)
     apalancamiento_max = float(params.apalancamiento_max)
-    qty_max = float(params.qty_max_activo)
     saldo_usado_cfg = float(params.saldo_usado)
 
     # Pre-compute params for Numba
@@ -734,7 +729,6 @@ def calculate_performance_vectorized_numba(
         fee_rate=fee_rate,
         min_op=min_op,
         apalancamiento_max=apalancamiento_max,
-        qty_max=qty_max,
         saldo_usado_cfg=saldo_usado_cfg,
         is_trailing=is_trailing,
         sl_pct=sl_pct,

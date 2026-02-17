@@ -2025,16 +2025,6 @@ class GTOptimizer:
         PARAMS_RT["__saldo_inicial"] = float(self.config.saldo_inicial)
         PARAMS_RT["__saldo_operativo_max"] = float(self.config.saldo_operativo_max)
 
-        # QTY_MAX_ACTIVO: OPTIMIZABLE O FIJO
-        if self.config.optimize_qty_max_activo:
-            QTY_MIN, QTY_MAX, QTY_STEP = self.config.qty_max_activo_range
-            QTY_OPTIMIZED = TRIAL.suggest_float(
-                "qty_max_activo", QTY_MIN, QTY_MAX, step=QTY_STEP
-            )
-            PARAMS_RT["__qty_max_activo"] = QTY_OPTIMIZED
-            PARAMS_RT["qty_max_activo"] = QTY_OPTIMIZED
-        else:
-            PARAMS_RT["__qty_max_activo"] = float(self.config.qty_max_activo)
 
         PARAMS_RT["__comision_pct"] = float(self.config.comision_pct)
         PARAMS_RT["__comision_sides"] = int(self.config.comision_sides)

@@ -150,6 +150,7 @@ class QMCScoringConfig:
     # =========================================================================
     MIN_TRADES_FOR_VALID: int = 5        # Muy permisivo — queremos registrar todo
     MAX_DRAWDOWN_LIMIT: float = 100.0    # Sin límite real — registrar todo
+    MIN_TRADES_PER_DAY: float = 0.20     # Mínimo trades/día → debajo = score 0
 
 
 # =============================================================================
@@ -301,6 +302,17 @@ class QMCScorer:
                 except Exception:
                     pass
             return cfg.SCORE_MIN
+        
+        # FILTRO: trades/día mínimo — estrategias que apenas operan = score 0
+        trades_per_day = self._safe_get(metrics, "trades_por_dia", 0.0)
+        if trades_per_day < cfg.MIN_TRADES_PER_DAY:
+            if trial is not None:
+                try:
+                    trial.set_user_attr('score_reason', f'low_trades_per_day_{trades_per_day:.3f}')
+                    trial.set_user_attr('qmc_mode', 'coverage')
+                except Exception:
+                    pass
+            return 0.0
         
         # =================================================================
         # NORMALIZAR MÉTRICAS
@@ -533,17 +545,7 @@ class QMCOptimizer:
         params_rt["__activo"] = self.activo
         params_rt["__saldo_inicial"] = float(self.config.saldo_inicial)
         params_rt["__saldo_operativo_max"] = float(self.config.saldo_operativo_max)
-        
-        # QTY_MAX_ACTIVO
-        if self.config.optimize_qty_max_activo:
-            qty_min, qty_max, qty_step = self.config.qty_max_activo_range
-            qty_optimized = trial.suggest_float(
-                "qty_max_activo", qty_min, qty_max, step=qty_step
-            )
-            params_rt["__qty_max_activo"] = qty_optimized
-            params_rt["qty_max_activo"] = qty_optimized
-        else:
-            params_rt["__qty_max_activo"] = float(self.config.qty_max_activo)
+
         
         params_rt["__comision_pct"] = float(self.config.comision_pct)
         params_rt["__comision_sides"] = int(self.config.comision_sides)

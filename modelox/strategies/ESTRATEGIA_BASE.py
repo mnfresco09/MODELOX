@@ -27,7 +27,7 @@ CONTRATO DE OUTPUT (signals_df):
   - Indicadores adicionales opcionales para plot.
 
 ================================================================================
-"""
+
 
 PRIORIDAD #1: VELOCIDAD REAL
   - POLARS END-TO-END (ZERO PANDAS)

@@ -702,20 +702,6 @@ class OptimizationRunner:
         params_rt["__saldo_inicial"] = float(self.config.saldo_inicial)
         params_rt["__saldo_operativo_max"] = float(self.config.saldo_operativo_max)
         
-        # QTY_MAX_ACTIVO: Optimizar si está habilitado, o usar valor fijo
-        if self.config.optimize_qty_max_activo:
-            qty_min, qty_max, qty_step = self.config.qty_max_activo_range
-            qty_optimized = trial.suggest_float(
-                "qty_max_activo", 
-                qty_min, 
-                qty_max, 
-                step=qty_step
-            )
-            params_rt["__qty_max_activo"] = qty_optimized
-            params_rt["qty_max_activo"] = qty_optimized  # Alias para reporting
-        else:
-            params_rt["__qty_max_activo"] = float(self.config.qty_max_activo)
-        
         params_rt["__comision_pct"] = float(self.config.comision_pct)
         params_rt["__comision_sides"] = int(self.config.comision_sides)
         params_rt["__saldo_usado"] = float(self.config.saldo_usado)
@@ -1106,7 +1092,8 @@ def run_single_exit_type(
         from visual.rich import ElegantRichReporter
         reporters.append(ElegantRichReporter(
             saldo_inicial=cfg_updated.saldo_inicial,
-            activo=activo
+            activo=activo,
+            n_trials_total=n_trials,
         ))
 
         if usar_excel and excel_dir:
