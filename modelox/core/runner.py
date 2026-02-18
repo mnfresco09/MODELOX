@@ -1192,11 +1192,32 @@ def run_single_exit_type(
                         best_val = study.best_value
 
                 if best_trial and mostrar_fin_func:
+                    # Calcular métricas extra para el reporte final
+                    try:
+                        valid_trials = [t for t in study.trials if t.state.name == "COMPLETE"]
+                        roi_vals = [t.user_attrs.get("metricas", {}).get("roi", 0) for t in valid_trials]
+                        roi_medio = sum(roi_vals) / len(roi_vals) if roi_vals else 0.0
+                        best_roi = best_trial.user_attrs.get("metricas", {}).get("roi", 0.0)
+                    except Exception:
+                        roi_medio = 0.0
+                        best_roi = 0.0
+
+                    # Buscar path del Excel generado
+                    excel_path = None
+                    for r in reporters:
+                        if hasattr(r, "_final_excel_path") and r._final_excel_path:
+                            excel_path = r._final_excel_path
+                            break
+
                     mostrar_fin_func(
                         total_trials=len(study.trials),
                         best_score=best_val,
                         best_trial=best_trial.number,
                         estrategia=strategy_name,
+                        activo=activo,
+                        roi_medio=roi_medio,
+                        best_roi=best_roi,
+                        excel_report=excel_path,
                     )
             except Exception as e:
                 logger.warning(f"No se pudo extraer el mejor trial: {e}")

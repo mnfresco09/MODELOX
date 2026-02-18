@@ -46,7 +46,7 @@ from modelox.core.types import normalize_timeframe_to_suffix
 # 1.0 ESTRATEGIAS A EJECUTAR
 # ----------------------------------------------------------------------------
 # Los IDs corresponden a los archivos en  modelox/strategies/
-COMBINACION_A_EJECUTAR = [6]
+COMBINACION_A_EJECUTAR = [1]
 # ----------------------------------------------------------------------------
 # 1.1 SELECCIÓN DE ACTIVOS Y DATOS
 # ----------------------------------------------------------------------------
@@ -62,7 +62,7 @@ COMBINACION_A_EJECUTAR = [6]
 #   "BIST100" → Borsa Istanbul (desde 2024, solo 1h)
 #
 # También acepta varios:  "BTC,GOLD"  →  ejecuta ambos en secuencia
-ACTIVO = "BTC"
+ACTIVO = "SP500, NASDAQ"
 
 # ¿Dónde están los archivos de datos?
 # El sistema busca:  <CARPETA_DATOS>/<ACTIVO>_ohlcv_1m.<FORMATO_DATOS>
@@ -88,7 +88,7 @@ FORMATO_DATOS = "feather"
 #   - 3-10     → prueba rápida (minutos)
 #   - 50-100   → exploración decente (horas)
 #   - 500-1000 → búsqueda exhaustiva (muchas horas)
-N_TRIALS = 50
+N_TRIALS =50
 
 # OPTUNA_N_JOBS = cuántos cores de CPU usar en paralelo.
 #   -1 = todos los disponibles (recomendado)
@@ -194,7 +194,7 @@ TIMEFRAMES = [TIMEFRAME_BASE]  # No tocar — se deriva de TIMEFRAME_BASE
 #   NASDAQ   : 2010-11-14 → 2025-12-31
 #   BIST100  : 2024-02-12 → 2026-02-09 (solo 1h)
 #
-FECHA_INICIO = "2024-05-01"
+FECHA_INICIO = "2022-05-01"
 FECHA_FIN    = "2025-08-01"
 
 # ── MODO DE USO DEL RANGO ──

@@ -140,6 +140,7 @@ class ExcelReporter:
     _trade_candidates: List[Dict[str, Any]] = field(default_factory=list, init=False, repr=False)
     _min_candidate_score: float = field(default=float("-inf"), init=False, repr=False)
     _activo: Optional[str] = field(default=None, init=False, repr=False)
+    _final_excel_path: Optional[str] = field(default=None, init=False, repr=False)
 
     def needs_dataframe(self, score: float) -> bool:
         return False
@@ -235,7 +236,7 @@ class ExcelReporter:
                 logger.warning(f"Error guardando trades trial {candidate['trial_number']}: {e}")
         
         try:
-            convertir_resumen_csv_a_excel(
+            self._final_excel_path = convertir_resumen_csv_a_excel(
                 csv_path=csv_path,
                 strategy_name=strategy_name,
                 activo=activo_safe,

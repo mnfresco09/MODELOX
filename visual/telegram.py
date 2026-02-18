@@ -304,8 +304,9 @@ def notificar_fin_optimizacion(
     roi_medio: float = 0.0,
     best_roi: float = 0.0,
     elapsed_min: float = 0.0,
+    excel_report: Optional[str] = None,
 ) -> None:
-    """Notifica fin de optimización con resumen final."""
+    """Notifica fin de optimización con resumen final y adjunta Excel."""
     time_str = f"{elapsed_min:.0f}min" if elapsed_min < 60 else f"{elapsed_min / 60:.1f}h"
 
     msg = (
@@ -320,4 +321,39 @@ def notificar_fin_optimizacion(
         f"━━━━━━━━━━━━━━━━━━━━━━━━━━"
     )
     _send(msg)
+
+    if excel_report:
+        if _os.path.exists(excel_report):
+            print(f"📄 STARTING TELEGRAM UPLOAD: {excel_report}") 
+            _send_document(excel_report, caption=f"📊 Reporte: {estrategia}")
+        else:
+            print(f"⚠️ EXCEL NOT FOUND: {excel_report}")
+
+
+def _send_document(file_path: str, caption: str = "") -> None:
+    """Envía un documento a Telegram."""
+    chat_id = _get_chat_id()
+    if not chat_id:
+        print("⚠️ TELEGRAM ERROR: No Chat ID found.")
+        return
+
+    def _do():
+        try:
+            import requests
+            url = f"{_BASE_URL}/sendDocument"
+            print(f"🚀 Uploading to {url}...")
+            with open(file_path, "rb") as f:
+                files = {"document": f}
+                data = {"chat_id": chat_id, "caption": caption, "parse_mode": "HTML"}
+                resp = requests.post(url, data=data, files=files, timeout=60)
+                if resp.status_code == 200:
+                    print("✅ TELEGRAM UPLOAD SUCCESS")
+                else:
+                    print(f"❌ TELEGRAM UPLOAD FAILED: {resp.status_code} {resp.text}")
+        except Exception as e:
+            print(f"❌ TELEGRAM EXCEPTION: {e}")
+
+    # Daemon=False to ensure upload completes before exit
+    threading.Thread(target=_do, daemon=False).start()
+
 

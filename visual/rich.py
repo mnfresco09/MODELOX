@@ -676,9 +676,27 @@ def mostrar_fin_optimizacion(
     best_score: float,
     best_trial: int,
     estrategia: str = "",
+    activo: str = "",
+    roi_medio: float = 0.0,
+    best_roi: float = 0.0,
+    excel_report: Optional[str] = None,
+    **kwargs,
 ) -> None:
-    """Display optimization completion - disabled."""
-    pass
+    """Display optimization completion and notify telegram."""
+    try:
+        from visual.telegram import notificar_fin_optimizacion
+        notificar_fin_optimizacion(
+            estrategia=estrategia,
+            activo=activo,
+            n_trials=total_trials,
+            best_score=best_score,
+            best_trial=best_trial,
+            roi_medio=roi_medio,
+            best_roi=best_roi,
+            excel_report=excel_report,
+        )
+    except Exception:
+        pass
 
 
 # ============================================================================
