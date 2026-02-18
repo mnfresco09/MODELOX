@@ -376,6 +376,19 @@ def main() -> None:
                             _plot_end = FECHA_FIN_PLOT
                             _plot_meses = PLOT_MESES_DURACION
                             tf_minutes = int(tf_base) if isinstance(tf_base, (int, float)) else 1
+                            
+                            # Intentar calcular duración real del rango seleccionado
+                            try:
+                                from datetime import datetime as _dt
+                                _d0_p = _dt.strptime(FECHA_INICIO_PLOT, "%Y-%m-%d")
+                                _d1_p = _dt.strptime(FECHA_FIN_PLOT, "%Y-%m-%d")
+                                _diff_meses_plot = max(1, int((_d1_p - _d0_p).days / 30))
+                                # Si el rango explícito es mayor que el default, lo usamos
+                                if _diff_meses_plot > _plot_meses:
+                                    _plot_meses = _diff_meses_plot + 1
+                            except Exception:
+                                pass
+
                             if tf_minutes >= 720:  # 12h o 1d → gráfica rango completo
                                 _plot_start = FECHA_INICIO
                                 _plot_end = FECHA_FIN

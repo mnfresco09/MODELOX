@@ -955,17 +955,10 @@ def _write_html_streaming(
     config: dict
 ) -> None:
     """
-    STREAMING HTML GENERATOR (v7.0)
+    STREAMING HTML GENERATOR (v9.0 - MINIMALIST NEUTRAL)
     
-    Writes HTML directly to disk in chunks instead of building a giant string.
-    This dramatically reduces RAM usage and improves write performance.
-    
-    Architecture:
-    1. Write static HTML header
-    2. Stream JSON data directly using orjson (zero-copy from numpy)
-    3. Write static JS/CSS footer
-    
-    Result: Near-zero RAM overhead for 50MB+ chart files.
+    Writes HTML directly to disk in chunks.
+    Style: Minimalist, Neutral, "Nord/Notion" aesthetic.
     """
 
     activo = str(config.get("activo", ""))
@@ -974,88 +967,184 @@ def _write_html_streaming(
     winrate = float(config.get("winrate", 0))
     pnl_neto = float(config.get("pnl_neto", 0))
     pnl_class = "pos" if pnl_neto >= 0 else "neg"
+    trial = str(config.get("trial", ""))
     score = float(config.get("score", 0))
 
     with open(filepath, "wb") as f:
-        # ============ CHUNK 1: HTML Header + CSS ============
+        # ============ CHUNK 1: HTML Header + CSS (Minimalist Style) ============
         header = f'''<!DOCTYPE html>
 <html lang="en">
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width,initial-scale=1,maximum-scale=1,user-scalable=no">
-<title>MODELOX - Dynamic Chart</title>
+<title>MODELOX | {activo}</title>
 <script src="https://unpkg.com/lightweight-charts@4.1.0/dist/lightweight-charts.standalone.production.js"></script>
+<link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500;600&family=Inter:wght@400;500;600&display=swap" rel="stylesheet">
 <script>
 window.addEventListener('DOMContentLoaded', function() {{
   if (typeof LightweightCharts === 'undefined') {{
-    document.body.innerHTML = '<div style="color:#ef4444;padding:40px;font-family:system-ui;text-align:center;"><h2>Error: Could not load chart library</h2><p>CDN may be blocked. Check your internet connection.</p></div>';
+    document.body.innerHTML = '<div style="color:#666;padding:40px;font-family:sans-serif;text-align:center;">Could not load chart library (lightweight-charts)</div>';
   }}
 }});
 </script>
 <style>
+/* MINIMALIST NEUTRAL THEME */
+:root {{
+  --bg-app: #121212;
+  --bg-panel: #181818;
+  --bg-header: #181818;
+  --border-subtle: #2A2A2A;
+  --text-main: #C9D1D9;
+  --text-muted: #6E7681;
+  --accent-blue: #79C0FF;
+  --accent-green: #7EE787;
+  --accent-red: #FF7B72;
+  --accent-gold: #D29922;
+}}
+
 *{{margin:0;padding:0;box-sizing:border-box}}
-html,body{{width:100%;height:100%;background:#0b1220;font-family:'SF Pro Display',system-ui,-apple-system,sans-serif;overflow:hidden;touch-action:none}}
+html,body{{width:100%;height:100%;background:var(--bg-app);font-family:'Inter',sans-serif;overflow:hidden;touch-action:none;color:var(--text-main)}}
+
+/* LAYOUT */
 .c{{display:flex;flex-direction:column;height:100vh;padding:0}}
-.h{{display:flex;justify-content:space-between;align-items:center;padding:4px 8px;background:linear-gradient(180deg,rgba(15,23,42,.98) 0%,rgba(15,23,42,.92) 100%);border-radius:0;border-bottom:1px solid rgba(148,163,184,.1)}}
-.h .a{{color:#22d3ee;font-size:16px;font-weight:700}}
-.h .t{{color:#94a3b8;font-size:11px;font-weight:500}}
-.h .info{{display:flex;gap:16px;align-items:center}}
-.h .stat{{display:flex;flex-direction:column;align-items:flex-end}}
-.h .stat-label{{color:#64748b;font-size:9px;text-transform:uppercase;letter-spacing:.5px}}
-.h .stat-val{{color:#e2e8f0;font-size:12px;font-weight:600}}
-.h .stat-val.pos{{color:#22c55e}}
-.h .stat-val.neg{{color:#ef4444}}
-.p{{flex:1;display:flex;flex-direction:column;min-height:0;gap: 0 !important;}}
-.m{{position:relative;min-height:280px;margin-bottom:-1px;}}
-.sub{{position:relative;min-height:60px;margin-bottom:-1px;}}
-.l{{position:absolute;top:6px;left:10px;z-index:100;background:rgba(15,23,42,.92);color:#e2e8f0;font-size:10px;font-weight:700;padding:3px 10px;border-radius:4px;border:1px solid rgba(148,163,184,.1);letter-spacing:.3px;text-transform:uppercase}}
-#tt{{position:fixed;display:none;background:linear-gradient(180deg,rgba(15,23,42,.98) 0%,rgba(10,18,32,.99) 100%);border:1px solid rgba(71,85,105,.6);border-radius:10px;padding:14px 18px;color:#e2e8f0;font-size:12px;z-index:999999;pointer-events:none;min-width:220px;backdrop-filter:blur(12px);box-shadow:0 8px 32px rgba(0,0,0,.6)}}
-.tt-header{{display:flex;justify-content:space-between;align-items:center;margin-bottom:10px;padding-bottom:8px;border-bottom:1px solid rgba(148,163,184,.15)}}
-.tt-type{{font-weight:700;font-size:13px;text-transform:uppercase;letter-spacing:.5px}}
-.tt-type.long{{color:#3b82f6}}
-.tt-type.short{{color:#a855f7}}
-.tt-badge{{padding:2px 8px;border-radius:4px;font-size:9px;font-weight:600;text-transform:uppercase}}
-.tt-badge.win{{background:rgba(34,197,94,.2);color:#22c55e}}
-.tt-badge.loss{{background:rgba(239,68,68,.2);color:#ef4444}}
-.tt-row{{display:flex;justify-content:space-between;align-items:center;margin:6px 0}}
-.tt-label{{color:#94a3b8;font-size:11px}}
-.tt-val{{font-weight:600;font-size:12px;font-family:'SF Mono',ui-monospace,monospace}}
-.tt-val.pos{{color:#22c55e}}
-.tt-val.neg{{color:#ef4444}}
-.tt-pnl{{margin-top:10px;padding-top:8px;border-top:1px solid rgba(148,163,184,.15);display:flex;justify-content:space-between;align-items:center}}
-.tt-pnl-label{{color:#94a3b8;font-size:11px;font-weight:600}}
-.tt-pnl-val{{font-size:16px;font-weight:700;font-family:'SF Mono',ui-monospace,monospace}}
-#ohlc{{position:absolute;top:6px;right:10px;z-index:100;display:flex;gap:12px;background:rgba(15,23,42,.92);padding:4px 12px;border-radius:4px;border:1px solid rgba(148,163,184,.1);font-size:11px;font-family:'SF Mono',ui-monospace,monospace}}
-.ohlc-item{{display:flex;gap:4px}}
-.ohlc-label{{color:#64748b}}
-.ohlc-val{{font-weight:600}}
-.ohlc-val.up{{color:#22c55e}}
-.ohlc-val.down{{color:#ef4444}}
-.tv-zoom-container{{position:absolute;bottom:20px;left:50%;transform:translateX(-50%);z-index:10001;display:flex;gap:6px}}
-.tv-zoom-btn{{width:32px;height:32px;background:rgba(15,23,42,.85);border:1px solid rgba(148,163,184,.25);border-radius:50%;color:#94a3b8;font-size:16px;font-weight:600;cursor:pointer;display:flex;align-items:center;justify-content:center;transition:all .15s;backdrop-filter:blur(4px)}}
-.tv-zoom-btn:hover{{background:rgba(30,41,59,.95);color:#e2e8f0;border-color:#60a5fa}}
-#scaleMarginHandleTop,#scaleMarginHandleBottom{{display:none}}
-.smh{{position:absolute;left:0;right:0;height:14px;z-index:10002;cursor:ns-resize;background:transparent;touch-action:none}}
+
+/* HEADER - CLEAN & FLAT */
+.h{{
+    display:flex;
+    justify-content:space-between;
+    align-items:center;
+    padding:0 24px;
+    height: 54px;
+    background:var(--bg-header);
+    border-bottom:1px solid var(--border-subtle);
+}}
+
+.h .left{{display:flex;align-items:center;gap:16px}}
+.h .a{{font-family:'IBM Plex Mono',monospace;font-size:16px;font-weight:600;color:var(--text-main);letter-spacing:-0.5px}}
+.h .t{{font-size:12px;font-weight:400;color:var(--text-muted);background:rgba(255,255,255,0.05);padding:4px 8px;border-radius:4px}}
+
+.h .info{{display:flex;gap:24px;align-items:center}}
+.h .stat{{display:flex;align-items:baseline;gap:8px}}
+.h .stat-label{{color:var(--text-muted);font-size:11px;font-weight:500;text-transform:uppercase;letter-spacing:0.5px}}
+.h .stat-val{{color:var(--text-main);font-size:14px;font-weight:600;font-family:'IBM Plex Mono',monospace}}
+.h .stat-val.pos{{color:var(--accent-green)}}
+.h .stat-val.neg{{color:var(--accent-red)}}
+
+/* CHARTS AREA */
+.p{{flex:1;display:flex;flex-direction:column;min-height:0;position:relative}}
+.m{{position:relative;margin-bottom:0;border-bottom:1px solid var(--border-subtle)}}
+.sub{{position:relative;margin-bottom:0;border-bottom:1px solid var(--border-subtle)}}
+
+/* PANEL LABELS - SUBTLE */
+.l{{
+    position:absolute;
+    top:12px;
+    left:16px;
+    z-index:20;
+    font-size:10px;
+    font-weight:600;
+    color:var(--text-muted);
+    pointer-events:none;
+    text-transform:uppercase;
+    letter-spacing:1px;
+    opacity:0.7;
+}}
+
+/* TOOLTIP - FLOATING & MINIMAL */
+#tt{{
+    position:fixed;
+    display:none;
+    background:rgba(24,24,24,0.95);
+    border:1px solid var(--border-subtle);
+    border-radius:6px;
+    padding:12px;
+    color:var(--text-main);
+    font-size:12px;
+    z-index:100;
+    pointer-events:none;
+    box-shadow:0 8px 24px rgba(0,0,0,0.5);
+    backdrop-filter:blur(4px);
+    width: 200px;
+}}
+.tt-row{{display:flex;justify-content:space-between;margin-bottom:4px}}
+.tt-label{{color:var(--text-muted)}}
+.tt-val{{font-family:'IBM Plex Mono',monospace;font-weight:500}}
+.tt-val.pos{{color:var(--accent-green)}}
+.tt-val.neg{{color:var(--accent-red)}}
+.tt-badge{{padding:2px 6px;border-radius:4px;font-size:10px;font-weight:700;text-transform:uppercase}}
+.tt-badge.win{{background:rgba(126,231,135,0.1);color:var(--accent-green);border:1px solid rgba(126,231,135,0.2)}}
+.tt-badge.loss{{background:rgba(255,123,114,0.1);color:var(--accent-red);border:1px solid rgba(255,123,114,0.2)}}
+
+
+/* OHLC FLOATING LEGEND */
+#ohlc{{
+    position:absolute;
+    top:12px;
+    right:100px;
+    z-index:20;
+    display:flex;
+    gap:16px;
+    font-family:'IBM Plex Mono',monospace;
+    font-size:11px;
+    color:var(--text-muted);
+    pointer-events:none;
+}}
+.ohlc-val{{color:var(--text-main)}}
+.ohlc-val.up{{color:var(--accent-green)}}
+.ohlc-val.down{{color:var(--accent-red)}}
+
+/* ZOOM CONTROLS */
+.tv-zoom-container{{position:absolute;bottom:20px;left:50%;transform:translateX(-50%);z-index:30;display:flex;gap:8px;opacity:0;transition:opacity 0.2s}}
+.p:hover .tv-zoom-container{{opacity:1}}
+.tv-zoom-btn{{
+    width:32px;height:32px;
+    background:#2A2A2A;
+    color:#fff;
+    border:none;
+    border-radius:4px;
+    cursor:pointer;
+    font-size:16px;
+    display:flex;align-items:center;justify-content:center;
+}}
+.tv-zoom-btn:hover{{background:#3A3A3A}}
+
+/* CROSSHAIR */
+#globalCrosshair{{position:absolute;top:0;bottom:0;width:1px;background:rgba(255,255,255,0.1);pointer-events:none;z-index:10;display:none}}
+#globalCrosshairLabel{{
+    position:absolute;
+    bottom:0;
+    transform:translateX(-50%);
+    background:#2A2A2A;
+    color:#fff;
+    font-size:10px;
+    padding:2px 6px;
+    border-radius:4px;
+    pointer-events:none;
+    z-index:30;
+    display:none;
+    font-family:'IBM Plex Mono',monospace;
+}}
+
+.smh{{position:absolute;left:0;right:0;height:10px;z-index:40;cursor:ns-resize}}
 .smh.top{{top:0}}
 .smh.bottom{{bottom:0}}
-#globalCrosshair{{position:absolute;top:0;bottom:0;width:1px;background:repeating-linear-gradient(to bottom,rgba(255,255,255,.6) 0px,rgba(255,255,255,.6) 2px,transparent 2px,transparent 4px);pointer-events:none;z-index:9999;display:none}}
-#globalCrosshairLabel{{position:absolute;bottom:0;transform:translateX(-50%);background:#1e293b;color:#e2e8f0;font-size:10px;padding:2px 6px;border-radius:2px;white-space:nowrap;pointer-events:none;z-index:10000;display:none}}
-.p{{position:relative}}
+
 </style>
 </head>
 <body>
 <div class="c">
 <div class="h">
-<div style="display:flex;align-items:center;gap:16px">
-<span class="a">{activo}</span>
-<span class="t">{combo}</span>
-</div>
-<div class="info">
-<div class="stat"><span class="stat-label">Trades</span><span class="stat-val">{total_trades}</span></div>
-<div class="stat"><span class="stat-label">Win Rate</span><span class="stat-val">{round(winrate, 1)}%</span></div>
-<div class="stat"><span class="stat-label">PnL Neto</span><span class="stat-val {pnl_class}">${round(pnl_neto, 2)}</span></div>
-<div class="stat"><span class="stat-label">Score</span><span class="stat-val pos">{round(score, 2)}</span></div>
-</div>
+    <div class="left">
+        <span class="a">{activo}</span>
+        <span class="t">{combo}</span>
+        <span class="t">TRIAL: {trial}</span>
+    </div>
+    <div class="info">
+        <div class="stat"><span class="stat-label">Trades</span><span class="stat-val">{total_trades}</span></div>
+        <div class="stat"><span class="stat-label">WinRate</span><span class="stat-val">{round(winrate, 1)}%</span></div>
+        <div class="stat"><span class="stat-label">PnL</span><span class="stat-val {pnl_class}">${round(pnl_neto, 2)}</span></div>
+        <div class="stat"><span class="stat-label">Score</span><span class="stat-val">{round(score, 2)}</span></div>
+    </div>
 </div>
 <div class="p" id="ct"><div id="globalCrosshair"></div><div id="globalCrosshairLabel"></div></div>
 </div>
@@ -1064,9 +1153,7 @@ html,body{{width:100%;height:100%;background:#0b1220;font-family:'SF Pro Display
 <script>
 (function(){{
 'use strict';
-
 try {{
-
 const D='''.encode('utf-8')
         f.write(header)
 
@@ -1085,29 +1172,31 @@ const D='''.encode('utf-8')
         js_logic = _get_chart_js_logic()
         f.write(js_logic.encode('utf-8'))
 
+        # ============ CHUNK 6: Footer (Close Tags) ============
+        footer = b"""
+} catch(e) {
+    console.error(e);
+    document.body.innerHTML += '<div style="color:red;margin:20px;background:#333;padding:10px;border-radius:4px;font-family:monospace">JS Error: ' + e.message + '</div>';
+}
+})();
+</script>
+</body>
+</html>
+"""
+        f.write(footer)
+
 
 def _get_chart_js_logic() -> str:
     """Return the JavaScript chart logic as a string (static, cacheable)."""
+
     return '''
 
 // ============================================================================
-// MODELOX BLOOMBERG TERMINAL v8.0 - ULTRA PROFESSIONAL TRADING INTERFACE
-// ============================================================================
-// Features:
-// - Bloomberg-style dark terminal design
-// - Interactive statistics sidebar
-// - Equity curve panel with drawdown
-// - Trade table with sorting/filtering
-// - Professional hotkeys (F=fit, H=home, E=end, T=trades, S=stats)
-// - Multi-panel synchronized crosshair
-// - Draggable panel margins
-// - Export capabilities
+// MODELOX CHART v9.0 - NEUTRAL MINIMALIST
 // ============================================================================
 
-// Validate data loaded correctly
 if (!D || !D.t || D.t.length === 0) {
-  console.error('No candle data available');
-  document.body.innerHTML = '<div style="color:#fbbf24;padding:40px;font-family:system-ui;text-align:center;background:#0a0e17;height:100vh;display:flex;flex-direction:column;justify-content:center;align-items:center;"><h2 style="font-size:24px;margin-bottom:16px;">⚠ NO DATA AVAILABLE</h2><p style="color:#64748b;">No candle data was generated for this trial.</p></div>';
+  document.body.innerHTML = '<div style="display:flex;height:100vh;justify-content:center;align-items:center;color:#666">No data available</div>';
   return;
 }
 
@@ -1115,981 +1204,393 @@ const dq=(v,f)=>v/f;
 const ct=document.getElementById('ct');
 const charts=[];
 let syncingCharts=false;
-
-// === DRAGGABLE SCALE MARGINS (TOP/BOTTOM) ===
-// Permite ajustar rightPriceScale.scaleMargins arrastrando arriba/abajo
-// en la zona superior/inferior de cada panel.
 const _scaleMarginsByChart = new WeakMap();
 
-function _clamp(v, lo, hi){
-  return Math.max(lo, Math.min(hi, v));
-}
-
+// HELPERS
+function _clamp(v, lo, hi){ return Math.max(lo, Math.min(hi, v)); }
 function _getOrInitMargins(ch){
   if(_scaleMarginsByChart.has(ch)) return _scaleMarginsByChart.get(ch);
   const m = { top: 0.1, bottom: 0.1 };
   _scaleMarginsByChart.set(ch, m);
   return m;
 }
-
 function _applyMargins(ch, top, bottom){
-  // evitar que se coma el área del chart
-  top = _clamp(top, 0.0, 0.45);
-  bottom = _clamp(bottom, 0.0, 0.45);
-  if(top + bottom > 0.9){
-    const excess = (top + bottom) - 0.9;
-    // reducir proporcionalmente
-    const tShare = top / (top + bottom);
-    top = _clamp(top - excess * tShare, 0.0, 0.45);
-    bottom = _clamp(bottom - excess * (1 - tShare), 0.0, 0.45);
-  }
+  top = _clamp(top, 0.05, 0.45);
+  bottom = _clamp(bottom, 0.05, 0.45);
   _scaleMarginsByChart.set(ch, { top, bottom });
-  try{
-    ch.applyOptions({ rightPriceScale: { scaleMargins: { top, bottom } } });
-  }catch(e){
-    // ignore
-  }
+  try{ ch.applyOptions({ rightPriceScale: { scaleMargins: { top, bottom } } }); }catch(e){}
 }
-
 function _attachScaleMarginHandles(panelEl, ch){
   if(!panelEl || !ch) return;
-
-  const hTop = document.createElement('div');
-  hTop.className = 'smh top';
-  const hBot = document.createElement('div');
-  hBot.className = 'smh bottom';
-  panelEl.appendChild(hTop);
-  panelEl.appendChild(hBot);
-
+  const hTop = document.createElement('div'); hTop.className = 'smh top';
+  const hBot = document.createElement('div'); hBot.className = 'smh bottom';
+  panelEl.appendChild(hTop); panelEl.appendChild(hBot);
+  
   const startDrag = (which, ev) => {
-    ev.preventDefault();
-    ev.stopPropagation();
+    ev.preventDefault(); ev.stopPropagation();
     const rect = panelEl.getBoundingClientRect();
     const startY = ev.clientY;
     const startMargins = _getOrInitMargins(ch);
-    const startTop = startMargins.top;
-    const startBottom = startMargins.bottom;
-
     const onMove = (e) => {
       const dy = e.clientY - startY;
-      const h = Math.max(1, rect.height);
-      const df = dy / h;
-      if(which === 'top'){
-        _applyMargins(ch, startTop + df, startBottom);
-      }else{
-        _applyMargins(ch, startTop, startBottom - df);
-      }
+      const df = dy / rect.height;
+      if(which === 'top') _applyMargins(ch, startMargins.top + df, startMargins.bottom);
+      else _applyMargins(ch, startMargins.top, startMargins.bottom - df);
     };
     const onUp = () => {
-      window.removeEventListener('pointermove', onMove, { passive: false });
-      window.removeEventListener('pointerup', onUp, { passive: false });
-      window.removeEventListener('pointercancel', onUp, { passive: false });
+      window.removeEventListener('pointermove', onMove);
+      window.removeEventListener('pointerup', onUp);
     };
-    window.addEventListener('pointermove', onMove, { passive: false });
-    window.addEventListener('pointerup', onUp, { passive: false });
-    window.addEventListener('pointercancel', onUp, { passive: false });
+    window.addEventListener('pointermove', onMove);
+    window.addEventListener('pointerup', onUp);
   };
-
-  hTop.addEventListener('pointerdown', (ev)=>startDrag('top', ev), { passive: false });
-  hBot.addEventListener('pointerdown', (ev)=>startDrag('bottom', ev), { passive: false });
+  hTop.addEventListener('pointerdown', (ev)=>startDrag('top', ev));
+  hBot.addEventListener('pointerdown', (ev)=>startDrag('bottom', ev));
 }
 
-// Bloquear SOLO zoom por pinch (ctrlKey/metaKey + wheel).
-// El scroll normal (sin modificadores) se deja pasar para pan horizontal.
-if(ct){
-  ct.addEventListener('wheel',(e)=>{
-    // Solo bloquear si es zoom (ctrl/meta = pinch en trackpad)
-    if(e && (e.ctrlKey || e.metaKey)){
-      e.preventDefault();
-      e.stopPropagation();
-    }
-    // El scroll normal (sin modificadores) pasa al chart para pan
-  },{passive:false});
-  ['gesturestart','gesturechange','gestureend'].forEach((ev)=>{
-    ct.addEventListener(ev,(e)=>{ if(e) e.preventDefault(); },{passive:false});
-  });
-}
-
+// CHART OPTIONS - NEUTRAL
 const baseOpts={
-layout:{background:{type:'solid',color:'#0b1220'},textColor:'#94a3b8',fontSize:10,fontFamily:"'SF Pro Display',system-ui"},
-grid:{vertLines:{color:'rgba(148,163,184,.04)'},horzLines:{color:'rgba(148,163,184,.04)'}},
-crosshair:{mode:LightweightCharts.CrosshairMode.Normal,vertLine:{visible:false,labelVisible:false},horzLine:{color:'rgba(255,255,255,.6)',width:1,style:LightweightCharts.LineStyle.SparseDotted,labelBackgroundColor:'#1e293b',labelVisible:true}},
-timeScale:{borderColor:'rgba(148,163,184,.1)',timeVisible:true,secondsVisible:false,rightOffset:12,barSpacing:4,minBarSpacing:1,fixLeftEdge:false,fixRightEdge:false,lockVisibleTimeRangeOnResize:true,autoScale:true,visible:false},
-rightPriceScale:{borderColor:'rgba(148,163,184,.1)',scaleMargins:{top:.1,bottom:.1},autoScale:true,alignLabels:true,borderVisible:true,entireTextOnly:false},
-// ZOOM: desactivado completamente (mouseWheel, pinch, axisDrag todo false).
+layout:{background:{type:'solid',color:'#121212'},textColor:'#6E7681',fontSize:11,fontFamily:"'Inter',sans-serif"},
+grid:{vertLines:{visible:false},horzLines:{color:'#1e1e1e',style:0}},
+crosshair:{mode:1,vertLine:{visible:false,labelVisible:false},horzLine:{visible:true,color:'#333',labelBackgroundColor:'#333'}},
+timeScale:{borderColor:'#2A2A2A',rightOffset:5,barSpacing:6,minBarSpacing:1,fixLeftEdge:false,fixRightEdge:false,lockVisibleTimeRangeOnResize:true,visible:false},
+rightPriceScale:{borderColor:'#2A2A2A',scaleMargins:{top:.15,bottom:.15},autoScale:true,alignLabels:true,borderVisible:false},
 handleScale:{axisPressedMouseMove:false,mouseWheel:false,pinch:false},
-// SCROLL/PAN: mouseWheel=true permite desplazarse horizontalmente con la rueda SIN zoom.
 handleScroll:{mouseWheel:true,pressedMouseMove:true,horzTouchDrag:true,vertTouchDrag:false},
 kineticScroll:{touch:true,mouse:true},
 localization:{
-  // Force UTC display for consistent time across all browsers
   timeFormatter:(ts)=>{
     const d=new Date(ts*1000);
-    const yr=d.getUTCFullYear();
-    const mo=String(d.getUTCMonth()+1).padStart(2,'0');
-    const dy=String(d.getUTCDate()).padStart(2,'0');
-    const hr=String(d.getUTCHours()).padStart(2,'0');
-    const mn=String(d.getUTCMinutes()).padStart(2,'0');
-    return mo+'/'+dy+'/'+yr+' '+hr+':'+mn;
+    return d.toISOString().slice(5,16).replace('T',' ');
   },
-  dateFormat:'yyyy-MM-dd'
 }
 };
 
-// === DYNAMIC PANEL CREATION ===
-function mkPanel(id,lbl,isMain,heightPct){
-try{
-const p=document.createElement('div');
-p.className=isMain?'m':'sub';
-p.id=id;
-p.style.flex=isMain?'6':'1.2';
-const l=document.createElement('div');
-l.className='l';
-l.textContent=lbl;
-p.appendChild(l);
-
-if(isMain){
-  const ohlc=document.createElement('div');
-  ohlc.id='ohlc';
-  ohlc.innerHTML='<div class="ohlc-item"><span class="ohlc-label">T</span><span class="ohlc-val" id="tv" style="color:#22d3ee">-</span></div><div class="ohlc-item"><span class="ohlc-label">O</span><span class="ohlc-val" id="ov">-</span></div><div class="ohlc-item"><span class="ohlc-label">H</span><span class="ohlc-val" id="hv">-</span></div><div class="ohlc-item"><span class="ohlc-label">L</span><span class="ohlc-val" id="lv">-</span></div><div class="ohlc-item"><span class="ohlc-label">C</span><span class="ohlc-val" id="cv">-</span></div>';
-  p.appendChild(ohlc);
-  const zoomDiv=document.createElement('div');
-  zoomDiv.className='tv-zoom-container';
-  zoomDiv.innerHTML='<button class="tv-zoom-btn" id="zoomIn" title="Zoom In">+</button><button class="tv-zoom-btn" id="zoomOut" title="Zoom Out">-</button>';
-  p.appendChild(zoomDiv);
-}
-ct.appendChild(p);
-
-const opts={...baseOpts,width:p.clientWidth,height:p.clientHeight};
-// Don't set timeScale visible here - will be set in SINGLE TIMESCALE section
-const ch=LightweightCharts.createChart(p,opts);
-
-// init + attach draggable scale margins
-_getOrInitMargins(ch);
-_attachScaleMarginHandles(p, ch);
-
-charts.push({ch,p,id,label:lbl});
-return ch;
-}catch(e){
-console.error('Failed to create panel:',lbl,e);
-return null;
-}
-}
-
-// === CALCULATE PANEL HEIGHTS ===
-const numSubPanels=(I.sub_panels?I.sub_panels.length:0)+(D.vol&&D.vol.length>0?1:0);
-const mainFlex=6;
-const subFlex=numSubPanels>0?1.2:0;
-
-// === MAIN PRICE CHART (Marker Stability Optimized) ===
-try {
-  const mc=mkPanel('mc','PRECIO',true);
-  if(!mc)throw new Error('Main chart creation failed');
+function mkPanel(id,lbl,isMain){
+  const p=document.createElement('div');
+  p.className=isMain?'m':'sub';
+  p.id=id;
+  p.style.flex=isMain?'5':'1.5';
   
-  // Configure candlestick series with options that prevent marker recalculation during scroll/zoom
-  const cs=mc.addCandlestickSeries({
-    upColor:'#22c55e',
-    downColor:'#ef4444',
-    borderUpColor:'#16a34a',
-    borderDownColor:'#dc2626',
-    wickUpColor:'#22c55e',
-    wickDownColor:'#ef4444',
-    priceFormat:{type:'price',precision:2,minMove:0.01},
-    // Disable dynamic updates that trigger price scale recalculation
-    lastValueVisible:false,
-    priceLineVisible:false
-  });
+  const l=document.createElement('div');
+  l.className='l';
+  l.textContent=lbl;
+  p.appendChild(l);
 
-  const f=D.f;
-  const cData=[];
-  
-  // Build candle timestamp Set for O(1) marker validation
-  const candleTimeSet=new Set();
-  
-  // Store main series for crosshair sync
-  if(charts.length>0) charts[0].series = cs;
-  
-  if(D.t && D.t.length>0){
-    for(let i=0;i<D.t.length;i++){
-      const t=D.t[i];
-      cData.push({time:t,open:dq(D.o[i],f),high:dq(D.h[i],f),low:dq(D.l[i],f),close:dq(D.c[i],f)});
-      candleTimeSet.add(t);
-    }
-    cs.setData(cData);
-
-    // Stable trade markers on candle chart.
-    // COMBINE entry (m) + exit (xm) markers in a single array for the candle series.
-    // This avoids issues with duplicate timestamps in separate line series.
-    /* try{
-      const allMarkers=[];
-      // Add entry markers
-      if(T.m && T.m.length>0){
-        T.m.forEach(m=>allMarkers.push({
-          time:m.time,
-          position:m.position||'inBar',
-          color:m.color,
-          shape:m.shape||'circle',
-          text:m.text||'',
-          size:m.size||2
-        }));
-      }
-      // Add exit markers (use 'aboveBar' position to distinguish from entries)
-      if(T.xm && T.xm.length>0){
-        T.xm.forEach(m=>allMarkers.push({
-          time:m.time,
-          position:'aboveBar',
-          color:m.color||'#fbbf24',
-          shape:'circle',
-          text:'',
-          size:1
-        }));
-      }
-      if(allMarkers.length>0){
-        // Sort by time to ensure proper rendering
-        allMarkers.sort((a,b)=>a.time-b.time);
-        cs.setMarkers(allMarkers);
-        mc.timeScale().subscribeVisibleTimeRangeChange(()=>{
-          cs.setMarkers(allMarkers);
-        });
-      }
-    }catch(e){console.warn('Markers error:',e);} */
-
-    // Entry points at real price: colored dots only (NO connecting lines)
-    try{
-      if(T.ee && T.ee.length>0){
-        const ens=mc.addLineSeries({
-          color:'rgba(0,0,0,0)',
-          lineWidth:1,
-          priceLineVisible:false,
-          lastValueVisible:false,
-          crosshairMarkerVisible:false
-        });
-        ens.setData(T.ee);
-
-        if(T.em && T.em.length>0){
-          const entryMarkers=T.em.map(m=>({
-            time:m.time,
-            position:m.position||'inBar',
-            color:m.color,
-            shape:m.shape||'circle',
-            text:m.text||'',
-            size:m.size||2
-          }));
-          ens.setMarkers(entryMarkers);
-          mc.timeScale().subscribeVisibleTimeRangeChange(()=>{
-            ens.setMarkers(entryMarkers);
-          });
-        }
-      }
-    }catch(e){console.warn('Entry points error:',e);}    
-
-    // Exit points at real price: white dots only (NO connecting lines)
-    try{
-      if(T.xe && T.xe.length>0){
-        // Use an invisible line series to anchor markers at the exact exit price.
-        // The series line is fully transparent so no diagonals can appear.
-        const es=mc.addLineSeries({
-          color:'rgba(0,0,0,0)',
-          lineWidth:1,
-          priceLineVisible:false,
-          lastValueVisible:false,
-          crosshairMarkerVisible:false
-        });
-        es.setData(T.xe);
-
-        if(T.xm && T.xm.length>0){
-          const exitMarkers=T.xm.map(m=>({
-            time:m.time,
-            position:m.position||'inBar',
-            color:m.color||'#ffffff',
-            shape:m.shape||'circle',
-            text:m.text||'',
-            size:m.size||2
-          }));
-          es.setMarkers(exitMarkers);
-          mc.timeScale().subscribeVisibleTimeRangeChange(()=>{
-            es.setMarkers(exitMarkers);
-          });
-        }
-      }
-    }catch(e){console.warn('Exit points error:',e);}
-  }
-
-  // === OVERLAY INDICATORS (on main chart) - NULL-AWARE ===
-  if(I.overlays && Array.isArray(I.overlays)){
-    I.overlays.forEach(ov=>{
-      try{
-        if(ov.t&&ov.t.length>0&&ov.v&&ov.v.length>0){
-          const ls=mc.addLineSeries({color:ov.color||'#fbbf24',lineWidth:1.5,priceLineVisible:false,lastValueVisible:true,crosshairMarkerVisible:false,lineStyle:0});
-          // STRICT ALIGNMENT: Pass null values to library to render gaps
-          const ovData = [];
-          for (let i = 0; i < ov.t.length; i++) {
-            const val = ov.v[i] !== null ? dq(ov.v[i], ov.f) : null;
-            ovData.push({ time: ov.t[i], value: val });
-          }
-          if (ovData.length > 0) ls.setData(ovData);
-        }
-      }catch(e){console.warn('Overlay error:',e);}
-    });
-  }
-} catch(e) {
-  console.error('CRITICAL: Main chart failed:',e);
-}
-
-// === VOLUME PANEL ===
-try {
-  if(D.vol&&D.vol.length>0&&D.t&&D.t.length>0){
-    const vc=mkPanel('vc','VOLUMEN',false);
-    if(vc){
-      vc.priceScale('right').applyOptions({autoScale:true});
-      const vs=vc.addHistogramSeries({priceFormat:{type:'volume'},priceLineVisible:false,lastValueVisible:false});
-      const vData=D.t.map((t,i)=>({time:t,value:D.vol[i],color:D.c[i]>=D.o[i]?'rgba(34,197,94,.5)':'rgba(239,68,68,.5)'}));
-      vs.setData(vData);
-      // Store series for crosshair sync
-      const volChartIdx = charts.findIndex(c => c.id === 'vc');
-      if(volChartIdx >= 0) charts[volChartIdx].series = vs;
-    }
-  }
-} catch(e) {
-  console.warn('Volume panel error:',e);
-}
-
-// === DYNAMIC SUB-PANELS (auto-generated from detected indicators) ===
-if(I.sub_panels && Array.isArray(I.sub_panels)){
-  I.sub_panels.forEach((panel,idx)=>{
-    try{
-      if(!panel.data||!panel.data.t||panel.data.t.length===0)return;
-      
-      const panelId='sp_'+idx;
-      const panelLabel=panel.name.toUpperCase();
-      const pc=mkPanel(panelId,panelLabel,false);
-      if(!pc)return;
-      
-      pc.priceScale('right').applyOptions({scaleMargins:{top:.1,bottom:.1},autoScale:true});
-      
-      // Histogram or Line based on indicator type
-      // Build timestamp set for this panel for marker validation
-      // Use candle timestamps as reference since indicators are now strictly aligned
-      const panelTimeSet=new Set(D.t);
-      let mainSeries=null;
-      
-      // STRICT ALIGNMENT: Pass null values to library to render gaps
-      const seriesData = [];
-      for (let i = 0; i < panel.data.t.length; i++) {
-        const val = panel.data.v[i] !== null ? dq(panel.data.v[i], panel.data.f) : null;
-        seriesData.push({ time: panel.data.t[i], value: val });
-      }
-      if (seriesData.length === 0) return;
-      
-      if(panel.type==='histogram'){
-        const hs=pc.addHistogramSeries({priceLineVisible:false,lastValueVisible:false});
-        const hData=seriesData.map(d=>({
-          time:d.time,
-          value:d.value,
-          color:d.value>=0?'rgba(34,197,94,.7)':'rgba(239,68,68,.7)'
-        }));
-        hs.setData(hData);
-        mainSeries=hs;
-      }else{
-        const ls=pc.addLineSeries({color:panel.color||'#60a5fa',lineWidth:2,priceLineVisible:false,lastValueVisible:true});
-        ls.setData(seriesData);
-        mainSeries=ls;
-        
-        // Reference lines for bounded oscillators (DYNAMIC FROM OPTUNA)
-        // Use seriesData timestamps for reference lines (now includes all points)
-        if(panel.bounds){
-          const b=panel.bounds;
-          // Overbought line (red dashed)
-          if(b.hi!==undefined){
-            const hiLine=pc.addLineSeries({color:'rgba(239,68,68,.6)',lineWidth:1.5,lineStyle:2,priceLineVisible:false,lastValueVisible:false,crosshairMarkerVisible:false});
-            hiLine.setData(seriesData.map(d=>({time:d.time,value:b.hi})));
-          }
-          // Oversold line (green dashed)
-          if(b.lo!==undefined){
-            const loLine=pc.addLineSeries({color:'rgba(34,197,94,.6)',lineWidth:1.5,lineStyle:2,priceLineVisible:false,lastValueVisible:false,crosshairMarkerVisible:false});
-            loLine.setData(seriesData.map(d=>({time:d.time,value:b.lo})));
-          }
-          // Midline (gray dotted)
-          if(b.mid!==undefined){
-            const midLine=pc.addLineSeries({color:'rgba(148,163,184,.3)',lineWidth:1,lineStyle:1,priceLineVisible:false,lastValueVisible:false,crosshairMarkerVisible:false});
-            midLine.setData(seriesData.map(d=>({time:d.time,value:b.mid})));
-          }
-          // === STRATEGY ENTRY/EXIT LEVELS (Pendulum Visualization) ===
-          // Entry Long level (cyan solid)
-          if(b.entry_long!==undefined){
-            const entryLongLine=pc.addLineSeries({color:'rgba(34,211,238,.8)',lineWidth:2,lineStyle:0,priceLineVisible:false,lastValueVisible:false,crosshairMarkerVisible:false});
-            entryLongLine.setData(seriesData.map(d=>({time:d.time,value:b.entry_long})));
-          }
-          // Entry Short level (magenta solid)
-          if(b.entry_short!==undefined){
-            const entryShortLine=pc.addLineSeries({color:'rgba(236,72,153,.8)',lineWidth:2,lineStyle:0,priceLineVisible:false,lastValueVisible:false,crosshairMarkerVisible:false});
-            entryShortLine.setData(seriesData.map(d=>({time:d.time,value:b.entry_short})));
-          }
-          // Exit Long level (orange dotted)
-          if(b.exit_long!==undefined){
-            const exitLongLine=pc.addLineSeries({color:'rgba(251,146,60,.7)',lineWidth:1.5,lineStyle:1,priceLineVisible:false,lastValueVisible:false,crosshairMarkerVisible:false});
-            exitLongLine.setData(seriesData.map(d=>({time:d.time,value:b.exit_long})));
-          }
-          // Exit Short level (amber dotted)
-          if(b.exit_short!==undefined){
-            const exitShortLine=pc.addLineSeries({color:'rgba(251,191,36,.7)',lineWidth:1.5,lineStyle:1,priceLineVisible:false,lastValueVisible:false,crosshairMarkerVisible:false});
-            exitShortLine.setData(seriesData.map(d=>({time:d.time,value:b.exit_short})));
-          }
-          // === DPO SYMMETRIC TRIGGER LINES ===
-          // DPO Long entry level (cyan solid)
-          if(b.dpo_long!==undefined){
-            const dpoLongLine=pc.addLineSeries({color:'rgba(34,211,238,.8)',lineWidth:2,lineStyle:0,priceLineVisible:false,lastValueVisible:false,crosshairMarkerVisible:false});
-            dpoLongLine.setData(seriesData.map(d=>({time:d.time,value:b.dpo_long})));
-          }
-          // DPO Short entry level (magenta solid)
-          if(b.dpo_short!==undefined){
-            const dpoShortLine=pc.addLineSeries({color:'rgba(236,72,153,.8)',lineWidth:2,lineStyle:0,priceLineVisible:false,lastValueVisible:false,crosshairMarkerVisible:false});
-            dpoShortLine.setData(seriesData.map(d=>({time:d.time,value:b.dpo_short})));
-          }
-          // DPO Long exit level (orange dashed)
-          if(b.dpo_exit_long!==undefined){
-            const dpoExitLongLine=pc.addLineSeries({color:'rgba(251,146,60,.7)',lineWidth:1.5,lineStyle:2,priceLineVisible:false,lastValueVisible:false,crosshairMarkerVisible:false});
-            dpoExitLongLine.setData(seriesData.map(d=>({time:d.time,value:b.dpo_exit_long})));
-          }
-          // DPO Short exit level (amber dashed)
-          if(b.dpo_exit_short!==undefined){
-            const dpoExitShortLine=pc.addLineSeries({color:'rgba(251,191,36,.7)',lineWidth:1.5,lineStyle:2,priceLineVisible:false,lastValueVisible:false,crosshairMarkerVisible:false});
-            dpoExitShortLine.setData(seriesData.map(d=>({time:d.time,value:b.dpo_exit_short})));
-          }
-          // === ADX THRESHOLD LINE ===
-          // ADX minimum threshold (yellow solid)
-          if(b.adx_threshold!==undefined){
-            const adxThreshLine=pc.addLineSeries({color:'rgba(250,204,21,.9)',lineWidth:2,lineStyle:0,priceLineVisible:false,lastValueVisible:false,crosshairMarkerVisible:false});
-            adxThreshLine.setData(seriesData.map(d=>({time:d.time,value:b.adx_threshold})));
-          }
-          // === RSI ENTRY LEVELS ===
-          // RSI LONG entry level (cyan solid)
-          if(b.rsi_long!==undefined){
-            const rsiLongLine=pc.addLineSeries({color:'rgba(34,211,238,.8)',lineWidth:2,lineStyle:0,priceLineVisible:false,lastValueVisible:false,crosshairMarkerVisible:false});
-            rsiLongLine.setData(seriesData.map(d=>({time:d.time,value:b.rsi_long})));
-          }
-          // RSI SHORT entry level (magenta solid)
-          if(b.rsi_short!==undefined){
-            const rsiShortLine=pc.addLineSeries({color:'rgba(236,72,153,.8)',lineWidth:2,lineStyle:0,priceLineVisible:false,lastValueVisible:false,crosshairMarkerVisible:false});
-            rsiShortLine.setData(seriesData.map(d=>({time:d.time,value:b.rsi_short})));
-          }
-          // === DPO CYCLE ZONE LEVELS (Strategy 6) ===
-          // DPO RSA - Upper High extreme (red solid) - EUPHORIA zone above
-          if(b.dpo_rsa!==undefined){
-            const dpoRsaLine=pc.addLineSeries({color:'rgba(239,68,68,.9)',lineWidth:2,lineStyle:0,priceLineVisible:false,lastValueVisible:false,crosshairMarkerVisible:false});
-            dpoRsaLine.setData(seriesData.map(d=>({time:d.time,value:b.dpo_rsa})));
-          }
-          // DPO RSM - Upper Mid zone (orange dashed) - DISTRIBUTION zone
-          if(b.dpo_rsm!==undefined){
-            const dpoRsmLine=pc.addLineSeries({color:'rgba(251,146,60,.7)',lineWidth:1.5,lineStyle:2,priceLineVisible:false,lastValueVisible:false,crosshairMarkerVisible:false});
-            dpoRsmLine.setData(seriesData.map(d=>({time:d.time,value:b.dpo_rsm})));
-          }
-          // DPO ZERO - Neutral line (white/gray dashed)
-          if(b.dpo_zero!==undefined){
-            const dpoZeroLine=pc.addLineSeries({color:'rgba(148,163,184,.6)',lineWidth:1,lineStyle:1,priceLineVisible:false,lastValueVisible:false,crosshairMarkerVisible:false});
-            dpoZeroLine.setData(seriesData.map(d=>({time:d.time,value:b.dpo_zero})));
-          }
-          // DPO RIM - Lower Mid zone (cyan dashed) - ACCUMULATION zone
-          if(b.dpo_rim!==undefined){
-            const dpoRimLine=pc.addLineSeries({color:'rgba(34,211,238,.7)',lineWidth:1.5,lineStyle:2,priceLineVisible:false,lastValueVisible:false,crosshairMarkerVisible:false});
-            dpoRimLine.setData(seriesData.map(d=>({time:d.time,value:b.dpo_rim})));
-          }
-          // DPO RIB - Lower Low extreme (green solid) - PANIC zone below
-          if(b.dpo_rib!==undefined){
-            const dpoRibLine=pc.addLineSeries({color:'rgba(34,197,94,.9)',lineWidth:2,lineStyle:0,priceLineVisible:false,lastValueVisible:false,crosshairMarkerVisible:false});
-            dpoRibLine.setData(seriesData.map(d=>({time:d.time,value:b.dpo_rib})));
-          }
-          // === MFI THRESHOLD ZONE LEVELS (Strategy 6) ===
-          // MFI High zone threshold (magenta solid) - OVERBOUGHT zone above
-          if(b.mfi_high!==undefined){
-            const mfiHighLine=pc.addLineSeries({color:'rgba(236,72,153,.9)',lineWidth:2,lineStyle:0,priceLineVisible:false,lastValueVisible:false,crosshairMarkerVisible:false});
-            mfiHighLine.setData(seriesData.map(d=>({time:d.time,value:b.mfi_high})));
-          }
-          // MFI Mid equilibrium (white/gray dashed) - 50 line
-          if(b.mfi_mid!==undefined){
-            const mfiMidLine=pc.addLineSeries({color:'rgba(148,163,184,.6)',lineWidth:1,lineStyle:1,priceLineVisible:false,lastValueVisible:false,crosshairMarkerVisible:false});
-            mfiMidLine.setData(seriesData.map(d=>({time:d.time,value:b.mfi_mid})));
-          }
-          // MFI Low zone threshold (cyan solid) - OVERSOLD zone below
-          if(b.mfi_low!==undefined){
-            const mfiLowLine=pc.addLineSeries({color:'rgba(34,211,238,.9)',lineWidth:2,lineStyle:0,priceLineVisible:false,lastValueVisible:false,crosshairMarkerVisible:false});
-            mfiLowLine.setData(seriesData.map(d=>({time:d.time,value:b.mfi_low})));
-          }
-          // === Z-SCORE RANGE LEVELS (Strategy 13 v2 Mean Reversion) ===
-          // Z-Score LONG range (negative values) - green band
-          if(b.z_long_min!==undefined){
-            const zLongMinLine=pc.addLineSeries({color:'rgba(34,197,94,.9)',lineWidth:2,lineStyle:0,priceLineVisible:false,lastValueVisible:false,crosshairMarkerVisible:false});
-            zLongMinLine.setData(seriesData.map(d=>({time:d.time,value:b.z_long_min})));
-          }
-          if(b.z_long_max!==undefined){
-            const zLongMaxLine=pc.addLineSeries({color:'rgba(34,197,94,.6)',lineWidth:1.5,lineStyle:2,priceLineVisible:false,lastValueVisible:false,crosshairMarkerVisible:false});
-            zLongMaxLine.setData(seriesData.map(d=>({time:d.time,value:b.z_long_max})));
-          }
-          // Z-Score SHORT range (positive values) - red band
-          if(b.z_short_min!==undefined){
-            const zShortMinLine=pc.addLineSeries({color:'rgba(239,68,68,.6)',lineWidth:1.5,lineStyle:2,priceLineVisible:false,lastValueVisible:false,crosshairMarkerVisible:false});
-            zShortMinLine.setData(seriesData.map(d=>({time:d.time,value:b.z_short_min})));
-          }
-          if(b.z_short_max!==undefined){
-            const zShortMaxLine=pc.addLineSeries({color:'rgba(239,68,68,.9)',lineWidth:2,lineStyle:0,priceLineVisible:false,lastValueVisible:false,crosshairMarkerVisible:false});
-            zShortMaxLine.setData(seriesData.map(d=>({time:d.time,value:b.z_short_max})));
-          }
-          // Z-Score entry/TP levels (legacy v1 support)
-          if(b.z_entry_long!==undefined){
-            const zEntryLongLine=pc.addLineSeries({color:'rgba(34,211,238,.8)',lineWidth:2,lineStyle:0,priceLineVisible:false,lastValueVisible:false,crosshairMarkerVisible:false});
-            zEntryLongLine.setData(seriesData.map(d=>({time:d.time,value:b.z_entry_long})));
-          }
-          if(b.z_entry_short!==undefined){
-            const zEntryShortLine=pc.addLineSeries({color:'rgba(236,72,153,.8)',lineWidth:2,lineStyle:0,priceLineVisible:false,lastValueVisible:false,crosshairMarkerVisible:false});
-            zEntryShortLine.setData(seriesData.map(d=>({time:d.time,value:b.z_entry_short})));
-          }
-          if(b.z_tp_long!==undefined){
-            const zTpLongLine=pc.addLineSeries({color:'rgba(251,146,60,.7)',lineWidth:1.5,lineStyle:1,priceLineVisible:false,lastValueVisible:false,crosshairMarkerVisible:false});
-            zTpLongLine.setData(seriesData.map(d=>({time:d.time,value:b.z_tp_long})));
-          }
-          if(b.z_tp_short!==undefined){
-            const zTpShortLine=pc.addLineSeries({color:'rgba(251,191,36,.7)',lineWidth:1.5,lineStyle:1,priceLineVisible:false,lastValueVisible:false,crosshairMarkerVisible:false});
-            zTpShortLine.setData(seriesData.map(d=>({time:d.time,value:b.z_tp_short})));
-          }
-          // === Z-SCORE RANGE LEVELS (Strategy 13 v2 Mean Reversion) ===
-          // Z-Score LONG range (negative values) - green band
-          if(b.z_long_min!==undefined){
-            const zLongMinLine=pc.addLineSeries({color:'rgba(34,197,94,.9)',lineWidth:2,lineStyle:0,priceLineVisible:false,lastValueVisible:false,crosshairMarkerVisible:false});
-            zLongMinLine.setData(seriesData.map(d=>({time:d.time,value:b.z_long_min})));
-          }
-          if(b.z_long_max!==undefined){
-            const zLongMaxLine=pc.addLineSeries({color:'rgba(34,197,94,.6)',lineWidth:1.5,lineStyle:2,priceLineVisible:false,lastValueVisible:false,crosshairMarkerVisible:false});
-            zLongMaxLine.setData(seriesData.map(d=>({time:d.time,value:b.z_long_max})));
-          }
-          // Z-Score SHORT range (positive values) - red band
-          if(b.z_short_min!==undefined){
-            const zShortMinLine=pc.addLineSeries({color:'rgba(239,68,68,.6)',lineWidth:1.5,lineStyle:2,priceLineVisible:false,lastValueVisible:false,crosshairMarkerVisible:false});
-            zShortMinLine.setData(seriesData.map(d=>({time:d.time,value:b.z_short_min})));
-          }
-          if(b.z_short_max!==undefined){
-            const zShortMaxLine=pc.addLineSeries({color:'rgba(239,68,68,.9)',lineWidth:2,lineStyle:0,priceLineVisible:false,lastValueVisible:false,crosshairMarkerVisible:false});
-            zShortMaxLine.setData(seriesData.map(d=>({time:d.time,value:b.z_short_max})));
-          }
-          // Z-Score entry/TP levels (legacy v1 support)
-          if(b.z_entry_long!==undefined){
-            const zEntryLongLine=pc.addLineSeries({color:'rgba(34,211,238,.8)',lineWidth:2,lineStyle:0,priceLineVisible:false,lastValueVisible:false,crosshairMarkerVisible:false});
-            zEntryLongLine.setData(seriesData.map(d=>({time:d.time,value:b.z_entry_long})));
-          }
-          if(b.z_entry_short!==undefined){
-            const zEntryShortLine=pc.addLineSeries({color:'rgba(236,72,153,.8)',lineWidth:2,lineStyle:0,priceLineVisible:false,lastValueVisible:false,crosshairMarkerVisible:false});
-            zEntryShortLine.setData(seriesData.map(d=>({time:d.time,value:b.z_entry_short})));
-          }
-          if(b.z_tp_long!==undefined){
-            const zTpLongLine=pc.addLineSeries({color:'rgba(251,146,60,.7)',lineWidth:1.5,lineStyle:1,priceLineVisible:false,lastValueVisible:false,crosshairMarkerVisible:false});
-            zTpLongLine.setData(seriesData.map(d=>({time:d.time,value:b.z_tp_long})));
-          }
-          if(b.z_tp_short!==undefined){
-            const zTpShortLine=pc.addLineSeries({color:'rgba(251,191,36,.7)',lineWidth:1.5,lineStyle:1,priceLineVisible:false,lastValueVisible:false,crosshairMarkerVisible:false});
-            zTpShortLine.setData(seriesData.map(d=>({time:d.time,value:b.z_tp_short})));
-          }
-          // === EFFICIENCY RATIO THRESHOLD (Strategy 13 ER) ===
-          if(b.er_threshold!==undefined){
-            const erThreshLine=pc.addLineSeries({color:'rgba(250,204,21,.9)',lineWidth:2,lineStyle:0,priceLineVisible:false,lastValueVisible:false,crosshairMarkerVisible:false});
-            erThreshLine.setData(seriesData.map(d=>({time:d.time,value:b.er_threshold})));
-          }
-        }
-        
-        // Zero line for unbounded oscillators (like MACD, zscore)
-        if(panel.zero_line){
-          const zl=pc.addLineSeries({color:'rgba(148,163,184,.3)',lineWidth:1,lineStyle:1,priceLineVisible:false,lastValueVisible:false,crosshairMarkerVisible:false});
-          zl.setData(seriesData.map(d=>({time:d.time,value:0})));
-        }
-      }
-      
-      // Sub-panels ya muestran la información del precio/indicador;
-      // REPINTADO ROBUSTO DE MARCADORES EN LOS SUB-PANELES
-      // Dibujamos los mismos marcadores de trade también sobre el indicador
-      // principal del panel para que nunca desaparezcan al hacer scroll.
-      if(mainSeries && T.m && T.m.length>0){
-        try{
-          const panelMarkers=T.m.map(m=>({
-            time:m.time,
-            position:m.position||'inBar',
-            color:m.color,
-            shape:m.shape||'circle',
-            text:m.text||'',
-            size:m.size||2
-          }));
-          mainSeries.setMarkers(panelMarkers);
-          pc.timeScale().subscribeVisibleTimeRangeChange(()=>{
-            mainSeries.setMarkers(panelMarkers);
-          });
-        }catch(e){console.warn('Sub-panel markers error:',panel.name,e);}
-      }
-      
-      // Store main series for crosshair sync
-      const subChartIdx = charts.findIndex(c => c.id === panelId);
-      if(subChartIdx >= 0 && mainSeries) charts[subChartIdx].series = mainSeries;
-    }catch(e){
-      console.warn('Sub-panel error:',panel.name,e);
-    }
-  });
-}
-
-// === SINGLE TIMESCALE: Only LAST panel shows time axis ===
-try {
-  if(charts.length>1){
-    // Hide time axis on all panels except the last one
-    for(let i=0;i<charts.length-1;i++){
-      if(charts[i].ch)charts[i].ch.timeScale().applyOptions({visible:false});
-    }
-    // Show time axis only on the last (bottom) panel
-    charts[charts.length-1].ch.timeScale().applyOptions({visible:true});
-  }else if(charts.length===1){
-    charts[0].ch.timeScale().applyOptions({visible:true});
-  }
-} catch(e) {
-  console.warn('TimeScale config error:',e);
-}
-
-// === CHART SYNCHRONIZATION ===
-// Sync by TIME range (not logical range).
-// Logical range breaks when indicator panels have gaps (null-filtered points),
-// producing visible marker desync between panels.
-try {
-  if(charts.length>1){
-    const masterTS=charts[0].ch.timeScale();
-    charts.forEach(({ch},idx)=>{
-      try{
-        if(idx===0||!ch)return;
-        const slaveTS=ch.timeScale();
-        masterTS.subscribeVisibleTimeRangeChange(range=>{
-          try{
-            if(syncingCharts||!range)return;
-            syncingCharts=true;
-            slaveTS.setVisibleRange(range);
-            syncingCharts=false;
-          }catch(e){syncingCharts=false;}
-        });
-        slaveTS.subscribeVisibleTimeRangeChange(range=>{
-          try{
-            if(syncingCharts||!range)return;
-            syncingCharts=true;
-            masterTS.setVisibleRange(range);
-            syncingCharts=false;
-          }catch(e){syncingCharts=false;}
-        });
-      }catch(e){console.warn('Sync error:',e);}
-    });
-  }
-} catch(e) {
-  console.warn('Sync setup error:',e);
-}
-
-// === GLOBAL CROSSHAIR LINE (SPANS ALL PANELS) ===
-try {
-  const globalLine = document.getElementById('globalCrosshair');
-  const globalLabel = document.getElementById('globalCrosshairLabel');
-  const container = document.getElementById('ct');
-  let lastTime = null;
-  
-  // Format time for label
-  const formatTimeLabel = (ts) => {
-    try {
-      const d = new Date(ts * 1000);
-      const yr = d.getUTCFullYear();
-      const mo = String(d.getUTCMonth() + 1).padStart(2, '0');
-      const dy = String(d.getUTCDate()).padStart(2, '0');
-      const hr = String(d.getUTCHours()).padStart(2, '0');
-      const mn = String(d.getUTCMinutes()).padStart(2, '0');
-      return mo + '/' + dy + '/' + yr + ' ' + hr + ':' + mn;
-    } catch (e) { return ''; }
-  };
-  
-  // Update global crosshair position
-  const updateGlobalCrosshair = (param, sourceChart) => {
-    if (!param || !param.point || param.point.x === undefined) {
-      globalLine.style.display = 'none';
-      globalLabel.style.display = 'none';
-      lastTime = null;
-      return;
-    }
+  if(isMain){
+    const ohlc=document.createElement('div');
+    ohlc.id='ohlc';
+    ohlc.innerHTML='<span id="tv" style="margin-right:8px"></span>O <span id="ov" class="ohlc-val">-</span> H <span id="hv" class="ohlc-val">-</span> L <span id="lv" class="ohlc-val">-</span> C <span id="cv" class="ohlc-val">-</span>';
+    p.appendChild(ohlc);
     
-    // All panels have the same width and are vertically stacked
-    // So param.point.x is already the correct X position within any panel
-    const xPos = param.point.x;
-    
-    // Position global line
-    globalLine.style.left = xPos + 'px';
-    globalLine.style.display = 'block';
-    
-    // Position and update label
-    if (param.time) {
-      lastTime = param.time;
-      globalLabel.textContent = formatTimeLabel(param.time);
-      globalLabel.style.left = xPos + 'px';
-      globalLabel.style.display = 'block';
-    }
-    
-    // Sync horizontal crosshair on other charts
-    charts.forEach((target) => {
-      if (target.ch === sourceChart || !target.ch) return;
-      try {
-        if (param.time) {
-          // Get first series from target chart
-          const series = target.series || (target.ch.getSeries && target.ch.getSeries()[0]);
-          if (series) {
-            target.ch.setCrosshairPosition(0, param.time, series);
-          }
-        } else {
-          target.ch.clearCrosshairPosition();
-        }
-      } catch (e) {}
-    });
-  };
-  
-  // Subscribe to crosshair moves on all charts
-  charts.forEach((c) => {
-    if (c.ch) {
-      c.ch.subscribeCrosshairMove((param) => {
-        updateGlobalCrosshair(param, c.ch);
-      });
-    }
-  });
-  
-  // Hide crosshair when mouse leaves container
-  if (container) {
-    container.addEventListener('mouseleave', () => {
-      globalLine.style.display = 'none';
-      globalLabel.style.display = 'none';
-      charts.forEach((c) => {
-        if (c.ch) c.ch.clearCrosshairPosition();
-      });
-    });
+    // Zoom buttons
+    const z=document.createElement('div');
+    z.className='tv-zoom-container';
+    z.innerHTML='<button class="tv-zoom-btn" id="zoomIn">+</button><button class="tv-zoom-btn" id="zoomOut">-</button>';
+    p.appendChild(z);
   }
-} catch (e) {
-  console.warn('Global crosshair setup error:', e);
+  
+  ct.appendChild(p);
+  const opts={...baseOpts,width:p.clientWidth,height:p.clientHeight};
+  const ch=LightweightCharts.createChart(p,opts);
+  _getOrInitMargins(ch);
+  if(!isMain) _attachScaleMarginHandles(p, ch);
+  
+  charts.push({ch,p,id,label:lbl});
+  return ch;
 }
 
-// === TRADE MAP FOR TOOLTIPS ===
-// Map entry AND exit timestamps to trade info
-const globalTradeMap={};
-const tradeTimesList=[];  // Sorted list for proximity search
-if(T.i&&Array.isArray(T.i)){
-  T.i.forEach(t=>{
-    if(t&&t.time!==undefined){
-      globalTradeMap[t.time]=t;
-      tradeTimesList.push(t.time);
-    }
-  });
-  tradeTimesList.sort((a,b)=>a-b);
-}
+// === MAIN CHART ===
+const mc=mkPanel('mc','PRICE',true);
+// Neutral Candle Colors
+const cs=mc.addCandlestickSeries({
+    upColor:'#2E8B57', // SeaGreen (Muted)
+    downColor:'#CD5C5C', // IndianRed (Muted)
+    borderUpColor:'#2E8B57',
+    borderDownColor:'#CD5C5C',
+    wickUpColor:'#2E8B57',
+    wickDownColor:'#CD5C5C',
+    priceFormat:{type:'price',precision:2},
+});
 
-// Find nearest trade within tolerance (60 seconds for 1m candles)
-const findNearestTrade=(ts,tolerance=60)=>{
-  if(tradeTimesList.length===0)return null;
-  // Binary search for closest
-  let lo=0,hi=tradeTimesList.length-1;
-  while(lo<hi){
-    const mid=Math.floor((lo+hi)/2);
-    if(tradeTimesList[mid]<ts)lo=mid+1;
-    else hi=mid;
-  }
-  // Check lo and lo-1 for closest
-  let closest=tradeTimesList[lo];
-  if(lo>0&&Math.abs(tradeTimesList[lo-1]-ts)<Math.abs(closest-ts)){
-    closest=tradeTimesList[lo-1];
-  }
-  if(Math.abs(closest-ts)<=tolerance){
-    return globalTradeMap[closest];
-  }
-  return null;
-};
+const f=D.f;
+const cData=D.t.map((t,i)=>({time:t,open:dq(D.o[i],f),high:dq(D.h[i],f),low:dq(D.l[i],f),close:dq(D.c[i],f)}));
+cs.setData(cData);
+if(charts.length>0) charts[0].series = cs;
 
-// === TOOLTIP SYSTEM (Unified across all panels) ===
-try {
-  const tt=document.getElementById('tt');
-  const candleMap={};
-  if(D.t&&D.t.length>0){
-    const f=D.f||100;
-    for(let i=0;i<D.t.length;i++){
-      candleMap[D.t[i]]={time:D.t[i],open:D.o[i]/f,high:D.h[i]/f,low:D.l[i]/f,close:D.c[i]/f};
-    }
-  }
-  
-  // Format Unix timestamp to readable date (UTC to avoid timezone confusion)
-  const formatTime=(ts)=>{
-    try{
-      const d=new Date(ts*1000);
-      // Use UTC methods to prevent browser timezone conversion
-      const yr=d.getUTCFullYear();
-      const mo=String(d.getUTCMonth()+1).padStart(2,'0');
-      const dy=String(d.getUTCDate()).padStart(2,'0');
-      const hr=String(d.getUTCHours()).padStart(2,'0');
-      const mn=String(d.getUTCMinutes()).padStart(2,'0');
-      return mo+'/'+dy+'/'+yr+' '+hr+':'+mn+' UTC';
-    }catch(e){return '-';}
-  };
+// MARKERS & TOOLTIPS (Client-Side Generation)
+// Using Scatter LineSeries to place markers at exact prices
+const longEntrySeries = mc.addLineSeries({
+    color: '#2979FF', 
+    lineWidth: 0, 
+    pointMarkersVisible: true,
+    pointMarkersRadius: 6, 
+    crosshairMarkerVisible: false,
+    lineVisible: false,
+    lastValueVisible: false,
+    priceLineVisible: false
+});
 
-  // Basic HTML escaping (trade fields may contain arbitrary strings)
-  const escapeHtml=(s)=>{
-    const str=String(s);
-    return str.replace(/[&<>"']/g,(m)=>({
-      '&':'&amp;',
-      '<':'&lt;',
-      '>':'&gt;',
-      '"':'&quot;',
-      "'":'&#39;'
-    }[m]||m));
-  };
-  
-  // Handle crosshair move on ALL panels to update unified tooltip
-  const handleCrosshair=(param)=>{
-    try{
-      if(!param.time){
-        if(tt)tt.style.display='none';
-        return;
-      }
-      
-      // Update time display in header
-      const tvEl=document.getElementById('tv');
-      if(tvEl)tvEl.textContent=formatTime(param.time);
-      
-      // Check for trade at this time (exact match or proximity search)
-      let tr=globalTradeMap[param.time];
-      if(!tr){
-        // Try proximity search for nearby trades
-        tr=findNearestTrade(param.time,120);  // 2 minute tolerance
-      }
-      if(tr&&tr.pnl!==undefined&&param.point){
-        const isWin=tr.pnl>=0;
-        const pnlSign=isWin?'+':'';
-        const pnlCls=isWin?'pos':'neg';
-        const typeCls=tr.type==='LONG'?'long':'short';
-        const badgeCls=isWin?'win':'loss';
+const shortEntrySeries = mc.addLineSeries({
+    color: '#FF6D00',
+    lineWidth: 0,
+    pointMarkersVisible: true,
+    pointMarkersRadius: 6, 
+    crosshairMarkerVisible: false,
+    lineVisible: false,
+    lastValueVisible: false,
+    priceLineVisible: false
+});
 
-        const exitTypeRow=(tr.xs!==undefined&&tr.xs!==null&&String(tr.xs).length>0)
-          ? '<div class="tt-row"><span class="tt-label">ExitType</span><span class="tt-val">'+escapeHtml(tr.xs)+'</span></div>'
-          : '';
-        
-        tt.innerHTML='<div class="tt-header"><span class="tt-type '+typeCls+'">'+tr.type+'</span><span class="tt-badge '+badgeCls+'">'+(isWin?'WIN':'LOSS')+'</span></div><div class="tt-row"><span class="tt-label">Entry</span><span class="tt-val">'+(tr.ep?tr.ep.toFixed(2):'-')+'</span></div><div class="tt-row"><span class="tt-label">Exit</span><span class="tt-val">'+(tr.xp?tr.xp.toFixed(2):'-')+'</span></div>'+exitTypeRow+'<div class="tt-row"><span class="tt-label">Qty</span><span class="tt-val">'+(tr.qty?tr.qty.toFixed(4):'-')+'</span></div><div class="tt-row"><span class="tt-label">Comm</span><span class="tt-val">$'+(tr.comm?tr.comm.toFixed(2):'0')+'</span></div><div class="tt-pnl"><span class="tt-pnl-label">PnL Neto</span><span class="tt-pnl-val '+pnlCls+'">'+pnlSign+'$'+(tr.pnl?tr.pnl.toFixed(2):'0')+'</span></div>';
-        tt.style.display='block';
-        const maxX=window.innerWidth-260;
-        const maxY=window.innerHeight-200;
-        tt.style.left=Math.min(param.point.x+15,maxX)+'px';
-        tt.style.top=Math.min(param.point.y+15,maxY)+'px';
-      }else{
-        tt.style.display='none';
-        // Update OHLC values from candle data
-        const candle=candleMap[param.time];
-        if(candle){
-          const isUp=candle.close>=candle.open;
-          const cls=isUp?'up':'down';
-          ['ov','hv','lv','cv'].forEach((id,i)=>{
-            const el=document.getElementById(id);
-            if(el){
-              const vals=[candle.open,candle.high,candle.low,candle.close];
-              el.textContent=vals[i].toFixed(2);
-              el.className='ohlc-val '+cls;
+const exitSeries = mc.addLineSeries({
+    color: '#FFFFFF',
+    lineWidth: 0,
+    pointMarkersVisible: true,
+    pointMarkersRadius: 5, 
+    crosshairMarkerVisible: false,
+    lineVisible: false,
+    lastValueVisible: false,
+    priceLineVisible: false
+});
+
+const leData = [];
+const seData = [];
+const exData = [];
+const tooltipMap = new Map();
+
+if(T.list && Array.isArray(T.list)){
+    T.list.forEach(tr => {
+        // ENTRY
+        if(tr.entry_ts !== null) {
+            if(tr.type === 'LONG') {
+                leData.push({time: tr.entry_ts, value: tr.ep});
+            } else {
+                seData.push({time: tr.entry_ts, value: tr.ep});
             }
-          });
+            // Add to tooltip map
+            tooltipMap.set(tr.entry_ts, tr);
         }
-      }
-    }catch(e){console.warn('Tooltip error:',e);}
-  };
-  
-  // Subscribe to ALL charts for unified tooltip
-  charts.forEach(({ch})=>{
-    if(ch)ch.subscribeCrosshairMove(handleCrosshair);
-  });
-} catch(e) {
-  console.warn('Tooltip setup error:',e);
-}
-
-// === RESIZE OBSERVER ===
-try {
-  const ro=new ResizeObserver(()=>{
-    charts.forEach(({ch,p})=>{
-      if(ch&&p)ch.applyOptions({width:p.clientWidth,height:p.clientHeight});
+        
+        // EXIT
+        if(tr.exit_ts !== null) {
+            exData.push({time: tr.exit_ts, value: tr.xp});
+            
+            // Map exit time too (if different from entry). 
+            // Note: If multiple trades close at same candle, last one wins.
+            if(!tooltipMap.has(tr.exit_ts)) {
+                tooltipMap.set(tr.exit_ts, tr);
+            }
+        }
     });
-  });
-  charts.forEach(({p})=>{if(p)ro.observe(p);});
-} catch(e) {
-  console.warn('Resize observer error:',e);
+    
+    // Sort required by Lightweight Charts
+    leData.sort((a,b) => a.time - b.time);
+    seData.sort((a,b) => a.time - b.time);
+    exData.sort((a,b) => a.time - b.time);
+
+    longEntrySeries.setData(leData);
+    shortEntrySeries.setData(seData);
+    exitSeries.setData(exData);
 }
 
-// === AUTO-FIT & KEYBOARD SHORTCUTS ===
-try {
-  setTimeout(()=>{
-    // Vista inicial: mostrar desde el PRINCIPIO del dataset.
-    if(D.t && D.t.length>0){
-      const HOME_BARS=500;
-      const toIdx=Math.min(HOME_BARS, D.t.length-1);
-      const homeRange={from:D.t[0], to:D.t[toIdx]};
-      charts.forEach(({ch})=>{
-        if(ch){
-          const ts=ch.timeScale();
-          ts.setVisibleRange(homeRange);
-        }
-      });
-    }
-  },150);
-  
-  document.addEventListener('keydown',e=>{
-    if(e.key==='f'||e.key==='F')charts.forEach(({ch})=>{if(ch)ch.timeScale().fitContent();});
-    if(e.key==='r'||e.key==='R')charts.forEach(({ch})=>{if(ch)ch.timeScale().resetTimeScale();});
-    // Press 'h' for home (beginning)
-    if((e.key==='h'||e.key==='H') && D.t && D.t.length>0){
-      const HOME_BARS=500;
-      const toIdx=Math.min(HOME_BARS, D.t.length-1);
-      const homeRange={from:D.t[0], to:D.t[toIdx]};
-      charts.forEach(({ch})=>{if(ch)ch.timeScale().setVisibleRange(homeRange);});
-    }
-    // Press 'e' for end
-    if(e.key==='e'||e.key==='E')charts.forEach(({ch})=>{if(ch)ch.timeScale().scrollToRealTime();});
-  });
-} catch(e) {
-  console.warn('Shortcuts error:',e);
-}
-
-// === ZOOM CONTROLS ===
-try {
-  const zoomInBtn=document.getElementById('zoomIn');
-  const zoomOutBtn=document.getElementById('zoomOut');
-  
-  if(zoomInBtn){
-    zoomInBtn.addEventListener('click',()=>{
-      charts.forEach(({ch})=>{
-        if(ch){
-          const ts=ch.timeScale();
-          const spacing=(ts.options().barSpacing||8)+2;
-          ts.applyOptions({barSpacing:Math.min(spacing,50)});
-        }
-      });
+// OVERLAYS (MA, Bands)
+if(I.overlays && Array.isArray(I.overlays)){
+    I.overlays.forEach(ov=>{
+        try{
+            if(ov.v && ov.v.length>0){
+                const ls=mc.addLineSeries({
+                    color:ov.color||'#A3BE8C',
+                    lineWidth:1,
+                    crosshairMarkerVisible:false,
+                    priceLineVisible:false,
+                    lastValueVisible:false
+                });
+                ls.setData(ov.v.map((v,i)=>({time:ov.t[i],value:v!==null?dq(v,ov.f):null})).filter(x=>x.value!==null));
+            }
+        }catch(e){}
     });
-  }
-  if(zoomOutBtn){
-    zoomOutBtn.addEventListener('click',()=>{
-      charts.forEach(({ch})=>{
-        if(ch){
-          const ts=ch.timeScale();
-          const spacing=(ts.options().barSpacing||8)-2;
-          ts.applyOptions({barSpacing:Math.max(spacing,1)});
-        }
-      });
+}
+
+// === VOLUME (Separate Panel) ===
+if(D.vol && D.vol.length>0){
+    const vc=mkPanel('vc','VOL',false);
+    vc.priceScale('right').applyOptions({scaleMargins:{top:0.1,bottom:0}, borderVisible:false});
+    const vs=vc.addHistogramSeries({
+        color: '#333',
+        priceFormat:{type:'volume'},
+        priceLineVisible:false,
     });
-  }
-} catch(e) {
-  console.warn('Zoom controls error:',e);
+    vs.setData(D.t.map((t,i)=>({time:t,value:D.vol[i],color:D.c[i]>=D.o[i]?'rgba(46,139,87,0.3)':'rgba(205,92,92,0.3)'})));
+    const vi = charts.findIndex(x=>x.id==='vc');
+    if(vi>=0) charts[vi].series = vs;
 }
 
-} catch(globalError) {
-  console.error('Chart initialization failed:', globalError);
-  document.body.innerHTML = '<div style="color:#ef4444;padding:40px;font-family:system-ui;text-align:center;"><h2>Chart Error</h2><p>' + globalError.message + '</p><p>Open browser console for details.</p></div>';
+// === INDICATOR PANELS ===
+if(I.sub_panels){
+    I.sub_panels.forEach((p,i)=>{
+        const pc=mkPanel('sp'+i, p.name, false);
+        let s;
+        const data = p.data.v.map((v,idx)=>({time:p.data.t[idx],value:v!==null?dq(v,p.data.f):null})).filter(x=>x.value!==null);
+        
+        if(p.type==='histogram'){
+            s=pc.addHistogramSeries({color:p.color,priceLineVisible:false,base:0});
+        }else{
+            s=pc.addLineSeries({color:p.color,lineWidth:1,priceLineVisible:false,crosshairMarkerVisible:false});
+            
+            // Bounds lines (Overbought/Oversold) - Minimalist lines
+            if(p.bounds){
+                const b=p.bounds;
+                [b.hi,b.lo,b.mid].forEach(val=>{
+                    if(val!==undefined){
+                         const bl=pc.addLineSeries({
+                             color:'#333',lineWidth:1,lineStyle:2,
+                             priceLineVisible:false,lastValueVisible:false
+                         });
+                         bl.setData(p.data.t.map(t=>({time:t,value:val})));
+                    }
+                });
+            }
+            if(p.zero_line){
+                 const zl=pc.addLineSeries({color:'#222',lineWidth:1,lineStyle:2});
+                 zl.setData(p.data.t.map(t=>({time:t,value:0})));
+            }
+        }
+        s.setData(data);
+        const pi = charts.findIndex(x=>x.id==='sp'+i);
+        if(pi>=0) charts[pi].series = s;
+    });
 }
 
-})();
-</script>
-</body>
-</html>'''
+// === SYNC & RESIZE ===
+// TimeScale visible only on last chart
+if(charts.length>0) charts[charts.length-1].ch.timeScale().applyOptions({visible:true});
+
+// Chart Sync
+charts.forEach(c1=>{
+    if(!c1.ch)return;
+    c1.ch.timeScale().subscribeVisibleTimeRangeChange(r=>{
+        if(syncingCharts || !r) return;
+        syncingCharts=true;
+        charts.forEach(c2=>{
+            if(c2!==c1 && c2.ch) c2.ch.timeScale().setVisibleRange(r);
+        });
+        syncingCharts=false;
+    });
+});
+
+// Resize
+new ResizeObserver(entries=>{
+    charts.forEach(c=>{
+       if(c.ch && c.p) c.ch.applyOptions({width:c.p.clientWidth,height:c.p.clientHeight});
+    });
+}).observe(ct);
+
+// Initial Fit - START AT BEGINNING
+setTimeout(()=>{
+    charts.forEach(c=>{
+        if(c.ch) {
+            // Scroll to the start (left)
+            // Using logical range to show first ~100 bars
+            c.ch.timeScale().setVisibleLogicalRange({ from: 0, to: 150 });
+        }
+    });
+}, 100);
+
+// Global Crosshair
+const gl=document.getElementById('globalCrosshair');
+const gll=document.getElementById('globalCrosshairLabel');
+
+function updateCrosshair(param, sourceCh){
+   if(!param.time || !param.point){
+       gl.style.display='none'; gll.style.display='none';
+       return;
+   }
+   
+   gl.style.display='block';
+   gl.style.left=param.point.x+'px';
+   
+   // Label
+   gll.style.display='block';
+   gll.style.left=param.point.x+'px';
+   const date = new Date(param.time*1000);
+   gll.textContent = date.toISOString().slice(0,16).replace('T',' ');
+   
+   // Sync others
+   charts.forEach(c=>{
+       if(c.ch!==sourceCh && c.ch && c.series){
+           c.ch.setCrosshairPosition(0, param.time, c.series);
+       }
+   });
+   
+   // Tooltip Update via Map Lookup (Exact Match)
+   const trade = tooltipMap.get(param.time);
+   const tt=document.getElementById('tt');
+   
+   if(trade){
+       tt.style.display='block';
+       tt.style.left=(param.point.x+20)+'px';
+       tt.style.top=(param.point.y+20)+'px';
+       
+       // Keep tooltip inside window
+       const rect = tt.getBoundingClientRect();
+       if(rect.right > window.innerWidth) tt.style.left = (param.point.x - rect.width - 20) + 'px';
+       
+       const cls = trade.pnl>=0?'win':'loss';
+       const pnlSign = trade.pnl>=0?'+':'';
+       
+       tt.innerHTML=`
+         <div style="font-weight:bold;margin-bottom:8px;display:flex;justify-content:space-between;align-items:center">
+            <span style="color:${trade.type==='LONG'?'#2962FF':'#FF6D00'}">${trade.type}</span>
+            <span class="tt-badge ${cls}">${trade.pnl>=0?'WIN':'LOSS'}</span>
+         </div>
+         <div class="tt-row"><span class="tt-label">Entry</span><span class="tt-val">$${trade.ep.toFixed(2)}</span></div>
+         <div class="tt-row"><span class="tt-label">Exit</span><span class="tt-val">$${trade.xp.toFixed(2)}</span></div>
+         <div class="tt-row"><span class="tt-label">Qty</span><span class="tt-val">${trade.qty}</span></div>
+         <div class="tt-row"><span class="tt-label">Dur</span><span class="tt-val">${trade.dur}</span></div>
+         <div class="tt-row"><span class="tt-label">Fees</span><span class="tt-val" style="color:#D29922">$${trade.fees.toFixed(2)}</span></div>
+         <div class="tt-row" style="margin-top:8px;border-top:1px solid #333;padding-top:8px">
+            <span class="tt-label">Net PnL</span>
+            <span class="tt-val ${trade.pnl>=0?'pos':'neg'}">${pnlSign}$${trade.pnl.toFixed(2)}</span>
+         </div>
+       `;
+   }else{
+       tt.style.display='none';
+       // Update OHLC header
+       const candle = cData.find(c=>c.time===param.time);
+       if(candle){
+           document.getElementById('tv').textContent=gll.textContent;
+           document.getElementById('ov').textContent=candle.open.toFixed(2);
+           document.getElementById('hv').textContent=candle.high.toFixed(2);
+           document.getElementById('lv').textContent=candle.low.toFixed(2);
+           const cEl = document.getElementById('cv');
+           cEl.textContent=candle.close.toFixed(2);
+           cEl.className = candle.close >= candle.open ? 'ohlc-val up' : 'ohlc-val down';
+       }
+   }
+}
+
+charts.forEach(c=>{
+    if(c.ch) c.ch.subscribeCrosshairMove(p=>updateCrosshair(p, c.ch));
+});
+
+ct.addEventListener('mouseleave', ()=>{
+    gl.style.display='none';
+    gll.style.display='none';
+    charts.forEach(c=>{if(c.ch)c.ch.clearCrosshairPosition();});
+});
+
+// Zoom Controls
+document.getElementById('zoomIn').onclick = () => {
+    charts.forEach(c=>c.ch.timeScale().applyOptions({barSpacing: c.ch.timeScale().options().barSpacing * 1.2}));
+};
+document.getElementById('zoomOut').onclick = () => {
+    charts.forEach(c=>c.ch.timeScale().applyOptions({barSpacing: c.ch.timeScale().options().barSpacing * 0.8}));
+};
+
+'''
 
 
-# Legacy function kept for backwards compatibility (uses streaming internally now)
+
 def _generate_hft_html(
     candle_data: dict,
     indicators: dict,
@@ -2135,7 +1636,9 @@ def plot_trades(
     saldo_inicial: float = 300.0,
     max_archivos: int = 5,
     activo: Optional[str] = None,
+    plot_meses_duracion: int = 2,
 ):
+
     """
     Generate ultra-fast trading chart HTML with dynamic indicator detection.
     
@@ -2220,19 +1723,22 @@ def plot_trades(
         # Solo recortar si el TF es pequeño (< 12h = 720 min) y hay demasiadas velas
         # Para TF grandes (12h, 1d) NUNCA recortar — el usuario quiere ver todo
         if minutes_per_candle < 720:
-            # Velas para 2 meses (60 días)
-            candles_2_months = int(60 * 24 * 60 / minutes_per_candle)
+            # Velas para N meses (según plot_meses_duracion)
+            target_months = max(1, plot_meses_duracion)
+            candles_target = int(target_months * 30 * 24 * 60 / minutes_per_candle)
 
-            # Si tenemos más velas de las que caben en 2 meses, recortar
-            if len(timestamps) > candles_2_months * 1.5:
-                # Tomar los últimos 2 meses (donde probablemente hay más trades)
-                timestamps = timestamps[-candles_2_months:]
-                opens = opens[-candles_2_months:]
-                highs = highs[-candles_2_months:]
-                lows = lows[-candles_2_months:]
-                closes = closes[-candles_2_months:]
+            # Si tenemos más velas de las que caben en target_months * 1.5, recortar
+            # (Esto asegura que si el usuario pide 3 meses, se le den 3 meses, pero si
+            #  pide 2 y el rango seleccionado es de un año, se recorte a 2)
+            if len(timestamps) > candles_target * 1.5:
+                # Tomar los últimos N meses (donde probablemente hay más trades)
+                timestamps = timestamps[-candles_target:]
+                opens = opens[-candles_target:]
+                highs = highs[-candles_target:]
+                lows = lows[-candles_target:]
+                closes = closes[-candles_target:]
                 if volumes is not None:
-                    volumes = volumes[-candles_2_months:]
+                    volumes = volumes[-candles_target:]
 
     # ================== BANKRUPTCY CUTOFF ==================
     saldo_minimo_operativo = 5.0
@@ -2300,559 +1806,295 @@ def plot_trades(
     warmup_threshold_ts = int(ts_q[0]) if len(ts_q) > 0 else 0
 
     candle_data = {
-        "t": ts_q.tolist(),
-        "o": o_q.tolist(),
-        "h": h_q.tolist(),
-        "l": l_q.tolist(),
-        "c": c_q.tolist(),
-        "f": int(price_factor)
+      "t": ts_q.tolist(),
+      "o": o_q.tolist(),
+      "h": h_q.tolist(),
+      "l": l_q.tolist(),
+      "c": c_q.tolist()
     }
+    
     if vol_q is not None:
         candle_data["vol"] = vol_q.tolist()
+        
+    candle_data["f"] = float(price_factor)
 
-    # ================== ZERO-LAG INDICATOR ALIGNMENT (v6.0) ==================
-    # Architecture: Single Authoritative Timestamp Array (SATA)
-    # ts_q is the ONLY source of truth for all timestamp alignment.
-    # All indicator values are mapped to ts_q indices using StrictAlignmentMapper.
+    # ================== PREPARE TRADES ==================
+    # ================== PREPARE TRADES (Clean Data for JS) ==================
+    trades_data = {"list": []}
+    
+    if df_trades is not None and len(df_trades) > 0:
+        if not isinstance(df_trades, pd.DataFrame):
+             try:
+                 df_trades = df_trades.to_pandas()
+             except:
+                 pass
 
-    # Step 1: Convert source DataFrame to pandas with UTC index
-    if HAS_POLARS and isinstance(df, pl.DataFrame):
-        df_pd_full = df.to_pandas()
-    else:
-        df_pd_full = df if isinstance(df, pd.DataFrame) else pd.DataFrame(df)
+        # Normalize column names if needed
+        cols = df_trades.columns
+        entry_col = "timestamp_entry" if "timestamp_entry" in cols else "entry_time"
+        exit_col = "timestamp_exit" if "timestamp_exit" in cols else "exit_time"
+        
+        if entry_col in cols:
+            # Snap timestamps to candles
+            for _, tr in df_trades.iterrows():
+                try:
+                    t_entry = tr.get(entry_col)
+                    t_exit = tr.get(exit_col)
+                    
+                    if pd.isna(t_entry) or pd.isna(t_exit):
+                        continue
+                        
+                    ts_entry_raw = int(t_entry.timestamp()) if hasattr(t_entry, 'timestamp') else int(t_entry)
+                    ts_exit_raw = int(t_exit.timestamp()) if hasattr(t_exit, 'timestamp') else int(t_exit)
+                    
+                    # Snap to nearest candle
+                    idx_entry = np.searchsorted(ts_q, ts_entry_raw, side='right') - 1
+                    idx_exit = np.searchsorted(ts_q, ts_exit_raw, side='right') - 1
+                    
+                    # Store both raw and snapped (if valid)
+                    # Relax validation: allow marking even if slightly out of bounds if visible
+                    entry_valid = 0 <= idx_entry < len(ts_q)
+                    exit_valid = 0 <= idx_exit < len(ts_q)
+                    
+                    # Use snapped time if valid, else ignore for marker purposes
+                    ts_entry = int(ts_q[idx_entry]) if entry_valid else None
+                    ts_exit = int(ts_q[idx_exit]) if exit_valid else None
+                    
+                    if ts_entry is None and ts_exit is None:
+                        continue 
+                        
+                    # Prepare Trade Object
+                    # Handle aliases for other columns
+                    ep = tr.get("price_entry") if "price_entry" in tr else tr.get("entry_price", 0)
+                    xp = tr.get("price_exit") if "price_exit" in tr else tr.get("exit_price", 0)
+                    fees = tr.get("commission") if "commission" in tr else tr.get("comision", 0)
+                    
+                    side = str(tr.get("type", "LONG")).upper()
+                    pnl = float(tr.get("pnl_neto", 0))
+                    
+                    # Duration
+                    dur_s = ts_exit_raw - ts_entry_raw # Use raw for duration accuracy
+                    if dur_s < 60: dur_str = f"{dur_s}s"
+                    elif dur_s < 3600: dur_str = f"{int(dur_s/60)}m"
+                    else: dur_str = f"{int(dur_s/3600)}h {int((dur_s%3600)/60)}m"
+                    
+                    trade_obj = {
+                        "type": side,
+                        "entry_ts": ts_entry, # Nullable
+                        "exit_ts": ts_exit,   # Nullable
+                        "ep": float(ep),
+                        "xp": float(xp),
+                        "qty": float(tr.get("qty", 0)),
+                        "pnl": pnl,
+                        "fees": float(fees),
+                        "dur": dur_str,
+                        "win": pnl >= 0
+                    }
+                    trades_data["list"].append(trade_obj)
+                    
+                except Exception:
+                    continue
 
-    if not isinstance(df_pd_full.index, pd.DatetimeIndex):
-        if "timestamp" in df_pd_full.columns:
-            df_pd_full = df_pd_full.set_index("timestamp")
+    # ================== INDICATORS ==================
+    # Detect
+    price_range = (float(np.min(l_q))/price_factor, float(np.max(h_q))/price_factor)
+    indicators_meta = _detect_indicators(df, price_range, params)
+    
+    indicators_data = {"overlays": [], "sub_panels": []}
+    
+    mapper = StrictAlignmentMapper(ts_q)
+    
+    # Simpler approach: Use the passed DF and timestamps_all
+    # We need to make sure we extract values corresponding to timestamps_all
+    # If df is polars:
+    is_pl = HAS_POLARS and isinstance(df, pl.DataFrame)
+    
+    def get_col_values(c):
+        if is_pl:
+            return df[c].to_numpy().astype(np.float64)
+        else:
+            return df[c].values.astype(np.float64)
 
-    # Ensure index is UTC-aware for consistent timestamp conversion
-    if df_pd_full.index.tz is None:
-        df_pd_full.index = df_pd_full.index.tz_localize("UTC")
-    elif str(df_pd_full.index.tz) != 'UTC':
-        df_pd_full.index = df_pd_full.index.tz_convert("UTC")
+    # Overlays
+    for ov in indicators_meta["overlays"]:
+        col = ov["col"]
+        if col in df.columns:
+            vals = get_col_values(col)
+            # Align using the timestamps_all (which matches df rows)
+            q_vals, factor, _ = mapper.align_quantized(timestamps_all, vals, precision=ov["precision"])
 
-    # Step 2: Extract source timestamps as Unix seconds
-    # Use the centralized _normalize_timestamps_to_unix for consistency
-    source_ts_raw = df_pd_full.index.tz_localize(None).values  # Remove TZ for datetime64 conversion
-    source_timestamps = _normalize_timestamps_to_unix(source_ts_raw)
-
-    # Step 3: Initialize the StrictAlignmentMapper with authoritative timestamps
-    # This is the KEY component for zero-lag alignment
-    aligner = StrictAlignmentMapper(ts_q)
-
-    # Step 4: Create aligned source mask (which source rows exist in ts_q)
-    source_mask = np.array([int(ts) in aligner.ts_to_idx for ts in source_timestamps])
-    df_aligned = df_pd_full[source_mask].copy()
-    aligned_source_ts = source_timestamps[source_mask]
-
-    # Verify alignment
-    alignment_match = len(df_aligned) == len(ts_q)
-    # print(f"[PLOT v6.0] Candles: {len(ts_q)}, Aligned Source: {len(df_aligned)}, Perfect Match: {alignment_match}")
-
-    if not alignment_match:
-        # Detailed debug for misalignment
-        missing_in_source = len(ts_q) - len(df_aligned)
-        print(f"[PLOT WARN] Missing {missing_in_source} timestamps in source DataFrame. Using mapping fallback.")
-
-    # Detect indicators (strategy-driven via __indicators_used/__indicator_specs/__indicator_bounds)
-    price_range = (float(closes.min()), float(closes.max()))
-    detected = _detect_indicators(df_aligned, price_range, params)
-
-    indicators = {"overlays": [], "sub_panels": []}
-
-    # ================== PROCESS OVERLAYS (ZERO-LAG, PRE-SLICED) ==================
-    for overlay_cfg in detected["overlays"]:
-        col = overlay_cfg["col"]
-        if col not in df_aligned.columns:
-            continue
-
-        # Extract values and align using the mapper
-        vals = df_aligned[col].values.astype(np.float64)
-        aligned_vals = aligner.align(aligned_source_ts, vals)
-
-        # Only add if we have valid data
-        valid_count = aligner.count_valid(aligned_vals)
-        if valid_count > 0:
-            precision = int(overlay_cfg.get("precision", 2))
-            quantized, factor = aligner.quantize(aligned_vals, precision=precision)
-
-            indicators["overlays"].append({
-                "t": ts_q.tolist(),  # AUTHORITATIVE timestamps
-                "v": quantized,
-                "f": int(factor),
-                "color": overlay_cfg["color"]
+            
+            indicators_data["overlays"].append({
+                "t": ts_q.tolist(),
+                "v": q_vals,
+                "f": factor,
+                "color": ov["color"],
+                "name": col,
+                "type": ov["type"]
             })
 
-    # ================== PROCESS SUB-PANELS / OSCILLATORS (ZERO-LAG, PRE-SLICED) ==================
-    for panel_cfg in detected["sub_panels"]:
-        col = panel_cfg["col"]
-        if col not in df_aligned.columns:
-            continue
-
-        # Extract values and align using the mapper
-        vals = df_aligned[col].values.astype(np.float64)
-        aligned_vals = aligner.align(aligned_source_ts, vals)
-
-        # Only add if we have valid data
-        valid_count = aligner.count_valid(aligned_vals)
-        if valid_count > 0:
-            # Use dynamic name from detection (includes period if found in params)
-            panel_name = panel_cfg.get("name", col.upper())
-
-            precision = int(panel_cfg.get("precision", 4))
-            quantized, factor = aligner.quantize(aligned_vals, precision=precision)
-
-            indicators["sub_panels"].append({
-                "name": panel_name,
-                "type": panel_cfg["type"],
-                "color": panel_cfg["color"],
-                "bounds": panel_cfg.get("bounds"),
-                "zero_line": bool(panel_cfg.get("bounds", {}) and ("mid" in (panel_cfg.get("bounds") or {}))),
+    # Sub-panels
+    for panel in indicators_meta["sub_panels"]:
+        col = panel["col"]
+        if col in df.columns:
+            vals = get_col_values(col)
+            q_vals, factor, _ = mapper.align_quantized(timestamps_all, vals, precision=panel["precision"])
+            
+            indicators_data["sub_panels"].append({
+                "name": panel["name"],
+                "color": panel["color"],
+                "type": panel["type"],
+                "bounds": panel["bounds"],
+                "zero_line": False, # TODO: detect
                 "data": {
-                    "t": ts_q.tolist(),  # AUTHORITATIVE timestamps - ZERO-LAG GUARANTEED
-                    "v": quantized,
-                    "f": int(factor)
+                    "t": ts_q.tolist(),
+                    "v": q_vals,
+                    "f": factor
                 }
             })
 
-    # ================== TRADE MARKERS (Temporal Snapping + Warmup Filter) ==================
-    # Use np.searchsorted to snap trade timestamps to exact candle timestamps
-    # This prevents marker disappearance during scroll/zoom
-    # WARMUP FILTER: Trades within the warmup period are not displayed
-    # m: candle markers (entries; time-only)
-    # ee: entry points at exact entry_price (time+value)
-    # em: entry markers for the entry-price series
-    # i: trade info for tooltips
-    # xe: exit points at exact exit_price (time+value)
-    # xm: exit markers for the exit series (white dots)
-    trades = {"m": [], "ee": [], "em": [], "i": [], "xe": [], "xm": []}
-    max_valid_ts = int(ts_q[-1]) if len(ts_q) > 0 else None
-
-    # Build efficient lookup structure for candle timestamps
-    candle_ts_set = set(ts_q.tolist()) if len(ts_q) > 0 else set()
-
-    def _snap_to_candle(trade_ts: int, candle_timestamps: np.ndarray) -> int:
-        """
-        Vectorized temporal snapping using binary search.
-        Snaps trade timestamp to the nearest previous/equal candle timestamp.
-        
-        Uses np.searchsorted with side='right' to find insertion point,
-        then subtracts 1 to get the candle at or before the trade time.
-        """
-        if len(candle_timestamps) == 0:
-            return trade_ts
-
-        # Find insertion point (index where trade_ts would be inserted to maintain order)
-        idx = np.searchsorted(candle_timestamps, trade_ts, side='right')
-
-        # Clamp to valid range and get the candle at or before trade time
-        idx = max(0, min(idx - 1, len(candle_timestamps) - 1))
-
-        return int(candle_timestamps[idx])
-
-    if df_trades is not None:
-        if HAS_POLARS and isinstance(df_trades, pl.DataFrame):
-            trades_df = df_trades.to_pandas()
-        else:
-            trades_df = df_trades.copy() if isinstance(df_trades, pd.DataFrame) else pd.DataFrame(df_trades)
-
-        if not trades_df.empty:
-            entry_times_dt = pd.to_datetime(trades_df["entry_time"], utc=True, errors="coerce")
-            exit_times_dt = pd.to_datetime(trades_df["exit_time"], utc=True, errors="coerce")
-
-            valid_mask = entry_times_dt.notna()
-            trades_df = trades_df[valid_mask].copy()
-            entry_times_dt = entry_times_dt[valid_mask]
-            exit_times_dt = exit_times_dt[valid_mask]
-
-            if len(trades_df) > 0 and len(ts_q) > 0:
-                # Robust epoch seconds (UTC) for tz-aware timestamps
-                # NOTE: Polars returns datetime64[us] (microseconds), Pandas may return [ns]
-                # Use .apply(lambda x: x.timestamp()) for robust conversion
-                entry_timestamps = entry_times_dt.apply(lambda x: int(x.timestamp()) if pd.notna(x) else 0)
-                exit_timestamps = exit_times_dt.apply(lambda x: int(x.timestamp()) if pd.notna(x) else 0)
-
-                start_ts = int(start_pd.timestamp())
-                end_ts = max_valid_ts if max_valid_ts else int(end_pd.timestamp())
-                mask = (entry_timestamps >= start_ts) & (entry_timestamps <= end_ts)
-
-                trades_df = trades_df[mask].copy()
-                entry_timestamps = entry_timestamps[mask]
-                exit_timestamps = exit_timestamps[mask]
-
-                # Vectorized snapping: snap to the NEAREST candle timestamp.
-                # This avoids 1-bar lag when timestamps have minor rounding offsets.
-                def _snap_nearest(candle_ts: np.ndarray, trade_ts: np.ndarray) -> np.ndarray:
-                  if len(candle_ts) == 0 or len(trade_ts) == 0:
-                    return trade_ts
-                  idx = np.searchsorted(candle_ts, trade_ts, side='left')
-                  idx = np.clip(idx, 0, len(candle_ts) - 1)
-                  prev_idx = np.clip(idx - 1, 0, len(candle_ts) - 1)
-                  next_ts = candle_ts[idx]
-                  prev_ts = candle_ts[prev_idx]
-                  choose_prev = (np.abs(trade_ts - prev_ts) <= np.abs(next_ts - trade_ts))
-                  return np.where(choose_prev, prev_ts, next_ts)
-
-                snapped_entry_ts = _snap_nearest(ts_q, entry_timestamps)
-                snapped_exit_ts = _snap_nearest(ts_q, exit_timestamps)
-
-                # ============================================================
-                # VECTORIZED TRADE PROCESSING (v7.0 - NO iterrows)
-                # Extract all columns as numpy arrays for 100x faster processing
-                # ============================================================
-                n_trades = len(trades_df)
-
-                # Extract columns to numpy arrays (zero-copy when possible)
-                types_arr = trades_df["type"].values if "type" in trades_df.columns else np.array([""] * n_trades)
-                entry_price_arr = trades_df["entry_price"].values.astype(np.float64) if "entry_price" in trades_df.columns else np.zeros(n_trades)
-                exit_price_arr = trades_df["exit_price"].values if "exit_price" in trades_df.columns else np.array([None] * n_trades)
-                pnl_arr = trades_df["pnl_neto"].values.astype(np.float64) if "pnl_neto" in trades_df.columns else np.zeros(n_trades)
-
-                # Handle optional columns with fallbacks
-                if "comision_total" in trades_df.columns:
-                    comm_arr = trades_df["comision_total"].values
-                elif "comision" in trades_df.columns:
-                    comm_arr = trades_df["comision"].values
-                else:
-                    comm_arr = np.zeros(n_trades)
-
-                if "qty" in trades_df.columns:
-                    qty_arr = trades_df["qty"].values
-                elif "cantidad" in trades_df.columns:
-                    qty_arr = trades_df["cantidad"].values
-                elif "size" in trades_df.columns:
-                    qty_arr = trades_df["size"].values
-                else:
-                    qty_arr = np.zeros(n_trades)
-
-                tipo_salida_arr = trades_df["tipo_salida"].values if "tipo_salida" in trades_df.columns else np.array([None] * n_trades)
-                exit_ts_valid = exit_timestamps.values if hasattr(exit_timestamps, 'values') else np.array(exit_timestamps)
-
-                # Vectorized masks
-                warmup_mask = snapped_entry_ts >= warmup_threshold_ts
-                candle_mask = np.isin(snapped_entry_ts, ts_q)
-                valid_trade_mask = warmup_mask & candle_mask
-
-                # Process only valid trades
-                valid_indices = np.where(valid_trade_mask)[0]
-
-                for i in valid_indices:
-                    et = int(snapped_entry_ts[i])
-                    trade_type = str(types_arr[i]).upper() if types_arr[i] else ""
-                    ep = float(entry_price_arr[i])
-                    xp_raw = exit_price_arr[i]
-                    xp = float(xp_raw) if pd.notna(xp_raw) else None
-                    pnl = float(pnl_arr[i])
-                    xt = int(snapped_exit_ts[i]) if pd.notna(exit_ts_valid[i]) else None
-
-                    comm_raw = comm_arr[i]
-                    comm = float(comm_raw) if pd.notna(comm_raw) else 0.0
-                    qty_raw = qty_arr[i]
-                    qty = float(qty_raw) if pd.notna(qty_raw) else 0.0
-                    tipo_salida = tipo_salida_arr[i]
-
-                    trade_info = {
-                        "type": trade_type,
-                        "ep": round(ep, 2),
-                        "xp": round(xp, 2) if xp else None,
-                        "pnl": round(pnl, 2),
-                        "comm": round(comm, 2),
-                        "qty": round(qty, 6)
-                    }
-
-                    if tipo_salida is not None and pd.notna(tipo_salida):
-                        trade_info["xs"] = str(tipo_salida)
-
-                    # DOT-STYLE CENTERED MARKERS (circles, inBar for precision)
-                    # Deduplicate: only one entry marker per timestamp
-                    entry_color = "#3b82f6" if trade_type == "LONG" else "#a855f7"
-                    if not any(x["time"] == et for x in trades["m"]):
-                        trades["m"].append({
-                            "time": et,
-                            "position": "inBar",
-                            "color": entry_color,
-                            "shape": "circle",
-                            "text": "",
-                            "size": 2
-                        })
-
-                    # Entry points at real price (deduplicated)
-                    if not any(x["time"] == et for x in trades["ee"]):
-                        trades["ee"].append({"time": et, "value": ep})
-                        trades["em"].append({
-                            "time": et,
-                            "position": "inBar",
-                            "color": entry_color,
-                            "shape": "circle",
-                            "text": "",
-                            "size": 2,
-                        })
-
-                    trades["i"].append({"time": et, **trade_info})
-
-                    # Exit points at real price (deduplicated - only one marker per exit timestamp)
-                    if xt is not None and xp is not None and xt in candle_ts_set:
-                        # Check if we already have an exit at this timestamp
-                        if not any(x["time"] == xt for x in trades["xm"]):
-                            trades["xe"].append({"time": xt, "value": float(xp)})
-                            trades["xm"].append({
-                                "time": xt,
-                                "position": "aboveBar",
-                                "color": "#ffffff",
-                                "shape": "circle",
-                                "text": "",
-                                "size": 2,
-                            })
-                            trades["i"].append({"time": xt, **trade_info})
-
-                trades["m"].sort(key=lambda x: x["time"])
-                trades["ee"].sort(key=lambda x: x["time"])
-                trades["em"].sort(key=lambda x: x["time"])
-                trades["i"].sort(key=lambda x: x["time"])
-                trades["xe"].sort(key=lambda x: x["time"])
-                trades["xm"].sort(key=lambda x: x["time"])
-
-    # ================== CONFIG ==================
-    total_trades = 0
-    winrate = 0.0
-    pnl_neto = 0.0
-
-    if metrics:
-        total_trades = int(metrics.get("total_trades", metrics.get("num_trades", 0)))
-        winrate = float(metrics.get("win_rate", metrics.get("winrate", 0))) * 100 if metrics.get("win_rate", metrics.get("winrate", 0)) <= 1 else float(metrics.get("win_rate", metrics.get("winrate", 0)))
-        pnl_neto = float(metrics.get("pnl_neto", metrics.get("net_pnl", 0)))
-    elif df_trades is not None:
-        if HAS_POLARS and isinstance(df_trades, pl.DataFrame):
-            total_trades = len(df_trades)
-            pnl_col = "pnl_neto" if "pnl_neto" in df_trades.columns else "pnl"
-            if pnl_col in df_trades.columns:
-                pnl_neto = float(df_trades[pnl_col].sum())
-                wins = (df_trades[pnl_col] > 0).sum()
-                winrate = (wins / total_trades * 100) if total_trades > 0 else 0
-        else:
-            trades_df_for_stats = df_trades if isinstance(df_trades, pd.DataFrame) else pd.DataFrame(df_trades)
-            total_trades = len(trades_df_for_stats)
-            pnl_col = "pnl_neto" if "pnl_neto" in trades_df_for_stats.columns else "pnl"
-            if pnl_col in trades_df_for_stats.columns:
-                pnl_neto = float(trades_df_for_stats[pnl_col].sum())
-                wins = (trades_df_for_stats[pnl_col] > 0).sum()
-                winrate = (wins / total_trades * 100) if total_trades > 0 else 0
-
-    config = {
-        "activo": str(activo).upper() if activo else "",
-        "combo": _generate_dynamic_combo(params, combo) if params else combo,
-        "score": score,
-        "trial": trial_number,
-        "total_trades": total_trades,
-        "winrate": winrate,
-        "pnl_neto": pnl_neto
-    }
-
-    # ================== SAVE FILE (STREAMING - v7.0) ==================
-    os.makedirs(plot_base, exist_ok=True)
-
-    # Sanitize combo name for filename (remove special chars, limit length)
-    combo_safe = re.sub(r"[^a-zA-Z0-9_-]", "_", combo or "STRATEGY")[:30]
-    filename = f"TRIAL-{trial_number}_SCORE-{score:.2f}_{combo_safe}.html"
+    # ================== WRITE HTML ==================
+    import os
+    if not os.path.exists(plot_base):
+        try:
+            os.makedirs(plot_base)
+        except:
+            pass
+            
+    # Clean filename
+    clean_combo = "".join(c for c in str(combo) if c.isalnum() or c in ('_','-'))
+    filename = f"PLOT_TRIAL{trial_number}_{clean_combo}_{int(score)}.html"
     filepath = os.path.join(plot_base, filename)
+    
+    # Try using metric get helper or safe get
+    def _g(k): 
+        return metrics.get(k, 0) if metrics else 0
 
-    # Direct streaming write - zero RAM overhead for large charts
-    _write_html_streaming(filepath, candle_data, indicators, trades, config)
-
-    # ================== CLEANUP ==================
-    if max_archivos > 0:
-        _cleanup_old_plots(plot_base, max_archivos)
-
-
-def _cleanup_old_plots(plot_base: str, max_archivos: int):
-  """Remove old plot files, keeping only the best scores."""
-  try:
-    all_files = [
-      f
-      for f in os.listdir(plot_base)
-      if f.endswith(".html") and f.startswith("TRIAL-")
-    ]
-
-    files_with_scores: list[tuple[str, float]] = []
-
-    for fname in all_files:
-      # Match format: TRIAL-{n}_SCORE-{score}_{combo}.html
-      match = re.search(r"TRIAL-\d+_SCORE-(-?\d+(?:\.\d+)?)_.*\.html$", fname)
-      if not match:
-        # Archivos legacy (u otro formato) deben eliminarse primero
-        # para garantizar el límite max_archivos.
-        files_with_scores.append((fname, float("-inf")))
-        continue
-      try:
-        files_with_scores.append((fname, float(match.group(1))))
-      except ValueError:
-        files_with_scores.append((fname, float("-inf")))
-
-    files_with_scores.sort(key=lambda x: x[1], reverse=True)
-
-    if len(files_with_scores) > max_archivos:
-      for fname, _ in files_with_scores[max_archivos:]:
-        old_path = os.path.join(plot_base, fname)
-        if os.path.exists(old_path):
-          os.remove(old_path)
-  except Exception:
-    # Best-effort cleanup only
-    pass
+    _write_html_streaming(
+        filepath,
+        candle_data,
+        indicators_data,
+        trades_data,
+        config={
+            "activo": str(activo or "ASSET"),
+            "combo": str(combo),
+            "trial": str(trial_number),
+            "total_trades": len(df_trades) if df_trades is not None else 0,
+            "winrate": _g("winrate"),
+            "pnl_neto": _g("pnl_neto"),
+            "score": score
+        }
+    )
+    
+    return filepath
 
 
 # =============================================================================
-# PLOT REPORTER - Reporter para integración con OptimizationRunner
+# PLOT REPORTER
 # =============================================================================
-import logging
-from copy import deepcopy
-from dataclasses import dataclass, field
-from typing import Protocol, Any
 
-logger = logging.getLogger(__name__)
-
-
-class ReporterProtocol(Protocol):
-    """Protocolo base para reporters."""
-    def needs_dataframe(self, score: float) -> bool: ...
-    def on_trial_end(self, artifacts: Any) -> None: ...
-    def on_strategy_end(self, strategy_name: str, study: Any) -> None: ...
-
-
-@dataclass
 class PlotReporter:
     """
-    Lightweight Charts (TradingView) HTML exporter - OPTIMIZADO.
-    
-    Genera gráficos HTML interactivos para los top N trials.
-    Los gráficos incluyen:
-    - Velas OHLC
-    - Indicadores calculados
-    - Marcadores de entrada/salida
-    - Curva de equity
+    Reporter that generates interactive HTML charts for top trials.
+    Integrated with the Runner system.
     """
-
-    plot_base: str = "resultados/graficos"
-    fecha_inicio_plot: str = "2025-01-01"
-    fecha_fin_plot: str = "2025-01-20"
-    plot_meses_duracion: int = 2
-    max_archivos: int = 5
-    saldo_inicial: float = 300.0
-    activo: Optional[str] = None
-    
-    _candidates: List[Dict[str, Any]] = field(default_factory=list, init=False, repr=False)
-    _min_candidate_score: float = field(default=float("-inf"), init=False, repr=False)
+    def __init__(
+        self,
+        plot_base: str,
+        fecha_inicio_plot: str,
+        fecha_fin_plot: str,
+        plot_meses_duracion: int = 2,
+        max_archivos: int = 5,
+        saldo_inicial: float = 1000.0,
+        activo: Optional[str] = None,
+    ):
+        self.plot_base = plot_base
+        self.fecha_inicio_plot = fecha_inicio_plot
+        self.fecha_fin_plot = fecha_fin_plot
+        self.plot_meses_duracion = plot_meses_duracion
+        self.max_archivos = max_archivos
+        self.saldo_inicial = saldo_inicial
+        self.activo = activo
+        
+        # Track generated files to keep only top N
+        # List of dicts: {score, trial, filepath}
+        self.candidates = []
+        self.min_score = float("-inf")
 
     def needs_dataframe(self, score: float) -> bool:
-        if score is None:
-            return False
-        if len(self._candidates) < self.max_archivos:
+        """
+        Determines if we should generate the artifacts (dataframe) for this trial.
+        Returns True if:
+        1. We haven't filled up the max_archivos buffer yet.
+        2. OR the score is better than the worst score in our buffer.
+        """
+        if len(self.candidates) < self.max_archivos:
             return True
-        return score > self._min_candidate_score
-
-    def _update_min_score(self):
-        if self._candidates:
-            self._min_candidate_score = min(c["score"] for c in self._candidates)
-        else:
-            self._min_candidate_score = float("-inf")
+        return score > self.min_score
 
     def on_trial_end(self, artifacts) -> None:
-        if artifacts.trial_number == 0 and os.path.exists(self.plot_base):
-            try:
-                for f in os.listdir(self.plot_base):
-                    if f.startswith("TRIAL-") and f.endswith(".html"):
-                        os.remove(os.path.join(self.plot_base, f))
-            except Exception:
-                pass
-            self._candidates = []
-            self._min_candidate_score = float("-inf")
-
-        score = artifacts.score
-        if score is None:
+        """
+        Called when a trial finishes. Generates the plot if applicable.
+        """
+        # Double check if we should process this (optimization)
+        if not self.needs_dataframe(artifacts.score):
+            return
+            
+        # If the artifacts don't have the signal dataframe, we can't plot
+        if artifacts.df_signals is None or len(artifacts.df_signals) == 0:
             return
 
-        is_candidate = (
-            len(self._candidates) < self.max_archivos or 
-            score > self._min_candidate_score
-        )
-        
-        if not is_candidate:
-            return
-        
-        if getattr(artifacts, "df_signals", None) is None:
-            return
-
-        params_for_plot = getattr(artifacts, "params_reporting", None) or artifacts.params
-        
-        candidate = {
-            "score": score,
-            "trial_number": artifacts.trial_number,
-            "strategy_name": artifacts.strategy_name,
-            "params": deepcopy(params_for_plot),
-            "metrics": deepcopy(artifacts.metrics) if artifacts.metrics else {},
-            "equity_curve": list(artifacts.equity_curve) if artifacts.equity_curve else [],
-            "df_signals": artifacts.df_signals,
-            "trades": artifacts.trades,
-            "trial_date_range": getattr(artifacts, "trial_date_range", None),
-        }
-        
-        self._candidates.append(candidate)
-        
-        if len(self._candidates) > self.max_archivos:
-            self._candidates.sort(key=lambda x: x["score"], reverse=True)
-            removed = self._candidates.pop()
-            del removed
-        
-        self._update_min_score()
+        try:
+            # Generate the plot
+            filepath = plot_trades(
+                df=artifacts.df_signals,
+                df_trades=artifacts.trades,
+                plot_base=self.plot_base,
+                fecha_inicio_plot=self.fecha_inicio_plot,
+                fecha_fin_plot=self.fecha_fin_plot,
+                trial_number=artifacts.trial_number,
+                params=artifacts.params,
+                score=artifacts.score,
+                combo=artifacts.strategy_name,
+                metrics=artifacts.metrics,
+                equity_curve=artifacts.equity_curve,
+                saldo_inicial=self.saldo_inicial,
+                activo=self.activo,
+                plot_meses_duracion=self.plot_meses_duracion
+            )
+            
+            # Add to candidates
+            self.candidates.append({
+                "score": artifacts.score,
+                "trial": artifacts.trial_number,
+                "filepath": filepath
+            })
+            
+            # Prune if over limit
+            if len(self.candidates) > self.max_archivos:
+                # Sort descending by score
+                self.candidates.sort(key=lambda x: x["score"], reverse=True)
+                
+                # Remove extra files
+                while len(self.candidates) > self.max_archivos:
+                    removed = self.candidates.pop()
+                    fpath = removed.get("filepath")
+                    if fpath and os.path.exists(fpath):
+                        try:
+                            os.remove(fpath)
+                        except Exception:
+                            pass
+            
+            # Update min score threshold
+            if self.candidates:
+                self.min_score = min(c["score"] for c in self.candidates)
+            else:
+                self.min_score = float("-inf")
+                
+        except Exception as e:
+            # Don't crash the optimization if plotting fails
+            print(f"Error generating plot for trial {artifacts.trial_number}: {e}")
 
     def on_strategy_end(self, strategy_name: str, study) -> None:
-        if not self._candidates:
-            return
-        
-        os.makedirs(self.plot_base, exist_ok=True)
-        
-        self._candidates.sort(key=lambda x: x["score"], reverse=True)
-        
-        for candidate in self._candidates[:self.max_archivos]:
-            try:
-                # Determinar fechas del plot:
-                # Si el trial tiene rango propio (USAR_RANGOS_POR_TRIAL),
-                # usar los primeros N meses de ese rango.
-                # Si no, usar las fechas estáticas de configuración.
-                _plot_start = self.fecha_inicio_plot
-                _plot_end = self.fecha_fin_plot
-                _tdr = candidate.get("trial_date_range")
-                if _tdr is not None:
-                    from datetime import datetime, timedelta
-                    try:
-                        _dt_start = datetime.fromisoformat(_tdr[0])
-                        _dt_end = _dt_start + timedelta(days=self.plot_meses_duracion * 30)
-                        # No exceder el fin del trial
-                        _dt_trial_end = datetime.fromisoformat(_tdr[1])
-                        if _dt_end > _dt_trial_end:
-                            _dt_end = _dt_trial_end
-                        _plot_start = _dt_start.strftime("%Y-%m-%d")
-                        _plot_end = _dt_end.strftime("%Y-%m-%d")
-                    except Exception:
-                        pass
+        pass
 
-                plot_trades(
-                    df=candidate["df_signals"],
-                    df_trades=candidate["trades"],
-                    plot_base=self.plot_base,
-                    fecha_inicio_plot=_plot_start,
-                    fecha_fin_plot=_plot_end,
-                    trial_number=candidate["trial_number"],
-                    params=candidate["params"],
-                    score=candidate["score"],
-                    combo=candidate["strategy_name"],
-                    metrics=candidate["metrics"],
-                    equity_curve=candidate["equity_curve"],
-                    saldo_inicial=self.saldo_inicial,
-                    max_archivos=self.max_archivos,
-                    activo=self.activo,
-                )
-            except Exception as e:
-                logger.warning(f"Error generando plot para trial {candidate['trial_number']}: {e}")
-        
-        self._candidates = []
-        self._min_candidate_score = float("-inf")

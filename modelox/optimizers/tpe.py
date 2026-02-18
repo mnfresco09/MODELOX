@@ -426,6 +426,19 @@ class TPEScorer:
             return cfg.SCORE_MIN
         
         # =================================================================
+        # VERIFICACIÓN DE TRADES POR DÍA (MÍNIMO 0.23)
+        # =================================================================
+        trades_dia = self._safe_get(metrics, "trades_por_dia", 0.0)
+        if trades_dia < 0.23:
+            if trial is not None:
+                try:
+                    trial.set_user_attr('tpe_score_reason', 'insufficient_trades_per_day')
+                    trial.set_user_attr('trades_dia', float(trades_dia))
+                except Exception:
+                    pass
+            return 0.0
+        
+        # =================================================================
         # NORMALIZAR CADA MÉTRICA
         # =================================================================
         norm_sharpe = self._normalize_sharpe(sharpe)

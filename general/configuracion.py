@@ -46,7 +46,7 @@ from modelox.core.types import normalize_timeframe_to_suffix
 # 1.0 ESTRATEGIAS A EJECUTAR
 # ----------------------------------------------------------------------------
 # Los IDs corresponden a los archivos en  modelox/strategies/
-COMBINACION_A_EJECUTAR = [3]
+COMBINACION_A_EJECUTAR = [6]
 # ----------------------------------------------------------------------------
 # 1.1 SELECCIÓN DE ACTIVOS Y DATOS
 # ----------------------------------------------------------------------------
@@ -150,8 +150,8 @@ COMISION_SIDES = 2
 # Si BTC baja a 50.000$:
 #   → qty = 6.000 / 50.000 = 0.12 BTC (más unidades, mismo volumen)
 #
-SALDO_USADO = 100.0           # Colateral fijo por operación ($)
-APALANCAMIENTO_MAX = 25       # Apalancamiento máximo permitido
+SALDO_USADO = 50.0           # Colateral fijo por operación ($)
+APALANCAMIENTO_MAX = 40       # Apalancamiento máximo permitido
 
 # ----------------------------------------------------------------------------
 # 2.1 TIMEFRAME BASE (RESOLUCIÓN DE OPERACIÓN)
@@ -194,8 +194,8 @@ TIMEFRAMES = [TIMEFRAME_BASE]  # No tocar — se deriva de TIMEFRAME_BASE
 #   NASDAQ   : 2010-11-14 → 2025-12-31
 #   BIST100  : 2024-02-12 → 2026-02-09 (solo 1h)
 #
-FECHA_INICIO = "2022-03-01"
-FECHA_FIN    = "2025-09-07"
+FECHA_INICIO = "2024-05-01"
+FECHA_FIN    = "2025-05-01"
 
 # ── MODO DE USO DEL RANGO ──
 #
@@ -219,8 +219,8 @@ MESES_POR_TRIAL = 6  # Solo aplica si USAR_RANGOS_POR_TRIAL = True
 
 # Fechas para el gráfico detallado de trades (zoom visual).
 # Esto NO afecta al backtest, solo al gráfico HTML que se genera.
-FECHA_INICIO_PLOT = "2024-01-01"
-FECHA_FIN_PLOT = "2024-03-15"
+FECHA_INICIO_PLOT = "2025-01-01"
+FECHA_FIN_PLOT = "2025-05-01"
 
 # ── PERTURBACIÓN DE DATOS (anti-overfitting) ──
 #
@@ -229,7 +229,7 @@ FECHA_FIN_PLOT = "2024-03-15"
 #
 #   True  = Activada (recomendado con muchos trials)
 #   False = Datos originales sin modificar
-PERTURBACION_ACTIVAR = True
+PERTURBACION_ACTIVAR = False
 
 # Intensidad del ruido: 0.1 = suave, 0.5 = moderado, 1.0 = agresivo.
 # 0.5 significa que el ruido es ~50% de la volatilidad real del activo.
@@ -257,7 +257,7 @@ PLOT_MESES_DURACION = 2         # Cuántos meses mostrar en el gráfico
 PLOT_UBICACION_ALEATORIA = False # False = desde el inicio, True = zona aleatoria
 
 # ── Mantenimiento ──
-CLEANUP_INTERVAL = 100          # Liberar RAM cada N trials (50-200)
+CLEANUP_INTERVAL = 200          # Liberar RAM cada N trials (50-200)
 PURGE_PYCACHE_ON_EXIT = True    # Limpiar cachés de Python al terminar
 
 

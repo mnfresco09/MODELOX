@@ -32,14 +32,14 @@ from openpyxl.formatting.rule import DataBarRule, ColorScaleRule
 # ==============================================================================
 
 COLORS = {
-    "header_bg_metrics": "1A5276", # Azul Oscuro (Métricas)
-    "header_bg_params":  "566573", # Gris Plomo (Parámetros)
-    "header_bg_id":      "212F3D", # Negro Azulado (IDs)
+    "header_bg_metrics": "262626", # Gris Oscuro
+    "header_bg_params":  "595959", # Gris Medio
+    "header_bg_id":      "000000", # Negro
     "text_white":        "FFFFFF",
-    "text_dark":         "212F3D",
-    "border_color":      "BDC3C7",
-    "success_bg":        "D5F5E3", # Verde claro
-    "danger_bg":         "FADBD8", # Rojo claro
+    "text_dark":         "333333", # Gris muy oscuro para texto datos
+    "border_color":      "E0E0E0", # Borde muy sutil
+    "success_bg":        "E6F4EA", # Verde muy suave pastel
+    "danger_bg":         "FCE8E6", # Rojo muy suave pastel
 }
 
 FONT_TITLE = "Arial"
@@ -48,28 +48,23 @@ FONT_BODY = "Arial"
 # --- 1. MÉTRICAS CLAVE (Performance & Financials) ---
 # Orden estricto de aparición en la sección de MÉTRICAS.
 METRICS_ORDER = [
-    "SALDO_ACTUAL",
-    "ROI_PCT",
+    "TOTAL_TRADES",
+    "LONG",         # Antes NUM_LONGS
+    "SHORT",        # Antes NUM_SHORTS
     "PROFIT_FACTOR",
     "WINRATE_PCT",
-    "TOTAL_TRADES",
-    "TRADES_DIA",
-    "MAX_DD_PCT",      # Drawdown
+    "MAX_DD_PCT",
     "SHARPE",
     "SQN",
-    "ESTABILIDAD",     # Añadido a métricas clave
-    "AVG_TRADE",
-    "EXPECTATIVA",
-    "WIN_STREAK",
-    "LOSS_STREAK",
-    "NUM_LONGS",
-    "NUM_SHORTS"
+    "EXPECTATIVA"
 ]
 
 # --- 2. COLUMNAS DE IDENTIFICACIÓN ---
+# Orden estricto de aparición en la sección DATOS.
 ID_COLS = ["TRIAL", "ESTRATEGIA", "SCORE"]
 
-# --- 3. PARÁMETROS A EXCLUIR (Exclusión Directa) ---
+# --- 3. PARÁMETROS A EXCLUIR (Exclusión Directa y Dinámica) ---
+# Se mantiene lógica de exclusión base, pero se refinará en _organizar_y_filtrar_columnas
 EXCLUDED_PARAMS = {
     "NOMBRE_COMBO", "EXIT_TYPE", "CANTIDAD",
     "PERTURBADO", "SEED", "ACTIVO", "TIMEFRAME", "TF", "ASSET", "SYMBOL",
@@ -337,11 +332,98 @@ class ExcelReporter:
         except Exception:
             pass
         
+        # Renombrar columnas para visualización profesional
+        rename_map = {
+            "entry_time": "ENTRY_TIME",
+            "exit_time": "EXIT_TIME",
+            "type": "SIDE",
+            "entry_price": "ENTRY_PRICE",
+            "exit_price": "EXIT_PRICE",
+            "qty": "CANTIDAD",
+            "saldo_usado": "SALDO",
+            "pnl_bruto": "GROSS_PNL",
+            "comision": "FEES",
+            "pnl_neto": "NET_PNL",
+            "pnl_pct": "ROI_%",
+            "saldo_antes": "BALANCE_PRE",
+            "saldo_despues": "BALANCE_POST",
+            "reason": "EXIT_REASON",
+            "side_int": "SIDE_INT"
+        }
+        df_export = df_trades.rename(columns=rename_map)
+        
+        # --- NUEVA LÓGICA DE TRANSFORMACIÓN DE DATOS ---
+        
+        # 1. Eliminar columnas innecesarias (incluyendo variantes minúsculas/mayúsculas)
+        cols_to_drop = ["ENTRY_IDX", "EXIT_IDX", "SIDE_INT", "entry_idx", "exit_idx", "side_int"]
+        df_export.drop(columns=[c for c in cols_to_drop if c in df_export.columns], inplace=True)
+        
+        # 2. Renombrar STAKE a SALDO (según petición usuario, ya hecho en map pero por seguridad)
+        if "STAKE" in df_export.columns:
+            df_export.rename(columns={"STAKE": "SALDO"}, inplace=True)
+
+        # 3. Calcular VOLUMEN y APALANCAMIENTO
+        # Volumen = Cantidad * Entry_Price
+        # Apalancamiento = Volumen / Saldo
+        try:
+            qty_col = "CANTIDAD" if "CANTIDAD" in df_export.columns else "QTY"
+            if qty_col in df_export.columns and "ENTRY_PRICE" in df_export.columns:
+                df_export["VOLUMEN"] = df_export[qty_col] * df_export["ENTRY_PRICE"]
+                
+                if "SALDO" in df_export.columns:
+                    # Evitar division por cero
+                    df_export["APALANCAMIENTO"] = df_export.apply(
+                        lambda x: x["VOLUMEN"] / x["SALDO"] if x["SALDO"] > 0 else 0, axis=1
+                    )
+        except Exception as e:
+            logger.warning(f"Error calculando Volumen/Apalancamiento: {e}")
+
+        # 4. Mapear EXIT_REASON numérico a String
+        # 1=SL, 2=TP, 3=TRAIL, 4=TIME, 0=END
+        reason_map = {
+            1: "SL",
+            2: "TP",
+            3: "TRAIL",
+            4: "TIME",
+            0: "END"
+        }
+        if "EXIT_REASON" in df_export.columns:
+            df_export["EXIT_REASON"] = df_export["EXIT_REASON"].map(reason_map).fillna("UNKNOWN")
+
+        # 5. Corregir ROI_% (Dividir por 100 para formato Excel %)
+        if "ROI_%" in df_export.columns:
+            df_export["ROI_%"] = df_export["ROI_%"] / 100.0
+
+        # 6. Convertir textos a MAYÚSCULAS
+        str_cols = ["SIDE", "EXIT_REASON", "TYPE"]
+        for c in str_cols:
+            if c in df_export.columns:
+                df_export[c] = df_export[c].astype(str).str.upper()
+
+        # Asegurar orden y mayúsculas en columnas
+        df_export.columns = [c.upper() for c in df_export.columns]
+
+        # Reordenar columnas para mejor lectura (opcional pero recomendado)
+        start_cols = ["ENTRY_TIME", "EXIT_TIME", "SIDE", "EXIT_REASON", "ENTRY_PRICE", "EXIT_PRICE", "CANTIDAD", "VOLUMEN", "SALDO", "APALANCAMIENTO", "GROSS_PNL", "FEES", "NET_PNL", "ROI_%", "BALANCE_PRE", "BALANCE_POST"]
+        # Filtrar solo las que existen
+        ordered_cols = [c for c in start_cols if c in df_export.columns]
+        # Agregar el resto
+        remaining = [c for c in df_export.columns if c not in ordered_cols]
+        df_export = df_export[ordered_cols + remaining]
+
+        
         score_str = f"{candidate['score']:.2f}".replace(".", "_")
         filename = f"TRADES_TRIAL{candidate['trial_number']}_SCORE{score_str}.xlsx"
         filepath = os.path.join(trades_dir, filename)
         
-        df_trades.to_excel(filepath, index=False, sheet_name="Trades")
+        # Guardar con engine openpyxl explícito
+        df_export.to_excel(filepath, index=False, sheet_name="Trades", engine='openpyxl')
+        
+        # Aplicar estilos
+        try:
+            _aplicar_estilo_trades(filepath)
+        except Exception as e:
+            logger.warning(f"No se pudo aplicar estilo a trades: {e}")
 
 
 # ==============================================================================
@@ -452,16 +534,35 @@ def _normalizar_nombres(df: pd.DataFrame, strategy_name: str) -> pd.DataFrame:
         "RETURN_PCT": "ROI_PCT",
         "ROI": "ROI_PCT",
         
-        # Saldo
-        "NET_PROFIT": "SALDO_ACTUAL",
-        "PNL_NETO": "SALDO_ACTUAL",
-        "NET_PNL": "SALDO_ACTUAL",
+        "NUM_TRADES": "TOTAL_TRADES",
+        "COUNT_TRADES": "TOTAL_TRADES",
         
-        # Estandarización de longs/shorts
-        "COUNT_LONGS": "NUM_LONGS", "N_LONGS": "NUM_LONGS", "LONGS": "NUM_LONGS",
-        "N_TRADES_LONG": "NUM_LONGS",
-        "COUNT_SHORTS": "NUM_SHORTS", "N_SHORTS": "NUM_SHORTS", "SHORTS": "NUM_SHORTS",
-        "N_TRADES_SHORT": "NUM_SHORTS",
+        # Winrate
+        "WIN_RATE_PCT": "WINRATE_PCT",
+        "WINRATE": "WINRATE_PCT",
+        "PORC_GANADORAS": "WINRATE_PCT",
+        "WIN_RATE": "WINRATE_PCT",
+        
+        # Variantes de Drawdown
+        "MAX_DRAWDOWN_PCT": "MAX_DD_PCT",
+        "MAX_DRAWDOWN": "MAX_DD_PCT",
+        "DRAWDOWN": "MAX_DD_PCT",
+        "DD": "MAX_DD_PCT",
+        "DD_PCT": "MAX_DD_PCT",
+        "MAX_DD": "MAX_DD_PCT",
+
+        # Estandarización de longs/shorts (A "LONG" y "SHORT")
+        "COUNT_LONGS": "LONG", "N_LONGS": "LONG", "LONGS": "LONG", "NUM_LONGS": "LONG",
+        "N_TRADES_LONG": "LONG", "TRADES_LONG": "LONG",
+        
+        "COUNT_SHORTS": "SHORT", "N_SHORTS": "SHORT", "SHORTS": "SHORT", "NUM_SHORTS": "SHORT",
+        "N_TRADES_SHORT": "SHORT", "TRADES_SHORT": "SHORT",
+        
+        # Parámetros de salida (Normalización estricta para el filtrado)
+        "EXIT_SL_PCT": "SL", "P_SL": "SL", "SL_PCT": "SL",
+        "EXIT_TP_PCT": "TP", "P_TP": "TP", "TP_PCT": "TP",
+        "EXIT_TRAIL_ACT_PCT": "ACT", "TRAIL_ACT": "ACT",
+        "EXIT_TRAIL_DIST_PCT": "DIST", "TRAIL_DIST": "DIST", "DISTANCE": "DIST",
     }
 
     # Renombrar solo si el destino no existe
@@ -469,7 +570,7 @@ def _normalizar_nombres(df: pd.DataFrame, strategy_name: str) -> pd.DataFrame:
         if old in df.columns and new not in df.columns:
             df.rename(columns={old: new}, inplace=True)
         elif old in df.columns and new in df.columns:
-            # Si ambas existen, borramos la vieja
+            # Si ambas existen, borramos la vieja para evitar duplicados ambiguos
             df.drop(columns=[old], inplace=True)
 
     # Asegurar columna ESTRATEGIA
@@ -480,10 +581,16 @@ def _normalizar_nombres(df: pd.DataFrame, strategy_name: str) -> pd.DataFrame:
     if "TRIAL" not in df.columns and df.index.name != "TRIAL":
         df.insert(0, "TRIAL", range(len(df)))
 
-    # Limpieza visual de prefijos
+    # Limpieza visual de prefijos de forma genérica
     new_cols = []
     for col in df.columns:
+        # Si ya está en las listas oficiales, lo dejamos tal cual
         if col in METRICS_ORDER or col in ID_COLS:
+            new_cols.append(col)
+            continue
+        
+        # Check si es uno de los params de salida ya renombrados manualmente arriba
+        if col in ["SL", "TP", "ACT", "DIST"]:
             new_cols.append(col)
             continue
 
@@ -519,39 +626,68 @@ def _organizar_y_filtrar_columnas(df: pd.DataFrame):
 
     current_metrics = list(dict.fromkeys(current_metrics))
 
-    # 3. Parámetros (Filtro)
+    # 3. Parámetros (Filtro con Lógica Custom de Salidas)
     excluded = set(current_ids + current_metrics)
     candidates = [c for c in cols if c not in excluded]
 
     current_params = []
+    
+    # Detectar tipo de salida predominante para filtrar columnas
+    # Buscamos columnas originales o parámetros 'param_exit_type' en el df original si fuera posible,
+    # pero aquí ya están renombrados. Asumimos que si hay columnas ACT/DIST con valores no nulos/ceros, es trailing.
+    # Pero la regla del usuario es explícita: "Si es FIXED solo SL y TP, si es TRAILING solo SL, TP, ACT y DISTANCE".
+    # Como ExcelReporter mezcla trials, si hay CUALQUIER trial con trailing, deberíamos mostrar las columnas.
+    # Pero usualmente un reporte es de una ejecución.
+    
+    exit_cols = {"SL", "TP", "ACT", "DIST"}
+    
+    # Hacemos una pasada para ver candidatos válidos
+    valid_candidates = []
     for c in candidates:
         # A. Vacíos
         if df[c].astype(str).str.strip().eq("").all():
             continue
-
         # B. Internos
         if c.startswith("__"):
             continue
-
         # C. Lista Negra
         if c in EXCLUDED_PARAMS or c.replace("%", "_PCT") in EXCLUDED_PARAMS:
             continue
+        
+        valid_candidates.append(c)
 
-        # D. FILTRO HEURÍSTICO
+    # Filtrado específico de salidas
+    # Revisamos si existe ACT o DIST con valores significativos (no todos 0 o vacíos)
+    has_trailing_data = False
+    for t_col in ["ACT", "DIST"]:
+        if t_col in df.columns:
+            # Check si hay algun valor > 0 (asumiendo numericos)
+            try:
+                if (pd.to_numeric(df[t_col], errors='coerce').fillna(0) > 0).any():
+                    has_trailing_data = True
+                    break
+            except:
+                pass
+    
+    for c in valid_candidates:
+        if c in exit_cols:
+            if c in ["ACT", "DIST"] and not has_trailing_data:
+                continue # Ocultar ACT/DIST si no hay trailing activo
+            current_params.append(c)
+            continue
+
+        # D. FILTRO HEURÍSTICO (Resto de params)
         is_garbage = False
         c_upper = c.upper()
         for kw in METRIC_KEYWORDS_TO_DROP:
             if kw in c_upper:
                 # Excepciones técnicas
-                exceptions = ["STOP", "SL", "TP", "TRAIL", "TIME", "PERIOD", "LEN", "FAST", "SLOW", "SIGNAL", "LIMIT", "THRESHOLD", "SIGMA", "OFFSET", "ATR"]
-
+                exceptions = ["STOP", "SL", "TP", "TRAIL", "TIME", "PERIOD", "LEN", "FAST", "SLOW", "SIGNAL", "LIMIT", "THRESHOLD", "SIGMA", "OFFSET", "ATR", "ACT", "DIST"]
                 has_exception = any(exc in c_upper for exc in exceptions)
-
-                # Palabras que invalidan incluso excepciones
+                
+                # Palabras prohibidas fuertes
                 very_bad_words = ["PROFIT", "WIN", "SALDO", "BALANCE", "DRAWDOWN", "DD", "ROI", "RETORNO", "NUM_", "COUNT", "TRADES", "RESULT", "METRIC"]
-                is_very_bad = any(bw in c_upper for bw in very_bad_words)
-
-                if is_very_bad:
+                if any(bw in c_upper for bw in very_bad_words):
                     is_garbage = True
                     break
 
@@ -562,6 +698,9 @@ def _organizar_y_filtrar_columnas(df: pd.DataFrame):
         if not is_garbage:
             current_params.append(c)
 
+    # Ordenar params: Poner SL, TP, ACT, DIST al final o principio? 
+    # Mejor orden alfabetico general, pero SL/TP agrupados si es posible.
+    # El sort alfabetico los separará, pero es aceptable.
     current_params.sort()
 
     final_cols = current_ids + current_metrics + current_params
@@ -608,24 +747,38 @@ def _aplicar_estilo_avanzado(filepath, df, metrics_cols, params_cols, saldo_ini)
     font_group = Font(name=FONT_TITLE, size=12, bold=True, color=COLORS["text_white"])
     align_group = Alignment(horizontal='center', vertical='center')
 
-    for c in range(1, start_metrics):
-        ws.cell(row=1, column=c).fill = PatternFill("solid", fgColor=COLORS["header_bg_id"])
+    # 1. TÍTULOS DE SECCIONES
+    font_group = Font(name=FONT_TITLE, size=12, bold=True, color=COLORS["text_white"])
+    align_group = Alignment(horizontal='center', vertical='center')
 
+    # Header 1: DATOS (TRIAL, ESTRATEGIA, SCORE)
+    if n_ids > 0:
+        c = ws.cell(row=1, column=1)
+        c.value = "DATOS"
+        c.fill = PatternFill("solid", fgColor=COLORS["header_bg_id"])
+        c.font = font_group
+        c.alignment = align_group
+        if n_ids > 1:
+            ws.merge_cells(start_row=1, start_column=1, end_row=1, end_column=n_ids)
+
+    # Header 2: MÉTRICAS
     if n_metrics > 0:
         c = ws.cell(row=1, column=start_metrics)
-        c.value = "MÉTRICAS CLAVE"
+        c.value = "METRICAS"
         c.fill = PatternFill("solid", fgColor=COLORS["header_bg_metrics"])
         c.font = font_group
         c.alignment = align_group
         if n_metrics > 1:
             ws.merge_cells(start_row=1, start_column=start_metrics, end_row=1, end_column=end_metrics)
-
+    
+    # Header 3: PARÁMETROS
     if n_params > 0:
         c = ws.cell(row=1, column=start_params)
-        c.value = "PARÁMETROS ESTRATEGIA"
+        c.value = "PARAMETROS"  # Usuario pidió "PARAMETROS", sin "ESTRATEGIA"
         c.fill = PatternFill("solid", fgColor=COLORS["header_bg_params"])
         c.font = font_group
         c.alignment = align_group
+
         if n_params > 1:
             ws.merge_cells(start_row=1, start_column=start_params, end_row=1, end_column=end_params)
 
@@ -670,14 +823,55 @@ def _aplicar_estilo_avanzado(filepath, df, metrics_cols, params_cols, saldo_ini)
             header_val = str(ws.cell(2, c).value).upper()
 
             if isinstance(cell.value, (int, float)):
-                if "TRADES" in header_val and "DIA" in header_val:
+                # Auto-detect percentage values if > 1.0 and header says %
+                # Pero mejor confiar en logica previa de dividir / 100
+                pass
+
+            if "TRADES" in header_val and "DIA" in header_val:
+                cell.number_format = "0.00"
+            elif "TRADES" in header_val or "NUM_" in header_val:
+                cell.number_format = "0"
+            elif "SCORE" in header_val or "%" in header_val or "PCT" in header_val or "RATIO" in header_val or "SHARPE" in header_val or "FACTOR" in header_val or "ESTABILIDAD" in header_val:
+                # Si es % y el valor es > 1 (ej 50.0), dividir por 100 para que el 0.00% de excel cuadre
+                if "%" in header_val or "PCT" in header_val or "WINRATE" in header_val or "ROI" in header_val:
+                    cell.number_format = "0.00%"
+                    try:
+                        val = float(cell.value)
+                        # Si tiene % o PCT en el nombre, lo normalizamos dividiendo por 100 
+                        # para que Excel (que trata 1.0 como 100%) lo muestre correctamente.
+                        # Ej: 0.34 -> 0.0034 (0.34%) | 3.00 -> 0.03 (3.00%)
+                        if "%" in header_val or "PCT" in header_val:
+                             cell.value = val / 100.0
+                        elif abs(val) > 1.0: # Solo para WINRATE o ROI si vienen en formato entero 
+                             cell.value = val / 100.0
+                    except:
+                        pass
+                else:
                     cell.number_format = "0.00"
-                elif "TRADES" in header_val or "NUM_" in header_val:
-                    cell.number_format = "0"
-                elif "SCORE" in header_val or "%" in header_val or "PCT" in header_val or "RATIO" in header_val or "SHARPE" in header_val or "FACTOR" in header_val or "ESTABILIDAD" in header_val:
-                    cell.number_format = "0.00"
-                elif "SALDO" in header_val or "PROFIT" in header_val or "PNL" in header_val:
-                    cell.number_format = "#,##0.00"
+            elif "SALDO" in header_val or "PROFIT" in header_val or "PNL" in header_val:
+                cell.number_format = "#,##0.00"
+
+    # Auto-adjust columns based on content (RESUMEN)
+    for col in range(1, max_col + 1):
+        max_length = 0
+        column = get_column_letter(col)
+        # Check header
+        header_val = ws.cell(row=2, column=col).value
+        if header_val:
+            max_length = len(str(header_val))
+        
+        # Check rows
+        for i, row in enumerate(ws.iter_rows(min_row=3, max_row=min(50, max_row), min_col=col, max_col=col)):
+            for cell in row:
+                try:
+                    if len(str(cell.value)) > max_length:
+                        max_length = len(str(cell.value))
+                except:
+                    pass
+        
+        adjusted_width = (max_length + 2) * 1.2  # Factor 1.2 para asegurar espacio para negritas
+        ws.column_dimensions[column].width = min(adjusted_width, 50)
+
 
     # 4. CONDITIONAL FORMATTING
     col_map = {str(ws.cell(2, c).value).strip(): get_column_letter(c) for c in range(1, max_col + 1)}
@@ -690,10 +884,11 @@ def _aplicar_estilo_avanzado(filepath, df, metrics_cols, params_cols, saldo_ini)
 
     if "SCORE" in col_map:
         col_score = col_map["SCORE"]
+        # Minimalist Scale: White -> Subtle Grey/Green
         ws.conditional_formatting.add(f"{col_score}3:{col_score}{max_row}", ColorScaleRule(
-            start_type='min', start_color='F8696B',
-            mid_type='percentile', mid_value=50, mid_color='FFEB84',
-            end_type='max', end_color='63BE7B'
+            start_type='min', start_color='FFFFFF',
+            mid_type='percentile', mid_value=50, mid_color='F1F8E9', # Very pale green
+            end_type='max', end_color='C8E6C9' # Pale green
         ))
 
     if "SALDO_ACTUAL" in col_map:
@@ -712,6 +907,118 @@ def _aplicar_estilo_avanzado(filepath, df, metrics_cols, params_cols, saldo_ini)
                 pass
 
     ws.freeze_panes = ws.cell(row=3, column=start_metrics)
+    wb.save(filepath)
+
+
+def _aplicar_estilo_trades(filepath: str):
+    """
+    Aplica estilos profesionales al Excel de Trades (similar al Dashboard).
+    - Headers oscuros
+    - Formato de Nímeros
+    - Colores condicionales en PnL
+    """
+    wb = load_workbook(filepath)
+    ws = wb.active
+    ws.sheet_view.showGridLines = False
+    
+    max_col = ws.max_column
+    max_row = ws.max_row
+    
+    # 1. HEADERS
+    font_header = Font(name=FONT_TITLE, size=11, bold=True, color=COLORS["text_white"])
+    border_full = Border(
+        left=Side(style='thin', color=COLORS["border_color"]),
+        right=Side(style='thin', color=COLORS["border_color"]),
+        top=Side(style='thin', color=COLORS["border_color"]),
+        bottom=Side(style='thin', color=COLORS["border_color"])
+    )
+    
+    for col in range(1, max_col + 1):
+        cell = ws.cell(row=1, column=col)
+        cell.font = font_header
+        cell.alignment = Alignment(horizontal='center', vertical='center', wrap_text=True)
+        cell.fill = PatternFill("solid", fgColor=COLORS["header_bg_metrics"]) 
+        cell.border = border_full
+        
+        # Ajuste ancho
+        val_len = len(str(cell.value)) if cell.value else 0
+        ws.column_dimensions[get_column_letter(col)].width = max(12, val_len + 4)
+        
+    ws.row_dimensions[1].height = 25
+    
+    # 2. DATA
+    font_body = Font(name=FONT_BODY, size=10, color=COLORS["text_dark"])
+    
+    # Identify columns by name
+    col_map = {str(ws.cell(1, c).value).upper().strip(): c for c in range(1, max_col + 1)}
+    
+    for r in range(2, max_row + 1):
+        for c in range(1, max_col + 1):
+            cell = ws.cell(row=r, column=c)
+            cell.font = font_body
+            cell.alignment = Alignment(horizontal='center', vertical='center')
+            cell.border = border_full
+            
+            # Recuperar header para saber formato
+            header = str(ws.cell(1, c).value).upper()
+            
+            # Formatos (2 decimales estricto)
+            if "TIME" in header or "DATE" in header:
+                 cell.number_format = "YYYY-MM-DD HH:MM:SS"
+            elif "%" in header or "PCT" in header or "ROI" in header:
+                cell.number_format = "0.00%"
+            elif "PRICE" in header or "PNL" in header or "BALANCE" in header or "GROSS" in header or "FEES" in header or "SALDO" in header or "VOLUMEN" in header:
+                cell.number_format = "#,##0.00"
+            elif "QTY" in header or "CANTIDAD" in header:
+                cell.number_format = "0.0000"
+            elif "APALANCAMIENTO" in header:
+                cell.number_format = "0.00x" # Formato "20.00x" queda bien
+            
+            # Conditional Formatting
+            # PNL: Green/Red - APPLY ONLY TO NET_PNL (Others Neutral)
+            if "PNL" in header or "ROI" in header:
+                # Remove coloring for GROSS_PNL and ROI as requested
+                if "GROSS" in header or "ROI" in header:
+                    cell.font = Font(name=FONT_BODY, size=10, color=COLORS["text_dark"])
+                    # Ensure no fill is applied (default)
+                elif "NET_PNL" in header or "PNL" in header: # Keep coloring only for Net PnL if desired, or remove all if strictly neutral
+                     try:
+                        val = float(cell.value)
+                        if val > 0:
+                            cell.fill = PatternFill("solid", fgColor=COLORS["success_bg"])
+                            cell.font = Font(name=FONT_BODY, size=10, color="006100")
+                        elif val < 0:
+                             cell.fill = PatternFill("solid", fgColor=COLORS["danger_bg"])
+                             cell.font = Font(name=FONT_BODY, size=10, color="9C0006")
+                     except:
+                        pass
+                    
+            # SIDE: Neutral (Minimalist)
+            if "SIDE" in header or "TYPE" in header:
+                cell.font = Font(name=FONT_BODY, size=10, color=COLORS["text_dark"])
+
+    # Auto-adjust columns based on content
+    for col in range(1, max_col + 1):
+        max_length = 0
+        column = get_column_letter(col)
+        # Check header length
+        header_val = ws.cell(row=1, column=col).value
+        if header_val:
+            max_length = len(str(header_val))
+        
+        # Check first 50 rows for speed
+        for i, row in enumerate(ws.iter_rows(min_row=2, max_row=min(52, max_row), min_col=col, max_col=col)):
+            for cell in row:
+                try:
+                    if len(str(cell.value)) > max_length:
+                        max_length = len(str(cell.value))
+                except:
+                    pass
+        
+        adjusted_width = (max_length + 2) * 1.2 # Factor 1.2 para asegurar espacio para negritas
+        ws.column_dimensions[column].width = min(adjusted_width, 50) # Cap width
+
+    ws.freeze_panes = ws.cell(row=2, column=1)
     wb.save(filepath)
 
 
@@ -783,8 +1090,61 @@ def _gestionar_archivos_trades(df, base_path, trial, score, max_files):
         if hasattr(df_export[col].dt, "tz") and df_export[col].dt.tz is not None:
             df_export[col] = df_export[col].dt.tz_localize(None)
 
-    with pd.ExcelWriter(fpath, engine='xlsxwriter') as writer:
-        df_export.to_excel(writer, sheet_name='Trades', index=False)
+    # Renombrar columnas para consistencia visual
+    # Renombrar columnas para consistencia visual
+    rename_map = {
+        "entry_time": "ENTRY_TIME", "exit_time": "EXIT_TIME",
+        "type": "SIDE", "entry_price": "ENTRY_PRICE", "exit_price": "EXIT_PRICE",
+        "qty": "CANTIDAD", "saldo_usado": "SALDO",
+        "pnl_bruto": "GROSS_PNL", "comision": "FEES",
+        "pnl_neto": "NET_PNL", "pnl_pct": "ROI_%",
+        "saldo_antes": "BALANCE_PRE", "saldo_despues": "BALANCE_POST",
+        "reason": "EXIT_REASON", "side_int": "SIDE_INT"
+    }
+    # Solo renombra si existen las columnas
+    df_export.rename(columns=rename_map, inplace=True)
+    
+     # --- NUEVA LÓGICA DE TRANSFORMACIÓN DE DATOS (REPLICADA EN FAST MODE) ---
+    cols_to_drop = ["ENTRY_IDX", "EXIT_IDX", "SIDE_INT", "entry_idx", "exit_idx", "side_int"]
+    df_export.drop(columns=[c for c in cols_to_drop if c in df_export.columns], inplace=True)
+
+    qty_col = "CANTIDAD" if "CANTIDAD" in df_export.columns else "QTY"
+    if qty_col in df_export.columns and "ENTRY_PRICE" in df_export.columns:
+        df_export["VOLUMEN"] = df_export[qty_col] * df_export["ENTRY_PRICE"]
+        if "SALDO" in df_export.columns:
+             df_export["APALANCAMIENTO"] = df_export.apply(lambda x: x["VOLUMEN"]/x["SALDO"] if x["SALDO"]>0 else 0, axis=1)
+
+    reason_map = {1: "SL", 2: "TP", 3: "TRAIL", 4: "TIME", 0: "END"}
+    if "EXIT_REASON" in df_export.columns:
+        # Si es numerico aun
+        if pd.api.types.is_numeric_dtype(df_export["EXIT_REASON"]):
+             df_export["EXIT_REASON"] = df_export["EXIT_REASON"].map(reason_map).fillna("UNKNOWN")
+
+    if "ROI_%" in df_export.columns:
+        df_export["ROI_%"] = df_export["ROI_%"] / 100.0
+
+    str_cols = ["SIDE", "EXIT_REASON", "TYPE"]
+    for c in str_cols:
+        if c in df_export.columns:
+            df_export[c] = df_export[c].astype(str).str.upper()
+
+    df_export.columns = [c.upper() for c in df_export.columns] # Asegura mayúsculas en todo caso
+
+    # Reordenar columnas para mejor lectura (opcional pero recomendado)
+    start_cols = ["ENTRY_TIME", "EXIT_TIME", "SIDE", "EXIT_REASON", "ENTRY_PRICE", "EXIT_PRICE", "CANTIDAD", "VOLUMEN", "SALDO", "APALANCAMIENTO", "GROSS_PNL", "FEES", "NET_PNL", "ROI_%", "BALANCE_PRE", "BALANCE_POST"]
+    ordered_cols = [c for c in start_cols if c in df_export.columns]
+    remaining = [c for c in df_export.columns if c not in ordered_cols]
+    df_export = df_export[ordered_cols + remaining]
+
+
+    # Usar openpyxl para permitir edición posterior
+    df_export.to_excel(fpath, sheet_name='Trades', index=False, engine='openpyxl')
+
+    # Aplicar estilos
+    try:
+        _aplicar_estilo_trades(fpath)
+    except Exception:
+        pass
 
     files = [f for f in os.listdir(trades_dir) if f.startswith("TRADES_TRIAL") and f.endswith(".xlsx")]
     if len(files) > max_files:

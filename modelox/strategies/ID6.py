@@ -18,8 +18,8 @@ class StrategyKineticMomentumValidator(EstrategiaBase):
     - Optimización: RANGOS INDEPENDIENTES (Fast y Slow libres).
     """
 
-    combinacion_id = 1
-    name = "CRUCE_ZLEMA"
+    combinacion_id = 6
+    name = "CRUCEADV0"
     SALIDAS_PERSONALIZADAS = False
 
     def suggest_params(self, trial: Any) -> Dict[str, Any]:
@@ -134,6 +134,25 @@ class StrategyKineticMomentumValidator(EstrategiaBase):
 
         long_cond = pl.col("is_bullish") & cond_base
         short_cond = (~pl.col("is_bullish")) & cond_base
+
+        # ── FILTRO DE ACELERACIÓN (5 velas previas) ──────────────────────────
+        # Aceleración = variación de la pendiente:
+        #   pendiente_actual  = close[t]   - close[t-4]
+        #   pendiente_previa  = close[t-1] - close[t-5]
+        #   aceleracion       = pendiente_actual - pendiente_previa
+        #                     = close[t] - close[t-4] - close[t-1] + close[t-5]
+        # LONG  → aceleración > 0 (curva acelerando hacia arriba)
+        # SHORT → aceleración < 0 (curva acelerando hacia abajo)
+        accel = (
+            pl.col("close")
+            - pl.col("close").shift(4)
+            - pl.col("close").shift(1)
+            + pl.col("close").shift(5)
+        )
+        q = q.with_columns(accel.alias("_accel"))
+
+        long_cond  = long_cond  & (pl.col("_accel") > 0)
+        short_cond = short_cond & (pl.col("_accel") < 0)
 
         # Filtro One-Shot
         sig_long = long_cond & (long_cond.cast(pl.Int32).cum_sum().over("cycle_id") == 1)
