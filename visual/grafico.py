@@ -1997,6 +1997,10 @@ class PlotReporter:
     """
     Reporter that generates interactive HTML charts for top trials.
     Integrated with the Runner system.
+
+    NOTA: Los gráficos se generan AL FINAL de la optimización (on_strategy_end),
+    igual que el Excel. Durante los trials solo se acumulan los artefactos
+    de los mejores candidatos en memoria.
     """
     def __init__(
         self,
@@ -2015,86 +2019,83 @@ class PlotReporter:
         self.max_archivos = max_archivos
         self.saldo_inicial = saldo_inicial
         self.activo = activo
-        
-        # Track generated files to keep only top N
-        # List of dicts: {score, trial, filepath}
-        self.candidates = []
+
+        # Candidatos acumulados durante la optimización.
+        # Cada entrada: {score, trial, artifacts}
+        # Los ficheros HTML NO se generan hasta on_strategy_end.
+        self._pending: list = []
         self.min_score = float("-inf")
 
     def needs_dataframe(self, score: float) -> bool:
         """
-        Determines if we should generate the artifacts (dataframe) for this trial.
-        Returns True if:
-        1. We haven't filled up the max_archivos buffer yet.
-        2. OR the score is better than the worst score in our buffer.
+        Determina si necesitamos el DataFrame de señales para este trial.
+        Devuelve True si:
+        1. No hemos llenado el buffer de max_archivos todavía.
+        2. O el score supera al peor candidato actual.
         """
-        if len(self.candidates) < self.max_archivos:
+        if len(self._pending) < self.max_archivos:
             return True
         return score > self.min_score
 
     def on_trial_end(self, artifacts) -> None:
         """
-        Called when a trial finishes. Generates the plot if applicable.
+        Acumula el artefacto si es candidato. NO escribe nada en disco.
         """
-        # Double check if we should process this (optimization)
         if not self.needs_dataframe(artifacts.score):
             return
-            
-        # If the artifacts don't have the signal dataframe, we can't plot
+
         if artifacts.df_signals is None or len(artifacts.df_signals) == 0:
             return
 
-        try:
-            # Generate the plot
-            filepath = plot_trades(
-                df=artifacts.df_signals,
-                df_trades=artifacts.trades,
-                plot_base=self.plot_base,
-                fecha_inicio_plot=self.fecha_inicio_plot,
-                fecha_fin_plot=self.fecha_fin_plot,
-                trial_number=artifacts.trial_number,
-                params=artifacts.params,
-                score=artifacts.score,
-                combo=artifacts.strategy_name,
-                metrics=artifacts.metrics,
-                equity_curve=artifacts.equity_curve,
-                saldo_inicial=self.saldo_inicial,
-                activo=self.activo,
-                plot_meses_duracion=self.plot_meses_duracion
-            )
-            
-            # Add to candidates
-            self.candidates.append({
-                "score": artifacts.score,
-                "trial": artifacts.trial_number,
-                "filepath": filepath
-            })
-            
-            # Prune if over limit
-            if len(self.candidates) > self.max_archivos:
-                # Sort descending by score
-                self.candidates.sort(key=lambda x: x["score"], reverse=True)
-                
-                # Remove extra files
-                while len(self.candidates) > self.max_archivos:
-                    removed = self.candidates.pop()
-                    fpath = removed.get("filepath")
-                    if fpath and os.path.exists(fpath):
-                        try:
-                            os.remove(fpath)
-                        except Exception:
-                            pass
-            
-            # Update min score threshold
-            if self.candidates:
-                self.min_score = min(c["score"] for c in self.candidates)
-            else:
-                self.min_score = float("-inf")
-                
-        except Exception as e:
-            # Don't crash the optimization if plotting fails
-            print(f"Error generating plot for trial {artifacts.trial_number}: {e}")
+        # Guardar artefacto en memoria
+        self._pending.append({
+            "score": artifacts.score,
+            "trial": artifacts.trial_number,
+            "artifacts": artifacts,
+        })
+
+        # Mantener solo los top-N candidatos
+        if len(self._pending) > self.max_archivos:
+            self._pending.sort(key=lambda x: x["score"], reverse=True)
+            self._pending = self._pending[: self.max_archivos]
+
+        # Actualizar umbral mínimo
+        self.min_score = min(c["score"] for c in self._pending)
 
     def on_strategy_end(self, strategy_name: str, study) -> None:
-        pass
+        """
+        Genera los ficheros HTML para los mejores candidatos acumulados.
+        Se llama UNA SOLA VEZ al terminar la optimización.
+        """
+        if not self._pending:
+            return
+
+        # Ordenar de mejor a peor para escribir en ese orden
+        self._pending.sort(key=lambda x: x["score"], reverse=True)
+
+        for entry in self._pending:
+            artifacts = entry["artifacts"]
+            try:
+                plot_trades(
+                    df=artifacts.df_signals,
+                    df_trades=artifacts.trades,
+                    plot_base=self.plot_base,
+                    fecha_inicio_plot=self.fecha_inicio_plot,
+                    fecha_fin_plot=self.fecha_fin_plot,
+                    trial_number=artifacts.trial_number,
+                    params=artifacts.params,
+                    score=artifacts.score,
+                    combo=artifacts.strategy_name,
+                    metrics=artifacts.metrics,
+                    equity_curve=artifacts.equity_curve,
+                    saldo_inicial=self.saldo_inicial,
+                    activo=self.activo,
+                    plot_meses_duracion=self.plot_meses_duracion,
+                )
+            except Exception as e:
+                print(f"Error generando gráfico del trial {artifacts.trial_number}: {e}")
+
+        # Limpiar pendientes
+        self._pending.clear()
+        self.min_score = float("-inf")
 
