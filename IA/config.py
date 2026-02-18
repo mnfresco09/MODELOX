@@ -27,12 +27,13 @@ LOOKBACK           = 24      # Timesteps de lookback para el modelo (24 candles 
 STRIDE             = 10      # Usar cada N candle para generar secuencias (eficiencia)
 N_FEATURES         = 6       # Número de features por timestep
 
-# ─── Etiquetado (TP/SL en USD) ────────────────────────────────────────────────
-TP_USD             = 500.0   # Take Profit: precio_entrada + 500 USD (LONG)
-SL_USD             = 500.0   # Stop Loss:   precio_entrada - 500 USD (LONG)
+# ─── Etiquetado (TP/SL en PORCENTAJE) ────────────────────────────────────────
+TP_PCT             = 0.65    # Take Profit: 0.65% desde precio_entrada
+SL_PCT             = 0.65    # Stop Loss:   0.65% desde precio_entrada
 MAX_FORWARD_CANDLES= 480     # Máximo de candles adelante para buscar TP/SL (8h a 1m)
 #  label=1.0 → LONG (TP long hit first)  |  label=0.0 → SHORT (SL long hit first)
 #  label=-1.0 → sin etiqueta (excluido del entrenamiento)
+# NOTA: TP/SL ahora son porcentuales para adaptarse a cualquier precio de BTC
 
 # ─── Arquitectura del Modelo GRU ─────────────────────────────────────────────
 GRU_UNITS    = 64    # Unidades por capa GRU
@@ -41,19 +42,19 @@ DROPOUT      = 0.4   # Dropout intradiario (0.4 recomendado para 1m)
 FC_UNITS     = 32    # Unidades de la capa densa intermedia
 
 # ─── Función de Pérdida Asimétrica ────────────────────────────────────────────
-ALPHA_LOSS = 2.0     # Factor de penalización: α>1 penaliza errores de dirección
+ALPHA_LOSS = 3.0     # Factor de penalización: α>1 penaliza errores de dirección (aumentado para decisiones más claras)
 
 # ─── Entrenamiento ────────────────────────────────────────────────────────────
 LEARNING_RATE          = 1e-4   # Adam LR inicial
 BATCH_SIZE             = 32     # Batch size
 MAX_EPOCHS             = 200    # Épocas máximas
 PATIENCE               = 15     # Early stopping patience
-CLASS_WEIGHT_MINORITY  = 3.0    # Peso extra para la clase minoritaria
+CLASS_WEIGHT_MINORITY  = 4.0    # Peso extra para la clase minoritaria (aumentado para mejor balance)
 
 # ─── Señal de Entrada ─────────────────────────────────────────────────────────
-PROB_THRESHOLD     = 0.70   # P > umbral → LONG
-SHORT_THRESHOLD    = 0.30   # P < umbral → SHORT  (P(SHORT) > 0.70)
-ENTROPY_THRESHOLD  = 0.85   # Rechazar si entropía binaria normalizada > este valor
+PROB_THRESHOLD     = 0.60   # P > umbral → LONG (reducido de 0.70 para más señales)
+SHORT_THRESHOLD    = 0.40   # P < umbral → SHORT (reducido de 0.30 para más señales)
+ENTROPY_THRESHOLD  = 0.90   # Rechazar si entropía binaria normalizada > este valor (más permisivo)
 ANOMALY_PERCENTILE = 95     # Percentil para detector de anomalías (precio inusual)
 ANOMALY_WINDOW     = 1440   # Ventana histórica para anomalías (1440 min = 1 día)
 

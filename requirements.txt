@@ -22,6 +22,9 @@ kneed>=0.8
 # --- Optimización ---
 optuna>=3.4
 
+# --- Deep Learning ---
+torch>=2.0.0
+
 # --- Visualización ---
 matplotlib>=3.7
 rich>=13.0

@@ -33,7 +33,7 @@ sys.path.insert(0, str(Path(__file__).parent.parent))
 from IA.config import (
     DATA_PATH, ZSCORE_WINDOW_FAST, ZSCORE_WINDOW_SLOW,
     LOOKBACK, STRIDE, N_FEATURES,
-    TP_USD, SL_USD, MAX_FORWARD_CANDLES,
+    TP_PCT, SL_PCT, MAX_FORWARD_CANDLES,
     QUICK_MODE, QUICK_DATE_START, QUICK_DATE_END,
     QUICK_STRIDE,
 )
@@ -163,14 +163,14 @@ if _NUMBA_OK:
         high:        np.ndarray,
         low:         np.ndarray,
         close:       np.ndarray,
-        tp_usd:      float,
-        sl_usd:      float,
+        tp_pct:      float,
+        sl_pct:      float,
         max_forward: int,
     ) -> np.ndarray:
         """
         Para cada vela i (LONG desde close[i]):
-          TP_long = close[i] + tp_usd   → si high[j] >= TP_long  → label = 1.0
-          SL_long = close[i] - sl_usd   → si low[j]  <= SL_long  → label = 0.0
+          TP_long = close[i] * (1 + tp_pct/100)   → si high[j] >= TP_long  → label = 1.0
+          SL_long = close[i] * (1 - sl_pct/100)   → si low[j]  <= SL_long  → label = 0.0
           Ambas en misma vela → usa dirección de la vela previa
           Sin hit en max_forward velas   → label = -1.0 (excluir)
         """
@@ -179,8 +179,8 @@ if _NUMBA_OK:
 
         for i in range(n - max_forward - 1):
             entry   = close[i]
-            tp_long = entry + tp_usd
-            sl_long = entry - sl_usd
+            tp_long = entry * (1.0 + tp_pct / 100.0)
+            sl_long = entry * (1.0 - sl_pct / 100.0)
 
             for j in range(1, max_forward + 1):
                 idx = i + j
@@ -205,14 +205,14 @@ if _NUMBA_OK:
         return labels
 
 else:
-    def _label_tpsl_numba(high, low, close, tp_usd, sl_usd, max_forward):
+    def _label_tpsl_numba(high, low, close, tp_pct, sl_pct, max_forward):
         """Versión Python pura como fallback (más lenta)."""
         n      = len(close)
         labels = np.full(n, -1.0)
         for i in range(n - max_forward - 1):
             entry   = close[i]
-            tp_long = entry + tp_usd
-            sl_long = entry - sl_usd
+            tp_long = entry * (1.0 + tp_pct / 100.0)
+            sl_long = entry * (1.0 - sl_pct / 100.0)
             for j in range(1, max_forward + 1):
                 idx = i + j
                 tp_hit = high[idx] >= tp_long
@@ -232,8 +232,8 @@ else:
 def compute_labels(feat_df: pd.DataFrame) -> pd.Series:
     """
     Calcula etiquetas binarias para toda la serie de features:
-      1.0 = LONG favorable (TP +$500 alcanzado antes que SL -$500)
-      0.0 = SHORT favorable (SL -$500 alcanzado antes que TP +$500)
+      1.0 = LONG favorable (TP +0.65% alcanzado antes que SL -0.65%)
+      0.0 = SHORT favorable (SL -0.65% alcanzado antes que TP +0.65%)
      -1.0 = sin etiqueta (ninguno en ventana MAX_FORWARD_CANDLES)
     """
     high  = feat_df["high_raw"].values.astype(np.float64)
@@ -242,7 +242,7 @@ def compute_labels(feat_df: pd.DataFrame) -> pd.Series:
 
     labels_arr = _label_tpsl_numba(
         high, low, close,
-        float(TP_USD), float(SL_USD), int(MAX_FORWARD_CANDLES)
+        float(TP_PCT), float(SL_PCT), int(MAX_FORWARD_CANDLES)
     )
     return pd.Series(labels_arr, index=feat_df.index, name="label")
 

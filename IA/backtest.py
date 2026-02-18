@@ -1,10 +1,10 @@
 """
 ================================================================================
-IA/BACKTEST.PY — MOTOR DE BACKTEST CON TP/SL EN USD
+IA/BACKTEST.PY — MOTOR DE BACKTEST CON TP/SL EN PORCENTAJE
 ================================================================================
 Reglas:
-  • TP = precio_entrada + $500 (LONG)  /  precio_entrada - $500 (SHORT)
-  • SL = precio_entrada - $500 (LONG)  /  precio_entrada + $500 (SHORT)
+  • TP = precio_entrada * (1 + 0.65%) (LONG)  /  precio_entrada * (1 - 0.65%) (SHORT)
+  • SL = precio_entrada * (1 - 0.65%) (LONG)  /  precio_entrada * (1 + 0.65%) (SHORT)
   • Se detecta TP/SL usando high/low de velas 1m (no solo close)
   • Posición = SALDO_USADO * APALANCAMIENTO / precio_entrada
   • Comisión = pos_valor * COMISION_PCT * COMISION_SIDES (apertura + cierre)
@@ -27,7 +27,7 @@ except ImportError:
     _NUMBA_OK = False
 
 from IA.config import (
-    TP_USD, SL_USD, MAX_FORWARD_CANDLES,
+    TP_PCT, SL_PCT, MAX_FORWARD_CANDLES,
     SALDO_INICIAL, APALANCAMIENTO, SALDO_USADO,
     COMISION_PCT, COMISION_SIDES,
 )
@@ -157,8 +157,8 @@ def run_backtest(
     saldo_usado:    float = SALDO_USADO,
     comision_pct:   float = COMISION_PCT,
     comision_sides: int   = COMISION_SIDES,
-    tp_usd:         float = TP_USD,
-    sl_usd:         float = SL_USD,
+    tp_pct:         float = TP_PCT,
+    sl_pct:         float = SL_PCT,
     max_forward:    int   = MAX_FORWARD_CANDLES,
 ) -> Tuple[List[Trade], np.ndarray]:
     """
@@ -216,11 +216,11 @@ def run_backtest(
         tipo      = "LONG" if is_long else "SHORT"
 
         if is_long:
-            tp_price = entry_price + tp_usd
-            sl_price = entry_price - sl_usd
+            tp_price = entry_price * (1.0 + tp_pct / 100.0)
+            sl_price = entry_price * (1.0 - sl_pct / 100.0)
         else:
-            tp_price = entry_price - tp_usd
-            sl_price = entry_price + sl_usd
+            tp_price = entry_price * (1.0 - tp_pct / 100.0)
+            sl_price = entry_price * (1.0 + sl_pct / 100.0)
 
         # ── Buscar salida (TP o SL) ───────────────────────────────────
         exit_price, exit_offset, exit_reason = _find_exit_numba(

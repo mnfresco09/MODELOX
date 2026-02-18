@@ -99,7 +99,7 @@ def run_pipeline(
     from IA.walk_forward   import generate_folds, fold_summary
     from IA.model          import build_model, model_summary, DEVICE
     from IA.trainer        import train_model
-    from IA.signal         import predict_batch, generate_signals, signals_summary
+    from IA.signals        import predict_batch, generate_signals, signals_summary
     from IA.backtest       import run_backtest, compute_backtest_metrics, trades_to_dataframe
 
     # ──────────────────────────────────────────────────────────────────
@@ -130,7 +130,7 @@ def run_pipeline(
     # ──────────────────────────────────────────────────────────────────
     # 3. ETIQUETADO (info)
     # ──────────────────────────────────────────────────────────────────
-    console.print(Rule("[bold cyan]🏷  ETIQUETADO TP/SL $500[/bold cyan]"))
+    console.print(Rule("[bold cyan]🏷  ETIQUETADO TP/SL 0.65%[/bold cyan]"))
     valid_labels = labels[labels >= 0]
     n_long  = (valid_labels == 1).sum()
     n_short = (valid_labels == 0).sum()
@@ -141,8 +141,8 @@ def run_pipeline(
         f"SHORT: [red]{n_short:,} ({100-pct_long:.1f}%)[/red]"
     )
     console.print(
-        f"  TP = precio ± [bold yellow]${cfg.TP_USD:.0f}[/bold yellow] | "
-        f"SL = precio ∓ [bold red]${cfg.SL_USD:.0f}[/bold red] | "
+        f"  TP = precio ± [bold yellow]{cfg.TP_PCT:.2f}%[/bold yellow] | "
+        f"SL = precio ∓ [bold red]{cfg.SL_PCT:.2f}%[/bold red] | "
         f"Max lookforward: [dim]{cfg.MAX_FORWARD_CANDLES} velas[/dim]"
     )
     console.print()
@@ -317,7 +317,7 @@ def run_pipeline(
         ], dtype=np.int64)
 
         # ── Ejecutar backtest ─────────────────────────────────────────
-        console.print("  [cyan]Ejecutando backtest TP/SL $500...[/cyan]")
+        console.print(f"  [cyan]Ejecutando backtest TP/SL {cfg.TP_PCT:.2f}%...[/cyan]")
 
         # Construir feat_df alineado para el backtest usando val_feat_df
         # signal_abs_indices son posiciones en val_feat_df
@@ -333,8 +333,8 @@ def run_pipeline(
             saldo_usado    = cfg.SALDO_USADO,
             comision_pct   = cfg.COMISION_PCT,
             comision_sides = cfg.COMISION_SIDES,
-            tp_usd         = cfg.TP_USD,
-            sl_usd         = cfg.SL_USD,
+            tp_pct         = cfg.TP_PCT,
+            sl_pct         = cfg.SL_PCT,
             max_forward    = cfg.MAX_FORWARD_CANDLES,
         )
 
