@@ -88,7 +88,7 @@ FORMATO_DATOS = "feather"
 #   - 3-10     → prueba rápida (minutos)
 #   - 50-100   → exploración decente (horas)
 #   - 500-1000 → búsqueda exhaustiva (muchas horas)
-N_TRIALS = 10
+N_TRIALS = 50
 
 # OPTUNA_N_JOBS = cuántos cores de CPU usar en paralelo.
 #   -1 = todos los disponibles (recomendado)
@@ -112,7 +112,7 @@ OPTUNA_STORAGE = None   # None = todo en RAM (más rápido)
 #            Cobertura EQUIDISTANTE del espacio de parámetros.
 #            NO usa el score para guiar — pura matemática.
 #            Ideal para exploración exhaustiva sin sesgo ni overfitting.
-OPTUNA_SAMPLER = "QMC"
+OPTUNA_SAMPLER = "TPE"
 
 # ----------------------------------------------------------------------------
 # 1.3 GESTIÓN DE CAPITAL Y COSTES
@@ -195,7 +195,7 @@ TIMEFRAMES = [TIMEFRAME_BASE]  # No tocar — se deriva de TIMEFRAME_BASE
 #   BIST100  : 2024-02-12 → 2026-02-09 (solo 1h)
 #
 FECHA_INICIO = "2024-05-01"
-FECHA_FIN    = "2025-05-01"
+FECHA_FIN    = "2025-08-01"
 
 # ── MODO DE USO DEL RANGO ──
 #

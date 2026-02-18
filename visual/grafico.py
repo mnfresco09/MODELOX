@@ -1321,7 +1321,7 @@ if(charts.length>0) charts[0].series = cs;
 // MARKERS & TOOLTIPS (Client-Side Generation)
 // Using Scatter LineSeries to place markers at exact prices
 const longEntrySeries = mc.addLineSeries({
-    color: '#2979FF', 
+    color: '#2962FF', 
     lineWidth: 0, 
     pointMarkersVisible: true,
     pointMarkersRadius: 6, 

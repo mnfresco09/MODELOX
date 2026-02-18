@@ -135,20 +135,21 @@ class StrategyKineticMomentumValidator(EstrategiaBase):
         long_cond = pl.col("is_bullish") & cond_base
         short_cond = (~pl.col("is_bullish")) & cond_base
 
-        # ── FILTRO DE ACELERACIÓN (5 velas previas) ──────────────────────────
-        # Aceleración = variación de la pendiente:
-        #   pendiente_actual  = close[t]   - close[t-4]
-        #   pendiente_previa  = close[t-1] - close[t-5]
-        #   aceleracion       = pendiente_actual - pendiente_previa
-        #                     = close[t] - close[t-4] - close[t-1] + close[t-5]
-        # LONG  → aceleración > 0 (curva acelerando hacia arriba)
-        # SHORT → aceleración < 0 (curva acelerando hacia abajo)
-        accel = (
-            pl.col("close")
-            - pl.col("close").shift(4)
-            - pl.col("close").shift(1)
-            + pl.col("close").shift(5)
-        )
+        # ── FILTRO DE ACELERACIÓN (tramo actual vs tramo previo de 5 velas) ──────
+        #
+        # Comparamos el recorrido de los últimos 5 periodos contra
+        # el recorrido de los 5 periodos anteriores a esos:
+        #
+        #   tramo_actual  = close[t]   - close[t-5]   → lo que movió en las últimas 5 velas
+        #   tramo_previo  = close[t-5] - close[t-10]  → lo que movió en las 5 velas anteriores
+        #   aceleracion   = tramo_actual - tramo_previo
+        #
+        # LONG  → aceleracion > 0 : el precio subió MÁS en las últimas 5 que en las 5 previas
+        # SHORT → aceleracion < 0 : el precio bajó MÁS en las últimas 5 que en las 5 previas
+        tramo_actual = pl.col("close") - pl.col("close").shift(5)
+        tramo_previo = pl.col("close").shift(5) - pl.col("close").shift(10)
+        accel = tramo_actual - tramo_previo
+
         q = q.with_columns(accel.alias("_accel"))
 
         long_cond  = long_cond  & (pl.col("_accel") > 0)
