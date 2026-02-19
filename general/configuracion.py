@@ -151,7 +151,7 @@ COMISION_SIDES = 2
 #   → qty = 6.000 / 50.000 = 0.12 BTC (más unidades, mismo volumen)
 #
 SALDO_USADO = 60.0           # Colateral fijo por operación ($)
-APALANCAMIENTO_MAX = 25       # Apalancamiento máximo permitido
+APALANCAMIENTO_MAX = 35      # Apalancamiento máximo permitido
 
 # ----------------------------------------------------------------------------
 # 2.1 TIMEFRAME BASE (RESOLUCIÓN DE OPERACIÓN)
@@ -194,8 +194,8 @@ TIMEFRAMES = [TIMEFRAME_BASE]  # No tocar — se deriva de TIMEFRAME_BASE
 #   NASDAQ   : 2010-11-14 → 2025-12-31
 #   BIST100  : 2024-02-12 → 2026-02-09 (solo 1h)
 #
-FECHA_INICIO = "2022-01-01"
-FECHA_FIN    = "2026-02-01"
+FECHA_INICIO = "2021-09-01"
+FECHA_FIN    = "2025-08-01"
 
 # ── MODO DE USO DEL RANGO ──
 #

@@ -1,25 +1,24 @@
 """
 ================================================================================
-VISUAL/EXCEL.PY — DASHBOARD QUANT EN EXCEL
+VISUAL/EXCEL.PY — DASHBOARD QUANT EN EXCEL  (v7.1 — ANCHO 10 XL)
 ================================================================================
 
-PROPÓSITO:
-    Generación de reportes Excel profesionales con:
-    1. Filtrado inteligente de métricas (elimina ruido).
-    2. Separación clara entre INPUTS (Parámetros) y OUTPUTS (Métricas).
-    3. Formato condicional automático (Barras de datos, Escalas de color).
-
-FUNCIONALIDAD:
-    - `ExcelReporter`: Clase principal que se integra con el Runner.
-    - Genera `RESUMEN.csv` incremental (seguridad contra crash).
-    - Convierte a `.xlsx` con estilos al finalizar.
-
+CAMBIOS v7.1:
+  - Gráfico: anclado en col B, ancho 1000px (ancho 10)
+  - Tabla:   columna R (índice 17, 0-based), fuente 13pt, fila 2x
+  - Sin solape: chart 1000px, tabla desplazada a la derecha
 ================================================================================
 """
 
 import os
 import re
-from typing import Optional
+import math
+import datetime
+import logging
+from copy import deepcopy
+from dataclasses import dataclass, field
+from typing import Any, Dict, List, Optional, Protocol
+import csv
 
 import pandas as pd
 from openpyxl import load_workbook
@@ -27,93 +26,73 @@ from openpyxl.styles import Alignment, Border, Font, PatternFill, Side
 from openpyxl.utils import get_column_letter
 from openpyxl.formatting.rule import DataBarRule, ColorScaleRule
 
+try:
+    import xlsxwriter
+    from xlsxwriter.utility import xl_col_to_name
+    _HAS_XW = True
+except ImportError:
+    _HAS_XW = False
+
+logger = logging.getLogger(__name__)
+
 # ==============================================================================
-# CONFIGURACIÓN DE ESTILO
+# COLORES Y CONSTANTES
 # ==============================================================================
 
 COLORS = {
-    "header_bg_metrics": "262626", # Gris Oscuro
-    "header_bg_params":  "595959", # Gris Medio
-    "header_bg_id":      "000000", # Negro
+    "header_bg_metrics": "1A1A2E",
+    "header_bg_params":  "16213E",
+    "header_bg_id":      "0F3460",
     "text_white":        "FFFFFF",
-    "text_dark":         "333333", # Gris muy oscuro para texto datos
-    "border_color":      "E0E0E0", # Borde muy sutil
-    "success_bg":        "E6F4EA", # Verde muy suave pastel
-    "danger_bg":         "FCE8E6", # Rojo muy suave pastel
+    "text_dark":         "1A1A2E",
+    "border_color":      "E8EDF5",
+    "success_bg":        "E8F5E9",
+    "danger_bg":         "FFEBEE",
+    "accent_green":      "00897B",
+    "accent_red":        "C62828",
+    "row_alt":           "F7F9FC",
+    "section_border":    "3A86FF",
+    "table_header_bg":   "E3EAF6",
 }
 
 FONT_TITLE = "Arial"
-FONT_BODY = "Arial"
+FONT_BODY  = "Arial"
 
-# --- 1. MÉTRICAS CLAVE (Performance & Financials) ---
-# Orden estricto de aparición en la sección de MÉTRICAS.
 METRICS_ORDER = [
-    "TOTAL_TRADES",
-    "LONG",         # Antes NUM_LONGS
-    "SHORT",        # Antes NUM_SHORTS
-    "PROFIT_FACTOR",
-    "WINRATE_PCT",
-    "MAX_DD_PCT",
-    "SHARPE",
-    "SQN",
-    "EXPECTATIVA"
+    "TOTAL_TRADES", "TRADES_DIA", "LONG", "SHORT",
+    "PROFIT_FACTOR", "ROI_PCT", "WINRATE_PCT", "MAX_DD_PCT",
+    "SHARPE", "SQN", "EXPECTATIVA"
 ]
-
-# --- 2. COLUMNAS DE IDENTIFICACIÓN ---
-# Orden estricto de aparición en la sección DATOS.
 ID_COLS = ["TRIAL", "ESTRATEGIA", "SCORE"]
 
-# --- 3. PARÁMETROS A EXCLUIR (Exclusión Directa y Dinámica) ---
-# Se mantiene lógica de exclusión base, pero se refinará en _organizar_y_filtrar_columnas
 EXCLUDED_PARAMS = {
-    "NOMBRE_COMBO", "EXIT_TYPE", "CANTIDAD",
-    "PERTURBADO", "SEED", "ACTIVO", "TIMEFRAME", "TF", "ASSET", "SYMBOL",
+    "NOMBRE_COMBO", "EXIT_TYPE", "CANTIDAD", "PERTURBADO", "SEED",
+    "ACTIVO", "TIMEFRAME", "TF", "ASSET", "SYMBOL",
     "RESULTADO", "METRICS", "COMBO", "ESTATEGIA",
+    "SALDO", "VOLUMEN", "APALANCAMIENTO",
 }
 
-# --- 4. FILTRO HEURÍSTICO DE MÉTRICAS BASURA ---
 METRIC_KEYWORDS_TO_DROP = [
-    # Tipos de resultados financieros
     "PROFIT", "LOSS", "PNL", "NET", "GROSS", "SALDO", "BALANCE", "RETORNO", "RETURN",
     "ROI", "BENEFICIO", "RIESGO", "RISK", "REWARD", "COMISION", "FEES",
-
-    # Estadísticas de trading
     "WIN", "GANADORA", "PERDEDORA", "ACIERTO", "RATE", "PCT", "PORC_", "PERCENT",
     "DRAWDOWN", "DD", "RACHA", "STREAK", "UNDERWATER",
-
-    # Ratios y Estadísticas matemáticas
     "RATIO", "FACTOR", "SHARPE", "SORTINO", "CALMAR", "SQN", "EXPECTATIVA", "KELLY",
     "AVG", "MEAN", "MEDIAN", "STD", "VAR", "MAX", "MIN", "SUM", "TOTAL",
-    "ESTABILIDAD", # Si aparece en params por error, se borra (ya está en metrics)
-
-    # Conteos
-    "COUNT", "NUM_", "N_", "TRADES", "LONGS", "SHORTS", "CANTIDAD_OP",
-
-    # Otros
+    "ESTABILIDAD", "COUNT", "NUM_", "N_", "TRADES", "LONGS", "SHORTS", "CANTIDAD_OP",
     "METRIC", "RESULT", "BEST", "WORST", "DIA_OPERADO", "DURATION", "TIME"
 ]
 
-# Prefijos a limpiar visualmente
 PREFIXES_TO_CLEAN = [
     "ESTRATEGIA_PARAMS_", "STRATEGY_PARAMS_", "PARAM_", "PARAMS_",
     "INDICATOR_", "CONFIG_", "METRICS_"
 ]
 
-
 # ==============================================================================
-# EXCEL REPORTER - Reporter para integración con OptimizationRunner
+# EXCEL REPORTER
 # ==============================================================================
-import csv
-import logging
-from copy import deepcopy
-from dataclasses import dataclass, field
-from typing import Any, Dict, List, Optional, Protocol
-
-logger = logging.getLogger(__name__)
-
 
 class ReporterProtocol(Protocol):
-    """Protocolo base para reporters."""
     def needs_dataframe(self, score: float) -> bool: ...
     def on_trial_end(self, artifacts: Any) -> None: ...
     def on_strategy_end(self, strategy_name: str, study: Any) -> None: ...
@@ -121,20 +100,11 @@ class ReporterProtocol(Protocol):
 
 @dataclass
 class ExcelReporter:
-    """
-    Excel exporter wrapper - ULTRA OPTIMIZADO (v3.1).
-    
-    Genera:
-    - RESUMEN.csv incremental (cada trial)
-    - RESUMEN_DASHBOARD.xlsx al final (con formato profesional)
-    - TRADES_TRIAL{n}_SCORE{s}.xlsx para los top N trials
-    """
-
     resumen_path: str = "resultados/excel/resumen.xlsx"
     trades_base_dir: str = "resultados/excel"
     max_archivos: int = 5
     use_fast_mode: bool = True
-    
+
     _csv_resumen_path: Optional[str] = field(default=None, init=False, repr=False)
     _resumen_rows: List[Dict[str, Any]] = field(default_factory=list, init=False, repr=False)
     _trade_candidates: List[Dict[str, Any]] = field(default_factory=list, init=False, repr=False)
@@ -149,37 +119,32 @@ class ExcelReporter:
     def _safe_activo_name(activo: str) -> str:
         return str(activo).strip().replace(" ", "_").upper() if activo else "DEFAULT"
 
-    def _excel_dir_for(self, activo: str) -> str:
-        return self.trades_base_dir
-
     def _update_min_score(self):
-        if self._trade_candidates:
-            self._min_candidate_score = min(c["score"] for c in self._trade_candidates)
-        else:
-            self._min_candidate_score = float("-inf")
+        self._min_candidate_score = (
+            min(c["score"] for c in self._trade_candidates)
+            if self._trade_candidates else float("-inf")
+        )
 
     def on_trial_end(self, artifacts) -> None:
         params_src = getattr(artifacts, "params_reporting", None) or artifacts.params
         activo = None
         if isinstance(params_src, dict):
             activo = params_src.get("__activo") or params_src.get("ACTIVO") or params_src.get("activo")
-        
+
         self._activo = activo
-        score = artifacts.score if artifacts.score is not None else 0.0
-        
+        score  = artifacts.score if artifacts.score is not None else 0.0
         params = dict(params_src)
         params["NOMBRE_COMBO"] = artifacts.strategy_name
-        
-        resumen_row = {
-            "trial_number": artifacts.trial_number,
-            "score": score,
-            "metrics": deepcopy(artifacts.metrics) if artifacts.metrics else {},
-            "params": {k: v for k, v in params.items() if not str(k).startswith("__")},
-            "perturbado": artifacts.perturbado,
-            "perturb_seed": artifacts.perturb_seed,
+
+        self._resumen_rows.append({
+            "trial_number":  artifacts.trial_number,
+            "score":         score,
+            "metrics":       deepcopy(artifacts.metrics) if artifacts.metrics else {},
+            "params":        {k: v for k, v in params.items() if not str(k).startswith("__")},
+            "perturbado":    artifacts.perturbado,
+            "perturb_seed":  artifacts.perturb_seed,
             "strategy_name": artifacts.strategy_name,
-        }
-        self._resumen_rows.append(resumen_row)
+        })
 
         try:
             base_dir = self.trades_base_dir
@@ -189,247 +154,570 @@ class ExcelReporter:
             self._write_resumen_csv(self._csv_resumen_path)
         except Exception:
             pass
-        
+
         is_candidate = (
-            len(self._trade_candidates) < self.max_archivos or 
+            len(self._trade_candidates) < self.max_archivos or
             score > self._min_candidate_score
         )
-        
         if is_candidate and artifacts.trades is not None:
-            candidate = {
-                "score": score,
+            self._trade_candidates.append({
+                "score":        score,
                 "trial_number": artifacts.trial_number,
-                "trades": artifacts.trades,
-                "params": params,
-                "metrics": artifacts.metrics,
-                "perturbado": artifacts.perturbado,
+                "trades":       artifacts.trades,
+                "params":       params,
+                "metrics":      artifacts.metrics,
+                "perturbado":   artifacts.perturbado,
                 "perturb_seed": artifacts.perturb_seed,
-            }
-            self._trade_candidates.append(candidate)
-            
+            })
             if len(self._trade_candidates) > self.max_archivos:
                 self._trade_candidates.sort(key=lambda x: x["score"], reverse=True)
-                removed = self._trade_candidates.pop()
-                del removed
-            
+                self._trade_candidates.pop()
             self._update_min_score()
 
     def on_strategy_end(self, strategy_name: str, study) -> None:
         if not self._resumen_rows:
             return
-        
-        activo = self._activo
+
+        activo   = self._activo
         base_dir = self.trades_base_dir
         os.makedirs(base_dir, exist_ok=True)
-        
+
         activo_safe = self._safe_activo_name(str(activo) if activo else "DEFAULT")
-        csv_path = os.path.join(base_dir, "RESUMEN.csv")
-        
+        csv_path    = os.path.join(base_dir, "RESUMEN.csv")
         self._write_resumen_csv(csv_path)
-        
+
         self._trade_candidates.sort(key=lambda x: x["score"], reverse=True)
-        
         for candidate in self._trade_candidates[:self.max_archivos]:
             try:
                 self._write_trades_excel(base_dir, candidate)
             except Exception as e:
                 logger.warning(f"Error guardando trades trial {candidate['trial_number']}: {e}")
-        
+
         try:
             self._final_excel_path = convertir_resumen_csv_a_excel(
                 csv_path=csv_path,
                 strategy_name=strategy_name,
                 activo=activo_safe,
                 output_dir=base_dir,
-                excel_path=self.resumen_path  # Pass the target path for duplication
+                excel_path=self.resumen_path
             )
         except Exception as e:
             logger.warning(f"Error generando Dashboard Excel: {e}")
-        
-        self._resumen_rows = []
-        self._trade_candidates = []
+
+        self._resumen_rows        = []
+        self._trade_candidates    = []
         self._min_candidate_score = float("-inf")
 
     def _write_resumen_csv(self, csv_path: str):
         if not self._resumen_rows:
             return
-        
-        all_keys = set()
+        all_keys = {"trial", "score", "strategy"}
         for row in self._resumen_rows:
-            all_keys.add("trial")
-            all_keys.add("score")
-            all_keys.add("strategy")
             if row.get("metrics"):
                 all_keys.update(row["metrics"].keys())
             if row.get("params"):
                 all_keys.update(f"param_{k}" for k in row["params"].keys())
-        
+
         columns = ["trial", "score", "strategy"]
-        metric_cols = sorted([k for k in all_keys if k not in columns and not k.startswith("param_")])
-        param_cols = sorted([k for k in all_keys if k.startswith("param_")])
-        columns.extend(metric_cols)
-        columns.extend(param_cols)
-        
+        columns.extend(sorted(k for k in all_keys if k not in {"trial","score","strategy"} and not k.startswith("param_")))
+        columns.extend(sorted(k for k in all_keys if k.startswith("param_")))
+
         with open(csv_path, "w", newline="", encoding="utf-8") as f:
             writer = csv.DictWriter(f, fieldnames=columns, extrasaction="ignore")
             writer.writeheader()
-            
             for row in self._resumen_rows:
-                csv_row = {
-                    "trial": row["trial_number"],
-                    "score": row["score"],
-                    "strategy": row["strategy_name"],
-                }
+                csv_row = {"trial": row["trial_number"], "score": row["score"], "strategy": row["strategy_name"]}
                 if row.get("metrics"):
                     csv_row.update(row["metrics"])
                 if row.get("params"):
                     csv_row.update({f"param_{k}": v for k, v in row["params"].items()})
-                
                 writer.writerow(csv_row)
 
     def _write_trades_excel(self, trades_dir: str, candidate: Dict[str, Any]):
         trades = candidate["trades"]
         if trades is None or (hasattr(trades, "empty") and trades.empty):
             return
-        
-        if hasattr(trades, "to_pandas"):
-            df_trades = trades.to_pandas()
-        else:
-            df_trades = trades
 
+        df_trades = trades.to_pandas() if hasattr(trades, "to_pandas") else trades
+
+        # --- Limpiar timezone ---
         try:
             df_trades = df_trades.copy()
             if isinstance(df_trades.index, pd.DatetimeIndex) and df_trades.index.tz is not None:
                 df_trades.index = df_trades.index.tz_localize(None)
-            for col in df_trades.columns:
+            for col in list(df_trades.columns):
                 try:
                     if isinstance(df_trades[col].dtype, pd.DatetimeTZDtype):
                         df_trades[col] = df_trades[col].dt.tz_localize(None)
                 except Exception:
                     continue
-            for col in df_trades.columns:
+            for col in list(df_trades.columns):
                 if df_trades[col].dtype != object:
                     continue
                 s = df_trades[col]
                 try:
-                    converted = pd.to_datetime(s, errors="ignore", utc=True)
-                    if isinstance(converted.dtype, pd.DatetimeTZDtype):
-                        df_trades[col] = converted.dt.tz_localize(None)
-                        continue
-                except Exception:
-                    pass
-                try:
                     sample = next((v for v in s.head(50).tolist() if v is not None), None)
-                    if sample is None:
-                        continue
-                    tzinfo = getattr(sample, "tzinfo", None)
-                    if tzinfo is None:
-                        continue
-                    df_trades[col] = s.apply(
-                        lambda v: v.replace(tzinfo=None)
-                        if hasattr(v, "tzinfo") and v.tzinfo is not None else v
-                    )
+                    if sample and getattr(sample, "tzinfo", None):
+                        df_trades[col] = s.apply(
+                            lambda v: v.replace(tzinfo=None) if hasattr(v, "tzinfo") and v.tzinfo else v
+                        )
                 except Exception:
                     continue
         except Exception:
             pass
-        
-        # Renombrar columnas para visualización profesional
-        rename_map = {
-            "entry_time": "ENTRY_TIME",
-            "exit_time": "EXIT_TIME",
-            "type": "SIDE",
-            "entry_price": "ENTRY_PRICE",
-            "exit_price": "EXIT_PRICE",
-            "qty": "CANTIDAD",
-            "saldo_usado": "SALDO",
-            "pnl_bruto": "GROSS_PNL",
-            "comision": "FEES",
-            "pnl_neto": "NET_PNL",
-            "pnl_pct": "ROI_%",
-            "saldo_antes": "BALANCE_PRE",
-            "saldo_despues": "BALANCE_POST",
-            "reason": "EXIT_REASON",
-            "side_int": "SIDE_INT"
-        }
-        df_export = df_trades.rename(columns=rename_map)
-        
-        # --- NUEVA LÓGICA DE TRANSFORMACIÓN DE DATOS ---
-        
-        # 1. Eliminar columnas innecesarias (incluyendo variantes minúsculas/mayúsculas)
-        cols_to_drop = ["ENTRY_IDX", "EXIT_IDX", "SIDE_INT", "entry_idx", "exit_idx", "side_int"]
-        df_export.drop(columns=[c for c in cols_to_drop if c in df_export.columns], inplace=True)
-        
-        # 2. Renombrar STAKE a SALDO (según petición usuario, ya hecho en map pero por seguridad)
-        if "STAKE" in df_export.columns:
-            df_export.rename(columns={"STAKE": "SALDO"}, inplace=True)
 
-        # 3. Calcular VOLUMEN y APALANCAMIENTO
-        # Volumen = Cantidad * Entry_Price
-        # Apalancamiento = Volumen / Saldo
-        try:
-            qty_col = "CANTIDAD" if "CANTIDAD" in df_export.columns else "QTY"
-            if qty_col in df_export.columns and "ENTRY_PRICE" in df_export.columns:
-                df_export["VOLUMEN"] = df_export[qty_col] * df_export["ENTRY_PRICE"]
-                
-                if "SALDO" in df_export.columns:
-                    # Evitar division por cero
-                    df_export["APALANCAMIENTO"] = df_export.apply(
-                        lambda x: x["VOLUMEN"] / x["SALDO"] if x["SALDO"] > 0 else 0, axis=1
-                    )
-        except Exception as e:
-            logger.warning(f"Error calculando Volumen/Apalancamiento: {e}")
+        df_export = _preparar_df_trades(df_trades)
 
-        # 4. Mapear EXIT_REASON numérico a String
-        # 1=SL, 2=TP, 3=TRAIL, 4=TIME, 0=END
-        reason_map = {
-            1: "SL",
-            2: "TP",
-            3: "TRAIL",
-            4: "TIME",
-            0: "END"
-        }
-        if "EXIT_REASON" in df_export.columns:
-            df_export["EXIT_REASON"] = df_export["EXIT_REASON"].map(reason_map).fillna("UNKNOWN")
+        saldo = candidate['params'].get('__saldo_usado') or 0
+        apal  = candidate['params'].get('__apalancamiento_max') or 0
+        vol   = saldo * apal
 
-        # 5. Corregir ROI_% (Dividir por 100 para formato Excel %)
-        if "ROI_%" in df_export.columns:
-            df_export["ROI_%"] = df_export["ROI_%"] / 100.0
-
-        # 6. Convertir textos a MAYÚSCULAS
-        str_cols = ["SIDE", "EXIT_REASON", "TYPE"]
-        for c in str_cols:
-            if c in df_export.columns:
-                df_export[c] = df_export[c].astype(str).str.upper()
-
-        # Asegurar orden y mayúsculas en columnas
-        df_export.columns = [c.upper() for c in df_export.columns]
-
-        # Reordenar columnas para mejor lectura (opcional pero recomendado)
-        start_cols = ["ENTRY_TIME", "EXIT_TIME", "SIDE", "EXIT_REASON", "ENTRY_PRICE", "EXIT_PRICE", "CANTIDAD", "VOLUMEN", "SALDO", "APALANCAMIENTO", "GROSS_PNL", "FEES", "NET_PNL", "ROI_%", "BALANCE_PRE", "BALANCE_POST"]
-        # Filtrar solo las que existen
-        ordered_cols = [c for c in start_cols if c in df_export.columns]
-        # Agregar el resto
-        remaining = [c for c in df_export.columns if c not in ordered_cols]
-        df_export = df_export[ordered_cols + remaining]
-
-        
-        
         filename = f"TRIAL {candidate['trial_number']}.xlsx"
         filepath = os.path.join(trades_dir, filename)
-        
-        # Guardar con engine openpyxl explícito
-        df_export.to_excel(filepath, index=False, sheet_name="Trades", engine='openpyxl')
-        
-        # Aplicar estilos
+
         try:
-            _aplicar_estilo_trades(filepath)
+            _escribir_trades_xlsxwriter(filepath, df_export, saldo, vol, apal)
         except Exception as e:
-            logger.warning(f"No se pudo aplicar estilo a trades: {e}")
+            logger.warning(f"Error xlsxwriter, fallback openpyxl: {e}")
+            _escribir_trades_openpyxl_fallback(filepath, df_export, saldo, vol, apal)
 
 
 # ==============================================================================
-# FUNCIÓN PRINCIPAL
+# PREPARACIÓN DEL DATAFRAME
+# ==============================================================================
+
+def _preparar_df_trades(df_trades: pd.DataFrame) -> pd.DataFrame:
+    rename_map = {
+        "entry_time": "ENTRY_TIME", "exit_time": "EXIT_TIME",
+        "type": "POSICIÓN", "entry_price": "ENTRY_PRICE", "exit_price": "EXIT_PRICE",
+        "qty": "CANTIDAD", "saldo_usado": "SALDO",
+        "pnl_bruto": "PNL BRUTO", "comision": "COMISIONES",
+        "pnl_neto": "PNL NETO", "pnl_pct": "ROI",
+        "saldo_antes": "BALANCE_PRE", "saldo_despues": "BALANCE",
+        "reason": "EXIT_REASON", "trail_act_price": "TRAIL_ACT_PRICE",
+        "trail_act_time": "TRAIL_ACT_TIME"
+    }
+    df = df_trades.rename(columns=rename_map)
+
+    cols_to_drop = [
+        "ENTRY_IDX", "EXIT_IDX", "SIDE_INT", "entry_idx", "exit_idx", "side_int",
+        "BALANCE_PRE", "TRAIL_ACT_IDX", "trail_act_idx",
+        "ROI", "SALDO", "VOLUMEN", "APALANCAMIENTO", "CANTIDAD"
+    ]
+    df.drop(columns=[c for c in cols_to_drop if c in df.columns], inplace=True)
+
+    reason_map = {1: "SL", 2: "TP", 3: "TRAIL", 4: "TIME", 0: "END", 5: "CUSTOM"}
+    if "EXIT_REASON" in df.columns:
+        df["EXIT_REASON"] = df["EXIT_REASON"].map(reason_map).fillna("UNKNOWN")
+
+    for c in ["POSICIÓN", "EXIT_REASON"]:
+        if c in df.columns:
+            df[c] = df[c].astype(str).str.upper()
+
+    df.columns = [c.upper() for c in df.columns]
+
+    order = [
+        "ENTRY_TIME", "ENTRY_PRICE", "TRAIL_ACT_PRICE", "TRAIL_ACT_TIME",
+        "EXIT_TIME", "EXIT_PRICE", "POSICIÓN", "EXIT_REASON",
+        "PNL BRUTO", "COMISIONES", "PNL NETO", "BALANCE"
+    ]
+    return df[[c for c in order if c in df.columns]]
+
+
+# ==============================================================================
+# HELPER: major_unit "bonito" para el eje Y
+# ==============================================================================
+
+def _nice_major_unit(data_range: float, target_ticks: int = 6) -> float:
+    """Calcula un major_unit legible para el eje Y."""
+    if data_range <= 0:
+        return 1.0
+    raw = data_range / target_ticks
+    magnitude = math.pow(10, math.floor(math.log10(raw)))
+    normalized = raw / magnitude
+    if normalized <= 1:
+        nice = 1
+    elif normalized <= 2:
+        nice = 2
+    elif normalized <= 5:
+        nice = 5
+    else:
+        nice = 10
+    return nice * magnitude
+
+
+# ==============================================================================
+# ESCRITURA ULTRA RÁPIDA CON XLSXWRITER  (v7 — posición y escalado corregidos)
+# ==============================================================================
+
+def _escribir_trades_xlsxwriter(
+    filepath: str,
+    df: pd.DataFrame,
+    val_saldo: float = 0,
+    val_volumen: float = 0,
+    val_apal: float = 0,
+):
+    """
+    Layout final:
+      · Datos:  A1 → L(max_row+1)
+      · Gráfico: anclado en B(max_row+3), ancho 500 px × alto 430 px
+                 → ocupa aproximadamente B → I (8 cols × ~65 px = 520 px)
+      · Tabla:  anclada en J(max_row+3), inmediatamente junto al gráfico
+                fuente 13 pt, filas 28 px (tamaño 2x)
+    """
+    n_rows = len(df)
+    cols   = list(df.columns)
+
+    wb = xlsxwriter.Workbook(filepath, {
+        'nan_inf_to_errors': True,
+        'strings_to_numbers': False,
+        # Necesario para que xlsxwriter serialice datetime correctamente
+        'default_date_format': 'dd/mm/yy hh:mm',
+    })
+    ws = wb.add_worksheet('Trades')
+    ws.hide_gridlines(2)
+    ws.freeze_panes(1, 0)
+    ws.set_row(0, 28)
+
+    # ── BASE de formato ──────────────────────────────────────────────────────
+    _BASE = dict(
+        font_name='Arial', font_size=10, font_color='#1A1A2E',
+        align='center', valign='vcenter',
+        border=1, border_color='#E8EDF5'
+    )
+
+    def _fmt(bg='#FFFFFF', num_format=None, **kw):
+        p = {**_BASE, 'bg_color': bg}
+        if num_format:
+            p['num_format'] = num_format
+        p.update(kw)
+        return wb.add_format(p)
+
+    hdr_fmt = wb.add_format({
+        'bold': True, 'font_name': 'Arial', 'font_size': 11,
+        'font_color': '#FFFFFF', 'bg_color': '#1A1A2E',
+        'align': 'center', 'valign': 'vcenter',
+        'border': 1, 'border_color': '#E8EDF5', 'text_wrap': True,
+    })
+
+    # Pares de formato (fila normal, fila alternada)
+    FMT = {
+        'gen':   (_fmt('#FFFFFF'),                          _fmt('#F7F9FC')),
+        'dt':    (_fmt('#FFFFFF', 'dd/mm/yy hh:mm'),        _fmt('#F7F9FC', 'dd/mm/yy hh:mm')),
+        'price': (_fmt('#FFFFFF', '#,##0.00000'),            _fmt('#F7F9FC', '#,##0.00000')),
+        'money': (_fmt('#FFFFFF', '#,##0.00'),               _fmt('#F7F9FC', '#,##0.00')),
+        'pct':   (_fmt('#FFFFFF', '0.00%'),                  _fmt('#F7F9FC', '0.00%')),
+        'apal':  (_fmt('#FFFFFF', '0.00"x"'),                _fmt('#F7F9FC', '0.00"x"')),
+    }
+
+    def _fmt_key(hdr: str) -> str:
+        h = hdr.upper()
+        if 'TIME' in h or 'DATE' in h:                          return 'dt'
+        if 'PRICE' in h:                                         return 'price'
+        if 'PNL' in h or 'BALANCE' in h or 'COMISIONES' in h:  return 'money'
+        if h == 'ROI':                                           return 'pct'
+        if 'APALANCAMIENTO' in h:                                return 'apal'
+        return 'gen'
+
+    col_keys = [_fmt_key(c) for c in cols]
+
+    # Índices de columnas especiales
+    pnl_neto_idx   = next((i for i, c in enumerate(cols) if 'PNL' in c and 'NETO' in c), None)
+    balance_idx    = next((i for i, c in enumerate(cols) if c == 'BALANCE'), None)
+    entry_time_idx = next((i for i, c in enumerate(cols) if c == 'ENTRY_TIME'), None)
+
+    # ── Anchos de columna: muestrea 20 filas, O(cols) ───────────────────────
+    for i, col_name in enumerate(cols):
+        max_len = len(str(col_name))
+        if n_rows > 0:
+            sample_len = df.iloc[:20, i].astype(str).str.len().max()
+            if pd.notna(sample_len):
+                max_len = max(max_len, int(sample_len))
+        ws.set_column(i, i, min((max_len + 2) * 1.15, 28))
+
+    # ── HEADERS ─────────────────────────────────────────────────────────────
+    for i, col_name in enumerate(cols):
+        ws.write(0, i, col_name, hdr_fmt)
+
+    # ── DATOS: O(n) en C nativo, ~20-50x más rápido que openpyxl ───────────
+    for r_idx, row_data in enumerate(df.itertuples(index=False), start=1):
+        alt = (r_idx % 2 == 0)
+        ws.set_row(r_idx, 18)
+
+        for c_idx, val in enumerate(row_data):
+            fmt = FMT[col_keys[c_idx]][1 if alt else 0]
+
+            if val is None or (isinstance(val, float) and pd.isna(val)):
+                ws.write_blank(r_idx, c_idx, None, fmt)
+            elif isinstance(val, (pd.Timestamp, datetime.datetime)):
+                try:
+                    dt = val.to_pydatetime() if hasattr(val, 'to_pydatetime') else val
+                    dt = dt.replace(tzinfo=None)
+                    ws.write_datetime(r_idx, c_idx, dt, fmt)
+                except Exception:
+                    ws.write_string(r_idx, c_idx, str(val), fmt)
+            elif isinstance(val, bool):
+                ws.write_boolean(r_idx, c_idx, val, fmt)
+            elif isinstance(val, (int, float)):
+                ws.write_number(r_idx, c_idx, float(val), fmt)
+            else:
+                ws.write_string(r_idx, c_idx, str(val), fmt)
+
+    # ── FORMATO CONDICIONAL PNL NETO ────────────────────────────────────────
+    if pnl_neto_idx is not None and n_rows > 0:
+        fmt_green = wb.add_format({**_BASE, 'bg_color': '#E8F5E9',
+                                    'font_color': '#00897B', 'bold': True})
+        fmt_red   = wb.add_format({**_BASE, 'bg_color': '#FFEBEE',
+                                    'font_color': '#C62828', 'bold': True})
+        ws.conditional_format(1, pnl_neto_idx, n_rows, pnl_neto_idx,
+                               {'type': 'cell', 'criteria': '>', 'value': 0, 'format': fmt_green})
+        ws.conditional_format(1, pnl_neto_idx, n_rows, pnl_neto_idx,
+                               {'type': 'cell', 'criteria': '<', 'value': 0, 'format': fmt_red})
+
+    # ── FILA DE SEPARACIÓN entre datos y gráfico/tabla ──────────────────────
+    BLOCK_ROW = n_rows + 2   # fila 0-indexed donde empieza bloque inferior
+
+    # ── GRÁFICO: col B (índice 1), 500px ancho × 430px alto ─────────────────
+    # 500px ≈ 8 columnas × ~62px → termina antes de col J
+    if balance_idx is not None and n_rows > 0:
+        bal_series = df.iloc[:, balance_idx].dropna()
+        y_min_raw  = float(bal_series.min())
+        y_max_raw  = float(bal_series.max())
+        data_range = y_max_raw - y_min_raw if y_max_raw != y_min_raw else max(abs(y_max_raw) * 0.1, 1.0)
+
+        # Margen del 3% arriba y abajo
+        margin     = data_range * 0.03
+        y_min_axis = y_min_raw - margin
+        y_max_axis = y_max_raw + margin
+        major_unit = _nice_major_unit(data_range, target_ticks=6)
+
+        chart = wb.add_chart({'type': 'line'})
+
+        bal_col_letter = xl_col_to_name(balance_idx)
+        series_cfg = {
+            'values': f"=Trades!${bal_col_letter}$2:${bal_col_letter}${n_rows + 1}",
+            'line':   {'color': '#3A86FF', 'width': 1.75, 'smooth': True},
+            'marker': {'type': 'none'},
+        }
+        if entry_time_idx is not None:
+            et_letter = xl_col_to_name(entry_time_idx)
+            series_cfg['categories'] = f"=Trades!${et_letter}$2:${et_letter}${n_rows + 1}"
+
+        chart.add_series(series_cfg)
+        chart.set_title({'name': 'EVOLUCIÓN DEL BALANCE', 'name_font': {'size': 12, 'bold': True}})
+
+        chart.set_y_axis({
+            'name':            'Balance ($)',
+            'name_font':       {'size': 9, 'bold': False},
+            'num_format':      '#,##0.00',
+            'num_font':        {'size': 8},
+            'min':             y_min_axis,
+            'max':             y_max_axis,
+            'major_unit':      major_unit,
+            'major_gridlines': {'visible': False},
+            'minor_gridlines': {'visible': False},
+            'line':            {'none': True},
+        })
+        chart.set_x_axis({
+            'num_format':      'dd/mm/yy',
+            'num_font':        {'size': 7},
+            'major_gridlines': {'visible': False},
+            'major_tick_mark': 'outside',
+            'line':            {'color': '#CCCCCC'},
+        })
+        chart.set_legend({'none': True})
+        chart.set_plotarea({'border': {'none': True}})
+        chart.set_chartarea({'border': {'color': '#E0E0E0'}, 'fill': {'color': '#FAFBFF'}})
+
+        # Tamaño: 1000 × 430 px (Ancho 10)
+        chart.set_size({'width': 1000, 'height': 430})
+
+        # Anclar: fila=BLOCK_ROW (0-indexed), columna=1 (B)
+        ws.insert_chart(BLOCK_ROW, 1, chart, {'x_offset': 2, 'y_offset': 5})
+
+    # ── TABLA DE PARÁMETROS: col R (índice 17), junto al gráfico ampliado ────
+    # 1000px de gráfico desde col B(1) ocupa hasta aproximadamente col Q
+    # Col R (índice 17) = inmediatamente después
+    TABLE_COL = 17    # R (0-indexed)
+    TABLE_ROW = BLOCK_ROW
+
+    # Fuente 13pt = visualmente "2x" respecto al cuerpo de 10pt
+    _TBL = dict(font_name='Arial', font_size=13, valign='vcenter', indent=1)
+
+    title_fmt = wb.add_format({**_TBL,
+        'bold': True, 'font_color': '#FFFFFF', 'bg_color': '#1A1A2E',
+        'align': 'left',
+        'left': 5,   'left_color':   '#3A86FF',
+        'top': 5,    'top_color':    '#3A86FF',
+        'right': 5,  'right_color':  '#3A86FF',
+        'bottom': 1, 'bottom_color': '#E8EDF5',
+    })
+
+    def _lbl_fmt(is_last=False):
+        return wb.add_format({**_TBL,
+            'bold': True, 'font_color': '#1A1A2E', 'bg_color': '#E3EAF6',
+            'align': 'left',
+            'left': 5,  'left_color':   '#3A86FF',
+            'top': 1,   'top_color':    '#E8EDF5',
+            'right': 1, 'right_color':  '#E8EDF5',
+            'bottom': 5 if is_last else 1,
+            'bottom_color': '#3A86FF' if is_last else '#E8EDF5',
+        })
+
+    def _val_fmt(num_fmt='#,##0.00', is_last=False):
+        return wb.add_format({**_TBL,
+            'bold': True, 'font_color': '#0F3460', 'bg_color': '#FFFFFF',
+            'align': 'right', 'num_format': num_fmt,
+            'left': 1,   'left_color':   '#E8EDF5',
+            'top': 1,    'top_color':    '#E8EDF5',
+            'right': 5,  'right_color':  '#3A86FF',
+            'bottom': 5 if is_last else 1,
+            'bottom_color': '#3A86FF' if is_last else '#E8EDF5',
+        })
+
+    items = [
+        ("SALDO USADO",    val_saldo,   '#,##0.00 $', False),
+        ("VOLUMEN MÁX.",   val_volumen, '#,##0.00 $', False),
+        ("APALANCAMIENTO", val_apal,    '0.00"x"',    True),
+    ]
+
+    # Título de la tarjeta (fusionado 2 columnas)
+    ws.set_row(TABLE_ROW, 32)
+    ws.merge_range(TABLE_ROW, TABLE_COL, TABLE_ROW, TABLE_COL + 1,
+                   '⬛  PARÁMETROS DEL TRIAL', title_fmt)
+
+    # Filas de datos
+    for i, (label, value, num_fmt, is_last) in enumerate(items):
+        r = TABLE_ROW + i + 1
+        ws.set_row(r, 30)   # 30 px → visible grande
+        ws.write(r, TABLE_COL,     label, _lbl_fmt(is_last))
+        ws.write(r, TABLE_COL + 1, value, _val_fmt(num_fmt, is_last))
+
+    # Ancho de columnas de la tabla
+    ws.set_column(TABLE_COL,     TABLE_COL,     26)   # etiqueta
+    ws.set_column(TABLE_COL + 1, TABLE_COL + 1, 20)   # valor
+
+    wb.close()
+
+
+# ==============================================================================
+# FALLBACK OPENPYXL
+# ==============================================================================
+
+def _escribir_trades_openpyxl_fallback(
+    filepath: str,
+    df: pd.DataFrame,
+    val_saldo: float = 0,
+    val_volumen: float = 0,
+    val_apal: float = 0,
+):
+    from openpyxl.formatting.rule import CellIsRule
+
+    df.to_excel(filepath, index=False, sheet_name="Trades", engine='openpyxl')
+    wb = load_workbook(filepath)
+    ws = wb.active
+    ws.sheet_view.showGridLines = False
+
+    max_col = ws.max_column
+    max_row = ws.max_row
+
+    border   = _make_border_op(COLORS["border_color"])
+    fill_hdr = PatternFill("solid", fgColor=COLORS["header_bg_metrics"])
+    fill_alt = PatternFill("solid", fgColor=COLORS["row_alt"])
+    fill_w   = PatternFill("solid", fgColor="FFFFFF")
+    font_hdr = Font(name=FONT_TITLE, size=11, bold=True, color="FFFFFF")
+    font_b   = Font(name=FONT_BODY,  size=10, color=COLORS["text_dark"])
+    align_c  = Alignment(horizontal='center', vertical='center')
+    align_cw = Alignment(horizontal='center', vertical='center', wrap_text=True)
+
+    col_headers = {c: str(ws.cell(1, c).value or "").upper() for c in range(1, max_col + 1)}
+    col_fmt = {}
+    pnl_col = None
+    for c, hdr in col_headers.items():
+        if "TIME" in hdr or "DATE" in hdr:
+            col_fmt[c] = "DD/MM/YY HH:MM"
+        elif "PRICE" in hdr:
+            col_fmt[c] = "#,##0.00000"
+        elif "PNL" in hdr or "BALANCE" in hdr or "COMISIONES" in hdr:
+            col_fmt[c] = "#,##0.00"
+        else:
+            col_fmt[c] = "General"
+        if "PNL" in hdr and "NETO" in hdr:
+            pnl_col = c
+
+    for col in range(1, max_col + 1):
+        cell = ws.cell(row=1, column=col)
+        cell.font = font_hdr; cell.alignment = align_cw
+        cell.fill = fill_hdr; cell.border = border
+    ws.row_dimensions[1].height = 28
+
+    for r in range(2, max_row + 1):
+        rf = fill_alt if r % 2 == 0 else fill_w
+        ws.row_dimensions[r].height = 18
+        for c in range(1, max_col + 1):
+            cell = ws.cell(row=r, column=c)
+            cell.font = font_b; cell.alignment = align_c
+            cell.border = border; cell.fill = rf
+            cell.number_format = col_fmt.get(c, "General")
+
+    if pnl_col:
+        col_letter = get_column_letter(pnl_col)
+        rng = f"{col_letter}2:{col_letter}{max_row}"
+        ws.conditional_formatting.add(rng, CellIsRule(
+            operator='greaterThan', formula=['0'],
+            fill=PatternFill("solid", fgColor=COLORS["success_bg"]),
+            font=Font(name=FONT_BODY, size=10, color=COLORS["accent_green"], bold=True)
+        ))
+        ws.conditional_formatting.add(rng, CellIsRule(
+            operator='lessThan', formula=['0'],
+            fill=PatternFill("solid", fgColor=COLORS["danger_bg"]),
+            font=Font(name=FONT_BODY, size=10, color=COLORS["accent_red"], bold=True)
+        ))
+
+    _col_widths_fast_op(ws, max_col, max_row)
+    ws.freeze_panes = ws.cell(row=2, column=1)
+
+    # Gráfico openpyxl con eje Y escalado
+    col_map = {str(ws.cell(1, c).value or "").upper().strip(): c for c in range(1, max_col + 1)}
+    if "BALANCE" in col_map:
+        from openpyxl.chart import LineChart, Reference
+        bal_col_idx = col_map["BALANCE"]
+        bal_data = [ws.cell(r, bal_col_idx).value for r in range(2, max_row + 1)
+                    if isinstance(ws.cell(r, bal_col_idx).value, (int, float))]
+        if bal_data:
+            data_range = max(bal_data) - min(bal_data) or 1
+            margin = data_range * 0.03
+            chart2 = LineChart()
+            chart2.title  = "EVOLUCIÓN DEL BALANCE"
+            chart2.legend = None
+            chart2.y_axis.numFmt = '#,##0.00'
+            chart2.y_axis.scaling.min = min(bal_data) - margin
+            chart2.y_axis.scaling.max = max(bal_data) + margin
+            chart2.y_axis.majorGridlines = None
+            chart2.x_axis.majorGridlines = None
+            data = Reference(ws, min_col=bal_col_idx, min_row=1, max_row=max_row)
+            chart2.add_data(data, titles_from_data=True)
+            s1 = chart2.series[0]
+            s1.graphicalProperties.line.solidFill = "3A86FF"
+            s1.graphicalProperties.line.width = 22860
+            s1.smooth = True
+            s1.marker.symbol = "none"
+            chart2.height = 14; chart2.width = 44  # Ampliado (ancho 10 eq)
+            ws.add_chart(chart2, f"B{max_row + 3}")
+
+    # Tabla fallback en col R
+    TABLE_COL_OP = 18  # openpyxl 1-indexed = R
+    TABLE_ROW_OP = max_row + 3
+    for i, (label, value) in enumerate([("SALDO", val_saldo), ("VOLUMEN", val_volumen), ("APALANCAMIENTO", val_apal)]):
+        r = TABLE_ROW_OP + i
+        ws.cell(r, TABLE_COL_OP).value = label
+        ws.cell(r, TABLE_COL_OP + 1).value = value
+
+    wb.save(filepath)
+
+
+# ==============================================================================
+# FUNCIÓN PRINCIPAL (CSV → DASHBOARD RESUMEN)
 # ==============================================================================
 
 def convertir_resumen_csv_a_excel(
@@ -442,62 +730,38 @@ def convertir_resumen_csv_a_excel(
     excel_path: Optional[str] = None,
     output_dir: Optional[str] = None,
 ) -> str:
-    """Genera Excel limpio separando Métricas Clave de Parámetros Reales."""
     if not os.path.exists(csv_path):
         raise FileNotFoundError(f"No existe el CSV: {csv_path}")
 
     if output_dir is None and excel_path:
         output_dir = os.path.dirname(str(excel_path)) or None
 
-    activo = activo or "UNKNOWN"
+    activo    = activo or "UNKNOWN"
     timeframe = timeframe or "UNKNOWN"
 
-    # 1. Cargar
     df = pd.read_csv(csv_path)
-
-    # 2. Normalizar Nombres
     df = _normalizar_nombres(df, strategy_name)
-
-    # 3. Filtrado Inteligente
     df_final, cols_metrics, cols_params = _organizar_y_filtrar_columnas(df)
-
-    # 4. Ordenar filas
     df_final = _ordenar_filas(df_final)
 
-    # 5. Guardar
-    final_excel_path = _generar_nombre_archivo(
-        csv_path, output_dir, str(activo), strategy_name, str(timeframe)
-    )
+    final_excel_path = _generar_nombre_archivo(csv_path, output_dir, str(activo), strategy_name, str(timeframe))
     os.makedirs(os.path.dirname(final_excel_path) or ".", exist_ok=True)
 
     with pd.ExcelWriter(final_excel_path, engine='openpyxl') as writer:
         df_final.to_excel(writer, index=False, startrow=1)
 
-    # 6. Estilos
-    _aplicar_estilo_avanzado(
-        final_excel_path,
-        df_final,
-        cols_metrics,
-        cols_params,
-        saldo_inicial
-    )
+    _aplicar_estilo_avanzado(final_excel_path, df_final, cols_metrics, cols_params, saldo_inicial)
 
-    # Continue to duplication logic
-    
-    # 7. Renombrar a excel_path si se especificó (RESUMEN ID7.xlsx)
     path_to_return = final_excel_path
     if excel_path:
         import shutil
         try:
-            target_abs = os.path.abspath(excel_path)
-            source_abs = os.path.abspath(final_excel_path)
-            if target_abs != source_abs:
+            if os.path.abspath(excel_path) != os.path.abspath(final_excel_path):
                 shutil.move(final_excel_path, excel_path)
                 path_to_return = excel_path
-        except Exception as e:
+        except Exception:
             pass
-            
-    # 8. Eliminar CSV original
+
     try:
         if os.path.exists(csv_path):
             os.remove(csv_path)
@@ -506,236 +770,112 @@ def convertir_resumen_csv_a_excel(
 
     return path_to_return
 
-    # 8. Eliminar CSV original
-    try:
-        if os.path.exists(csv_path):
-            os.remove(csv_path)
-    except Exception:
-        pass
-
-    return final_excel_path
-
 
 # ==============================================================================
 # LÓGICA DE PROCESAMIENTO
 # ==============================================================================
 
 def _normalizar_nombres(df: pd.DataFrame, strategy_name: str) -> pd.DataFrame:
-    """Normaliza nombres a mayúsculas y estandariza métricas clave."""
     df.columns = [str(c).upper().strip() for c in df.columns]
 
-    # Mapeo a nombres estándar de MODELOX
-    # Mapeamos variaciones comunes a las claves de METRICS_ORDER
     rename_map = {
-        # ID columns
-        "STRATEGY": "ESTRATEGIA",
-        
-        # Sharpe
-        "SHARPE_RATIO": "SHARPE",
-        
-        # Trades por día
-        "TRADES_POR_DIA": "TRADES_DIA",
-        
-        # Total trades
-        "N_TRADES": "TOTAL_TRADES",
-        "NUM_TRADES": "TOTAL_TRADES",
-        "COUNT_TRADES": "TOTAL_TRADES",
-        
-        # Duración/Avg Trade
-        "AVG_TRADE_DURATION": "AVG_TRADE",
-        "DURATION_MEAN_MIN": "AVG_TRADE",
+        "STRATEGY": "ESTRATEGIA", "SHARPE_RATIO": "SHARPE", "TRADES_POR_DIA": "TRADES_DIA",
+        "N_TRADES": "TOTAL_TRADES", "NUM_TRADES": "TOTAL_TRADES", "COUNT_TRADES": "TOTAL_TRADES",
+        "AVG_TRADE_DURATION": "AVG_TRADE", "DURATION_MEAN_MIN": "AVG_TRADE",
         "RETORNO_PROMEDIO": "AVG_TRADE",
-        
-        # Winrate
-        "WIN_RATE_PCT": "WINRATE_PCT",
-        "WINRATE": "WINRATE_PCT",
-        "PORC_GANADORAS": "WINRATE_PCT",
-        
-        # Rachas / Streaks
-        "RACHA_GANADORA": "WIN_STREAK",
-        "RACHA_PERDEDORA": "LOSS_STREAK",
-
-        # Variantes de Drawdown (CRÍTICO: Capturar todas)
-        "MAX_DRAWDOWN_PCT": "MAX_DD_PCT",
-        "MAX_DRAWDOWN": "MAX_DD_PCT",
-        "DRAWDOWN": "MAX_DD_PCT",
-        "DD": "MAX_DD_PCT",
-        "DD_PCT": "MAX_DD_PCT",
-        "MAX_DD": "MAX_DD_PCT",
-
-        # ROI
-        "RETURN_PCT": "ROI_PCT",
-        "ROI": "ROI_PCT",
-        
-        "NUM_TRADES": "TOTAL_TRADES",
-        "COUNT_TRADES": "TOTAL_TRADES",
-        
-        # Winrate
-        "WIN_RATE_PCT": "WINRATE_PCT",
-        "WINRATE": "WINRATE_PCT",
-        "PORC_GANADORAS": "WINRATE_PCT",
-        "WIN_RATE": "WINRATE_PCT",
-        
-        # Variantes de Drawdown
-        "MAX_DRAWDOWN_PCT": "MAX_DD_PCT",
-        "MAX_DRAWDOWN": "MAX_DD_PCT",
-        "DRAWDOWN": "MAX_DD_PCT",
-        "DD": "MAX_DD_PCT",
-        "DD_PCT": "MAX_DD_PCT",
-        "MAX_DD": "MAX_DD_PCT",
-
-        # Estandarización de longs/shorts (A "LONG" y "SHORT")
+        "WIN_RATE_PCT": "WINRATE_PCT", "WINRATE": "WINRATE_PCT",
+        "PORC_GANADORAS": "WINRATE_PCT", "WIN_RATE": "WINRATE_PCT",
+        "RACHA_GANADORA": "WIN_STREAK", "RACHA_PERDEDORA": "LOSS_STREAK",
+        "MAX_DRAWDOWN_PCT": "MAX_DD_PCT", "MAX_DRAWDOWN": "MAX_DD_PCT",
+        "DRAWDOWN": "MAX_DD_PCT", "DD": "MAX_DD_PCT", "DD_PCT": "MAX_DD_PCT", "MAX_DD": "MAX_DD_PCT",
+        "RETURN_PCT": "ROI_PCT", "ROI": "ROI_PCT",
         "COUNT_LONGS": "LONG", "N_LONGS": "LONG", "LONGS": "LONG", "NUM_LONGS": "LONG",
         "N_TRADES_LONG": "LONG", "TRADES_LONG": "LONG",
-        
         "COUNT_SHORTS": "SHORT", "N_SHORTS": "SHORT", "SHORTS": "SHORT", "NUM_SHORTS": "SHORT",
         "N_TRADES_SHORT": "SHORT", "TRADES_SHORT": "SHORT",
-        
-        # Parámetros de salida (Normalización estricta para el filtrado)
         "EXIT_SL_PCT": "SL", "P_SL": "SL", "SL_PCT": "SL",
         "EXIT_TP_PCT": "TP", "P_TP": "TP", "TP_PCT": "TP",
         "EXIT_TRAIL_ACT_PCT": "ACT", "TRAIL_ACT": "ACT",
         "EXIT_TRAIL_DIST_PCT": "DIST", "TRAIL_DIST": "DIST", "DISTANCE": "DIST",
     }
 
-    # Renombrar solo si el destino no existe
     for old, new in rename_map.items():
         if old in df.columns and new not in df.columns:
             df.rename(columns={old: new}, inplace=True)
         elif old in df.columns and new in df.columns:
-            # Si ambas existen, borramos la vieja para evitar duplicados ambiguos
             df.drop(columns=[old], inplace=True)
 
-    # Asegurar columna ESTRATEGIA
     if "ESTRATEGIA" not in df.columns:
         df.insert(0, "ESTRATEGIA", strategy_name.upper())
-    
-    # Asegurar columna TRIAL si no existe
     if "TRIAL" not in df.columns and df.index.name != "TRIAL":
         df.insert(0, "TRIAL", range(len(df)))
 
-    # Limpieza visual de prefijos de forma genérica
     new_cols = []
     for col in df.columns:
-        # Si ya está en las listas oficiales, lo dejamos tal cual
-        if col in METRICS_ORDER or col in ID_COLS:
+        if col in METRICS_ORDER or col in ID_COLS or col in {"SL", "TP", "ACT", "DIST"}:
             new_cols.append(col)
             continue
-        
-        # Check si es uno de los params de salida ya renombrados manualmente arriba
-        if col in ["SL", "TP", "ACT", "DIST"]:
-            new_cols.append(col)
-            continue
-
         clean = col
         for p in PREFIXES_TO_CLEAN:
             if clean.startswith(p):
                 clean = clean[len(p):]
-
-        clean = clean.replace("_PCT", "%").replace("PERCENTAGE", "%")
-        new_cols.append(clean)
-
+        new_cols.append(clean.replace("_PCT", "%").replace("PERCENTAGE", "%"))
     df.columns = new_cols
     return df
 
 
 def _organizar_y_filtrar_columnas(df: pd.DataFrame):
     cols = list(df.columns)
-
-    # 1. IDs
     current_ids = [c for c in ID_COLS if c in cols]
 
-    # 2. Métricas Clave (Estricto)
     current_metrics = []
     for m in METRICS_ORDER:
-        targets = [m, m.replace("_PCT", "%")]
-        found = None
-        for t in targets:
+        for t in [m, m.replace("_PCT", "%")]:
             if t in cols:
-                found = t
+                current_metrics.append(t)
                 break
-        if found:
-            current_metrics.append(found)
-
     current_metrics = list(dict.fromkeys(current_metrics))
 
-    # 3. Parámetros (Filtro con Lógica Custom de Salidas)
     excluded = set(current_ids + current_metrics)
     candidates = [c for c in cols if c not in excluded]
 
-    current_params = []
-    
-    # Detectar tipo de salida predominante para filtrar columnas
-    # Buscamos columnas originales o parámetros 'param_exit_type' en el df original si fuera posible,
-    # pero aquí ya están renombrados. Asumimos que si hay columnas ACT/DIST con valores no nulos/ceros, es trailing.
-    # Pero la regla del usuario es explícita: "Si es FIXED solo SL y TP, si es TRAILING solo SL, TP, ACT y DISTANCE".
-    # Como ExcelReporter mezcla trials, si hay CUALQUIER trial con trailing, deberíamos mostrar las columnas.
-    # Pero usualmente un reporte es de una ejecución.
-    
     exit_cols = {"SL", "TP", "ACT", "DIST"}
-    
-    # Hacemos una pasada para ver candidatos válidos
-    valid_candidates = []
-    for c in candidates:
-        # A. Vacíos
-        if df[c].astype(str).str.strip().eq("").all():
-            continue
-        # B. Internos
-        if c.startswith("__"):
-            continue
-        # C. Lista Negra
-        if c in EXCLUDED_PARAMS or c.replace("%", "_PCT") in EXCLUDED_PARAMS:
-            continue
-        
-        valid_candidates.append(c)
-
-    # Filtrado específico de salidas
-    # Revisamos si existe ACT o DIST con valores significativos (no todos 0 o vacíos)
     has_trailing_data = False
     for t_col in ["ACT", "DIST"]:
         if t_col in df.columns:
-            # Check si hay algun valor > 0 (asumiendo numericos)
             try:
                 if (pd.to_numeric(df[t_col], errors='coerce').fillna(0) > 0).any():
-                    has_trailing_data = True
-                    break
-            except:
+                    has_trailing_data = True; break
+            except Exception:
                 pass
-    
-    for c in valid_candidates:
-        if c in exit_cols:
-            if c in ["ACT", "DIST"] and not has_trailing_data:
-                continue # Ocultar ACT/DIST si no hay trailing activo
-            current_params.append(c)
-            continue
 
-        # D. FILTRO HEURÍSTICO (Resto de params)
-        is_garbage = False
+    very_bad = {"PROFIT", "WIN", "SALDO", "BALANCE", "DRAWDOWN", "DD",
+                "ROI", "RETORNO", "NUM_", "COUNT", "TRADES", "RESULT", "METRIC"}
+    exceptions = {"STOP", "SL", "TP", "TRAIL", "TIME", "PERIOD", "LEN", "FAST",
+                  "SLOW", "SIGNAL", "LIMIT", "THRESHOLD", "SIGMA", "OFFSET", "ATR", "ACT", "DIST"}
+
+    current_params = []
+    for c in candidates:
+        if df[c].astype(str).str.strip().eq("").all() or c.startswith("__"):
+            continue
+        if c in EXCLUDED_PARAMS or c.replace("%", "_PCT") in EXCLUDED_PARAMS:
+            continue
+        if c in exit_cols:
+            if c in {"ACT", "DIST"} and not has_trailing_data:
+                continue
+            current_params.append(c); continue
         c_upper = c.upper()
+        is_garbage = False
         for kw in METRIC_KEYWORDS_TO_DROP:
             if kw in c_upper:
-                # Excepciones técnicas
-                exceptions = ["STOP", "SL", "TP", "TRAIL", "TIME", "PERIOD", "LEN", "FAST", "SLOW", "SIGNAL", "LIMIT", "THRESHOLD", "SIGMA", "OFFSET", "ATR", "ACT", "DIST"]
-                has_exception = any(exc in c_upper for exc in exceptions)
-                
-                # Palabras prohibidas fuertes
-                very_bad_words = ["PROFIT", "WIN", "SALDO", "BALANCE", "DRAWDOWN", "DD", "ROI", "RETORNO", "NUM_", "COUNT", "TRADES", "RESULT", "METRIC"]
-                if any(bw in c_upper for bw in very_bad_words):
-                    is_garbage = True
-                    break
-
-                if not has_exception:
-                    is_garbage = True
-                    break
-
+                if any(bw in c_upper for bw in very_bad):
+                    is_garbage = True; break
+                if not any(ex in c_upper for ex in exceptions):
+                    is_garbage = True; break
         if not is_garbage:
             current_params.append(c)
 
-    # Ordenar params: Poner SL, TP, ACT, DIST al final o principio? 
-    # Mejor orden alfabetico general, pero SL/TP agrupados si es posible.
-    # El sort alfabetico los separará, pero es aceptable.
     current_params.sort()
-
     final_cols = current_ids + current_metrics + current_params
     return df[final_cols], current_metrics, current_params
 
@@ -749,14 +889,36 @@ def _ordenar_filas(df: pd.DataFrame) -> pd.DataFrame:
 
 
 def _generar_nombre_archivo(csv, out_dir, activo, est, tf) -> str:
-    clean_est = re.sub(r'[^A-Z0-9]', '', est.upper())
-    clean_tf = re.sub(r'[^a-zA-Z0-9]', '', tf.lower())
-    fname = f"RESUMEN_{activo}_{clean_est}_{clean_tf}.xlsx"
+    fname = (f"RESUMEN_{activo}_{re.sub(r'[^A-Z0-9]', '', est.upper())}"
+             f"_{re.sub(r'[^a-zA-Z0-9]', '', tf.lower())}.xlsx")
     return os.path.join(out_dir or os.path.dirname(csv), fname)
 
 
 # ==============================================================================
-# ESTILOS AVANZADOS
+# HELPERS OPENPYXL
+# ==============================================================================
+
+def _make_border_op(color: str, style: str = 'thin') -> Border:
+    s = Side(style=style, color=color)
+    return Border(left=s, right=s, top=s, bottom=s)
+
+
+def _col_widths_fast_op(ws, max_col: int, max_row: int, header_row: int = 1, sample: int = 20):
+    for col in range(1, max_col + 1):
+        col_letter = get_column_letter(col)
+        max_len = len(str(ws.cell(row=header_row, column=col).value or ""))
+        for r in range(header_row + 1, min(header_row + sample + 1, max_row + 1)):
+            try:
+                v = ws.cell(row=r, column=col).value
+                if v is not None:
+                    max_len = max(max_len, len(str(v)))
+            except Exception:
+                pass
+        ws.column_dimensions[col_letter].width = min((max_len + 2) * 1.15, 28)
+
+
+# ==============================================================================
+# ESTILOS DASHBOARD RESUMEN
 # ==============================================================================
 
 def _aplicar_estilo_avanzado(filepath, df, metrics_cols, params_cols, saldo_ini):
@@ -767,296 +929,93 @@ def _aplicar_estilo_avanzado(filepath, df, metrics_cols, params_cols, saldo_ini)
     max_col = ws.max_column
     max_row = ws.max_row
 
-    n_ids = len([c for c in ID_COLS if c in df.columns])
-    n_metrics = len(metrics_cols)
-    n_params = len(params_cols)
-
+    n_ids         = len([c for c in ID_COLS if c in df.columns])
+    n_metrics     = len(metrics_cols)
+    n_params      = len(params_cols)
     start_metrics = n_ids + 1
-    end_metrics = start_metrics + n_metrics - 1
-    start_params = end_metrics + 1
-    end_params = start_params + n_params - 1
+    end_metrics   = start_metrics + n_metrics - 1
+    start_params  = end_metrics + 1
+    end_params    = start_params + n_params - 1
 
-    # 1. TÍTULOS
-    font_group = Font(name=FONT_TITLE, size=12, bold=True, color=COLORS["text_white"])
-    align_group = Alignment(horizontal='center', vertical='center')
+    border   = _make_border_op(COLORS["border_color"])
+    fill_id  = PatternFill("solid", fgColor=COLORS["header_bg_id"])
+    fill_met = PatternFill("solid", fgColor=COLORS["header_bg_metrics"])
+    fill_par = PatternFill("solid", fgColor=COLORS["header_bg_params"])
+    fill_alt = PatternFill("solid", fgColor=COLORS["row_alt"])
+    fill_w   = PatternFill("solid", fgColor="FFFFFF")
 
-    # 1. TÍTULOS DE SECCIONES
-    font_group = Font(name=FONT_TITLE, size=12, bold=True, color=COLORS["text_white"])
-    align_group = Alignment(horizontal='center', vertical='center')
+    font_grp  = Font(name=FONT_TITLE, size=11, bold=True, color="FFFFFF")
+    font_hdr  = Font(name=FONT_TITLE, size=11, bold=True, color="FFFFFF")
+    font_body = Font(name=FONT_BODY,  size=10, color=COLORS["text_dark"])
+    align_c   = Alignment(horizontal='center', vertical='center')
+    align_cw  = Alignment(horizontal='center', vertical='center', wrap_text=True)
 
-    # Header 1: DATOS (TRIAL, ESTRATEGIA, SCORE)
+    def _section(c_start, c_end, label, fill):
+        c = ws.cell(row=1, column=c_start)
+        c.value = label; c.fill = fill; c.font = font_grp; c.alignment = align_c
+        if c_end > c_start:
+            ws.merge_cells(start_row=1, start_column=c_start, end_row=1, end_column=c_end)
+
     if n_ids > 0:
-        c = ws.cell(row=1, column=1)
-        c.value = "DATOS"
-        c.fill = PatternFill("solid", fgColor=COLORS["header_bg_id"])
-        c.font = font_group
-        c.alignment = align_group
-        if n_ids > 1:
-            ws.merge_cells(start_row=1, start_column=1, end_row=1, end_column=n_ids)
-
-    # Header 2: MÉTRICAS
+        _section(1, n_ids, "DATOS", fill_id)
     if n_metrics > 0:
-        c = ws.cell(row=1, column=start_metrics)
-        c.value = "METRICAS"
-        c.fill = PatternFill("solid", fgColor=COLORS["header_bg_metrics"])
-        c.font = font_group
-        c.alignment = align_group
-        if n_metrics > 1:
-            ws.merge_cells(start_row=1, start_column=start_metrics, end_row=1, end_column=end_metrics)
-    
-    # Header 3: PARÁMETROS
+        _section(start_metrics, end_metrics, "MÉTRICAS", fill_met)
     if n_params > 0:
-        c = ws.cell(row=1, column=start_params)
-        c.value = "PARAMETROS"  # Usuario pidió "PARAMETROS", sin "ESTRATEGIA"
-        c.fill = PatternFill("solid", fgColor=COLORS["header_bg_params"])
-        c.font = font_group
-        c.alignment = align_group
-
-        if n_params > 1:
-            ws.merge_cells(start_row=1, start_column=start_params, end_row=1, end_column=end_params)
-
-    # 2. HEADERS
-    font_header = Font(name=FONT_TITLE, size=12, bold=True, color=COLORS["text_white"])
-    border_full = Border(
-        left=Side(style='thin', color=COLORS["border_color"]),
-        right=Side(style='thin', color=COLORS["border_color"]),
-        top=Side(style='thin', color=COLORS["border_color"]),
-        bottom=Side(style='thin', color=COLORS["border_color"])
-    )
-
-    for col in range(1, max_col + 1):
-        cell = ws.cell(row=2, column=col)
-        cell.font = font_header
-        cell.alignment = Alignment(horizontal='center', vertical='center', wrap_text=True)
-        cell.border = border_full
-
-        if col < start_metrics:
-            cell.fill = PatternFill("solid", fgColor=COLORS["header_bg_id"])
-        elif col <= end_metrics:
-            cell.fill = PatternFill("solid", fgColor=COLORS["header_bg_metrics"])
-        else:
-            cell.fill = PatternFill("solid", fgColor=COLORS["header_bg_params"])
-
-        val_len = len(str(cell.value)) if cell.value else 0
-        ws.column_dimensions[get_column_letter(col)].width = min(max(10, val_len + 2), 22)
+        _section(start_params, end_params, "PARÁMETROS", fill_par)
 
     ws.row_dimensions[1].height = 20
     ws.row_dimensions[2].height = 30
 
-    # 3. DATOS
-    font_body = Font(name=FONT_BODY, size=12, color=COLORS["text_dark"])
+    for col in range(1, max_col + 1):
+        cell = ws.cell(row=2, column=col)
+        cell.font = font_hdr; cell.alignment = align_cw; cell.border = border
+        cell.fill = fill_id if col < start_metrics else (fill_met if col <= end_metrics else fill_par)
+
+    col_hdrs = {c: str(ws.cell(2, c).value or "").upper() for c in range(1, max_col + 1)}
 
     for r in range(3, max_row + 1):
+        rf = fill_alt if r % 2 == 0 else fill_w
         for c in range(1, max_col + 1):
             cell = ws.cell(row=r, column=c)
-            cell.font = font_body
-            cell.alignment = Alignment(horizontal='center', vertical='center')
-            cell.border = border_full
-
-            header_val = str(ws.cell(2, c).value).upper()
-
-            if isinstance(cell.value, (int, float)):
-                # Auto-detect percentage values if > 1.0 and header says %
-                # Pero mejor confiar en logica previa de dividir / 100
-                pass
-
-            if "TRADES" in header_val and "DIA" in header_val:
+            cell.font = font_body; cell.alignment = align_c
+            cell.border = border; cell.fill = rf
+            hdr = col_hdrs[c]
+            if "DIA" in hdr and "TRADES" in hdr:
                 cell.number_format = "0.00"
-            elif "TRADES" in header_val or "NUM_" in header_val:
+            elif "TRADES" in hdr:
                 cell.number_format = "0"
-            elif "SCORE" in header_val or "%" in header_val or "PCT" in header_val or "RATIO" in header_val or "SHARPE" in header_val or "FACTOR" in header_val or "ESTABILIDAD" in header_val:
-                # Si es % y el valor es > 1 (ej 50.0), dividir por 100 para que el 0.00% de excel cuadre
-                if "%" in header_val or "PCT" in header_val or "WINRATE" in header_val or "ROI" in header_val:
-                    cell.number_format = "0.00%"
-                    try:
-                        val = float(cell.value)
-                        # Si tiene % o PCT en el nombre, lo normalizamos dividiendo por 100 
-                        # para que Excel (que trata 1.0 como 100%) lo muestre correctamente.
-                        # Ej: 0.34 -> 0.0034 (0.34%) | 3.00 -> 0.03 (3.00%)
-                        if "%" in header_val or "PCT" in header_val:
-                             cell.value = val / 100.0
-                        elif abs(val) > 1.0: # Solo para WINRATE o ROI si vienen en formato entero 
-                             cell.value = val / 100.0
-                    except:
-                        pass
-                else:
-                    cell.number_format = "0.00"
-            elif "SALDO" in header_val or "PROFIT" in header_val or "PNL" in header_val:
-                cell.number_format = "#,##0.00"
-
-    # Auto-adjust columns based on content (RESUMEN)
-    for col in range(1, max_col + 1):
-        max_length = 0
-        column = get_column_letter(col)
-        # Check header
-        header_val = ws.cell(row=2, column=col).value
-        if header_val:
-            max_length = len(str(header_val))
-        
-        # Check rows
-        for i, row in enumerate(ws.iter_rows(min_row=3, max_row=min(50, max_row), min_col=col, max_col=col)):
-            for cell in row:
+            elif any(k in hdr for k in ("%", "PCT", "WINRATE", "ROI")):
+                cell.number_format = "0.00%"
                 try:
-                    if len(str(cell.value)) > max_length:
-                        max_length = len(str(cell.value))
-                except:
+                    cell.value = float(cell.value) / 100.0
+                except Exception:
                     pass
-        
-        adjusted_width = (max_length + 2) * 1.2  # Factor 1.2 para asegurar espacio para negritas
-        ws.column_dimensions[column].width = min(adjusted_width, 50)
+            elif any(k in hdr for k in ("SCORE", "SHARPE", "FACTOR", "SQN")):
+                cell.number_format = "0.00"
 
+    _col_widths_fast_op(ws, max_col, max_row, header_row=2, sample=20)
 
-    # 4. CONDITIONAL FORMATTING
-    col_map = {str(ws.cell(2, c).value).strip(): get_column_letter(c) for c in range(1, max_col + 1)}
+    col_map = {str(ws.cell(2, c).value or "").strip(): get_column_letter(c)
+               for c in range(1, max_col + 1)}
 
     if "ROI%" in col_map:
-        col_roi = col_map["ROI%"]
-        ws.conditional_formatting.add(f"{col_roi}3:{col_roi}{max_row}", DataBarRule(
-            start_type='min', end_type='max', color="638EC6", showValue=True
-        ))
+        ws.conditional_formatting.add(
+            f"{col_map['ROI%']}3:{col_map['ROI%']}{max_row}",
+            DataBarRule(start_type='min', end_type='max', color="3A86FF", showValue=True))
 
     if "SCORE" in col_map:
-        col_score = col_map["SCORE"]
-        # Minimalist Scale: White -> Subtle Grey/Green
-        ws.conditional_formatting.add(f"{col_score}3:{col_score}{max_row}", ColorScaleRule(
-            start_type='min', start_color='FFFFFF',
-            mid_type='percentile', mid_value=50, mid_color='F1F8E9', # Very pale green
-            end_type='max', end_color='C8E6C9' # Pale green
-        ))
-
-    if "SALDO_ACTUAL" in col_map:
-        l_idx = list(col_map.values()).index(col_map["SALDO_ACTUAL"]) + 1
-        for row in range(3, max_row + 1):
-            cell = ws.cell(row=row, column=l_idx)
-            try:
-                val = float(cell.value)
-                if val >= saldo_ini * 1.5:
-                    cell.fill = PatternFill("solid", fgColor=COLORS["success_bg"])
-                    cell.font = Font(name=FONT_BODY, size=12, color="006100", bold=True)
-                elif val < saldo_ini:
-                    cell.fill = PatternFill("solid", fgColor=COLORS["danger_bg"])
-                    cell.font = Font(name=FONT_BODY, size=12, color="9C0006")
-            except Exception:
-                pass
+        ws.conditional_formatting.add(
+            f"{col_map['SCORE']}3:{col_map['SCORE']}{max_row}",
+            ColorScaleRule(start_type='min', start_color='FFFFFF',
+                           mid_type='percentile', mid_value=50, mid_color='E3EAF6',
+                           end_type='max', end_color='B3C9F7'))
 
     ws.freeze_panes = ws.cell(row=3, column=start_metrics)
     wb.save(filepath)
 
 
-def _aplicar_estilo_trades(filepath: str):
-    """
-    Aplica estilos profesionales al Excel de Trades (similar al Dashboard).
-    - Headers oscuros
-    - Formato de Nímeros
-    - Colores condicionales en PnL
-    """
-    wb = load_workbook(filepath)
-    ws = wb.active
-    ws.sheet_view.showGridLines = False
-    
-    max_col = ws.max_column
-    max_row = ws.max_row
-    
-    # 1. HEADERS
-    font_header = Font(name=FONT_TITLE, size=11, bold=True, color=COLORS["text_white"])
-    border_full = Border(
-        left=Side(style='thin', color=COLORS["border_color"]),
-        right=Side(style='thin', color=COLORS["border_color"]),
-        top=Side(style='thin', color=COLORS["border_color"]),
-        bottom=Side(style='thin', color=COLORS["border_color"])
-    )
-    
-    for col in range(1, max_col + 1):
-        cell = ws.cell(row=1, column=col)
-        cell.font = font_header
-        cell.alignment = Alignment(horizontal='center', vertical='center', wrap_text=True)
-        cell.fill = PatternFill("solid", fgColor=COLORS["header_bg_metrics"]) 
-        cell.border = border_full
-        
-        # Ajuste ancho
-        val_len = len(str(cell.value)) if cell.value else 0
-        ws.column_dimensions[get_column_letter(col)].width = max(12, val_len + 4)
-        
-    ws.row_dimensions[1].height = 25
-    
-    # 2. DATA
-    font_body = Font(name=FONT_BODY, size=10, color=COLORS["text_dark"])
-    
-    # Identify columns by name
-    col_map = {str(ws.cell(1, c).value).upper().strip(): c for c in range(1, max_col + 1)}
-    
-    for r in range(2, max_row + 1):
-        for c in range(1, max_col + 1):
-            cell = ws.cell(row=r, column=c)
-            cell.font = font_body
-            cell.alignment = Alignment(horizontal='center', vertical='center')
-            cell.border = border_full
-            
-            # Recuperar header para saber formato
-            header = str(ws.cell(1, c).value).upper()
-            
-            # Formatos (2 decimales estricto)
-            if "TIME" in header or "DATE" in header:
-                 cell.number_format = "YYYY-MM-DD HH:MM:SS"
-            elif "%" in header or "PCT" in header or "ROI" in header:
-                cell.number_format = "0.00%"
-            elif "PRICE" in header or "PNL" in header or "BALANCE" in header or "GROSS" in header or "FEES" in header or "SALDO" in header or "VOLUMEN" in header:
-                cell.number_format = "#,##0.00"
-            elif "QTY" in header or "CANTIDAD" in header:
-                cell.number_format = "0.0000"
-            elif "APALANCAMIENTO" in header:
-                cell.number_format = "0.00x" # Formato "20.00x" queda bien
-            
-            # Conditional Formatting
-            # PNL: Green/Red - APPLY ONLY TO NET_PNL (Others Neutral)
-            if "PNL" in header or "ROI" in header:
-                # Remove coloring for GROSS_PNL and ROI as requested
-                if "GROSS" in header or "ROI" in header:
-                    cell.font = Font(name=FONT_BODY, size=10, color=COLORS["text_dark"])
-                    # Ensure no fill is applied (default)
-                elif "NET_PNL" in header or "PNL" in header: # Keep coloring only for Net PnL if desired, or remove all if strictly neutral
-                     try:
-                        val = float(cell.value)
-                        if val > 0:
-                            cell.fill = PatternFill("solid", fgColor=COLORS["success_bg"])
-                            cell.font = Font(name=FONT_BODY, size=10, color="006100")
-                        elif val < 0:
-                             cell.fill = PatternFill("solid", fgColor=COLORS["danger_bg"])
-                             cell.font = Font(name=FONT_BODY, size=10, color="9C0006")
-                     except:
-                        pass
-                    
-            # SIDE: Neutral (Minimalist)
-            if "SIDE" in header or "TYPE" in header:
-                cell.font = Font(name=FONT_BODY, size=10, color=COLORS["text_dark"])
-
-    # Auto-adjust columns based on content
-    for col in range(1, max_col + 1):
-        max_length = 0
-        column = get_column_letter(col)
-        # Check header length
-        header_val = ws.cell(row=1, column=col).value
-        if header_val:
-            max_length = len(str(header_val))
-        
-        # Check first 50 rows for speed
-        for i, row in enumerate(ws.iter_rows(min_row=2, max_row=min(52, max_row), min_col=col, max_col=col)):
-            for cell in row:
-                try:
-                    if len(str(cell.value)) > max_length:
-                        max_length = len(str(cell.value))
-                except:
-                    pass
-        
-        adjusted_width = (max_length + 2) * 1.2 # Factor 1.2 para asegurar espacio para negritas
-        ws.column_dimensions[column].width = min(adjusted_width, 50) # Cap width
-
-    ws.freeze_panes = ws.cell(row=2, column=1)
-    wb.save(filepath)
-
-
 # ==============================================================================
-# EXPORTACIÓN RÁPIDA
+# EXPORTACIÓN RÁPIDA (API legacy)
 # ==============================================================================
 
 def exportar_trades_excel_rapido(
@@ -1072,15 +1031,12 @@ def exportar_trades_excel_rapido(
     perturb_seed: int = None,
     skip_trades_file: bool = False,
 ):
-    """Guarda CSV maestro y trades."""
     params = dict(params or {})
-
     fila = {
-        "TRIAL": trial_number,
-        "SCORE": score if score is not None else 0,
+        "TRIAL":      trial_number,
+        "SCORE":      score if score is not None else 0,
         "ESTRATEGIA": params.get("NOMBRE_COMBO", "UNKNOWN"),
     }
-
     for k, v in metrics.items():
         fila[k.upper()] = v
 
@@ -1096,7 +1052,6 @@ def exportar_trades_excel_rapido(
     fila.update(_aplanar(params))
     df_fila = pd.DataFrame([fila])
 
-    # Escribir CSV
     if int(trial_number) == 0 and os.path.exists(resumen_csv_path):
         try:
             os.remove(resumen_csv_path)
@@ -1106,78 +1061,31 @@ def exportar_trades_excel_rapido(
     mode = "w" if not os.path.exists(resumen_csv_path) else "a"
     df_fila.to_csv(resumen_csv_path, index=False, mode=mode, header=(mode == "w"))
 
-    # Guardar Trades
     if not skip_trades_file:
-        _gestionar_archivos_trades(df_trades, trades_actual_base, trial_number, score, max_archivos)
+        _gestionar_archivos_trades(df_trades, trades_actual_base, trial_number, score, max_archivos, params=params)
 
-def _gestionar_archivos_trades(df, base_path, trial, score, max_files):
+
+def _gestionar_archivos_trades(df, base_path, trial, score, max_files, params=None):
     trades_dir = os.path.dirname(base_path) or "."
     os.makedirs(trades_dir, exist_ok=True)
 
     s_val = score if score is not None else -999
-    fname = f"TRADES_TRIAL{trial}_SCORE{s_val:.2f}.xlsx"
-    fpath = os.path.join(trades_dir, fname)
+    fpath = os.path.join(trades_dir, f"TRADES_TRIAL{trial}_SCORE{s_val:.2f}.xlsx")
 
     df_export = df.copy()
     for col in df_export.select_dtypes(include=["datetime64[ns, UTC]", "datetime64[ns]"]).columns:
         if hasattr(df_export[col].dt, "tz") and df_export[col].dt.tz is not None:
             df_export[col] = df_export[col].dt.tz_localize(None)
 
-    # Renombrar columnas para consistencia visual
-    # Renombrar columnas para consistencia visual
-    rename_map = {
-        "entry_time": "ENTRY_TIME", "exit_time": "EXIT_TIME",
-        "type": "SIDE", "entry_price": "ENTRY_PRICE", "exit_price": "EXIT_PRICE",
-        "qty": "CANTIDAD", "saldo_usado": "SALDO",
-        "pnl_bruto": "GROSS_PNL", "comision": "FEES",
-        "pnl_neto": "NET_PNL", "pnl_pct": "ROI_%",
-        "saldo_antes": "BALANCE_PRE", "saldo_despues": "BALANCE_POST",
-        "reason": "EXIT_REASON", "side_int": "SIDE_INT"
-    }
-    # Solo renombra si existen las columnas
-    df_export.rename(columns=rename_map, inplace=True)
-    
-     # --- NUEVA LÓGICA DE TRANSFORMACIÓN DE DATOS (REPLICADA EN FAST MODE) ---
-    cols_to_drop = ["ENTRY_IDX", "EXIT_IDX", "SIDE_INT", "entry_idx", "exit_idx", "side_int"]
-    df_export.drop(columns=[c for c in cols_to_drop if c in df_export.columns], inplace=True)
+    df_export = _preparar_df_trades(df_export)
 
-    qty_col = "CANTIDAD" if "CANTIDAD" in df_export.columns else "QTY"
-    if qty_col in df_export.columns and "ENTRY_PRICE" in df_export.columns:
-        df_export["VOLUMEN"] = df_export[qty_col] * df_export["ENTRY_PRICE"]
-        if "SALDO" in df_export.columns:
-             df_export["APALANCAMIENTO"] = df_export.apply(lambda x: x["VOLUMEN"]/x["SALDO"] if x["SALDO"]>0 else 0, axis=1)
+    saldo = (params or {}).get('__saldo_usado') or 0
+    apal  = (params or {}).get('__apalancamiento_max') or 0
 
-    reason_map = {1: "SL", 2: "TP", 3: "TRAIL", 4: "TIME", 0: "END"}
-    if "EXIT_REASON" in df_export.columns:
-        # Si es numerico aun
-        if pd.api.types.is_numeric_dtype(df_export["EXIT_REASON"]):
-             df_export["EXIT_REASON"] = df_export["EXIT_REASON"].map(reason_map).fillna("UNKNOWN")
-
-    if "ROI_%" in df_export.columns:
-        df_export["ROI_%"] = df_export["ROI_%"] / 100.0
-
-    str_cols = ["SIDE", "EXIT_REASON", "TYPE"]
-    for c in str_cols:
-        if c in df_export.columns:
-            df_export[c] = df_export[c].astype(str).str.upper()
-
-    df_export.columns = [c.upper() for c in df_export.columns] # Asegura mayúsculas en todo caso
-
-    # Reordenar columnas para mejor lectura (opcional pero recomendado)
-    start_cols = ["ENTRY_TIME", "EXIT_TIME", "SIDE", "EXIT_REASON", "ENTRY_PRICE", "EXIT_PRICE", "CANTIDAD", "VOLUMEN", "SALDO", "APALANCAMIENTO", "GROSS_PNL", "FEES", "NET_PNL", "ROI_%", "BALANCE_PRE", "BALANCE_POST"]
-    ordered_cols = [c for c in start_cols if c in df_export.columns]
-    remaining = [c for c in df_export.columns if c not in ordered_cols]
-    df_export = df_export[ordered_cols + remaining]
-
-
-    # Usar openpyxl para permitir edición posterior
-    df_export.to_excel(fpath, sheet_name='Trades', index=False, engine='openpyxl')
-
-    # Aplicar estilos
     try:
-        _aplicar_estilo_trades(fpath)
+        _escribir_trades_xlsxwriter(fpath, df_export, saldo, saldo * apal, apal)
     except Exception:
-        pass
+        _escribir_trades_openpyxl_fallback(fpath, df_export, saldo, saldo * apal, apal)
 
     files = [f for f in os.listdir(trades_dir) if f.startswith("TRADES_TRIAL") and f.endswith(".xlsx")]
     if len(files) > max_files:
@@ -1188,7 +1096,6 @@ def _gestionar_archivos_trades(df, base_path, trial, score, max_files):
                 scored.append((s, f))
             except Exception:
                 scored.append((-9999, f))
-
         scored.sort(key=lambda x: x[0], reverse=True)
         for _, f_del in scored[max_files:]:
             try:

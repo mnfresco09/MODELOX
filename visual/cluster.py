@@ -111,7 +111,7 @@ METRIC_KEYWORDS = [
     "DRAWDOWN", "DD", "RACHA", "STREAK", "UNDERWATER",
     "RATIO", "FACTOR", "SHARPE", "SORTINO", "CALMAR", "SQN",
     "EXPECTATIVA", "KELLY", "COUNT", "NUM_", "N_TRADES",
-    "LONGS", "SHORTS", "TRADES", "METRIC", "RESULT",
+    "LONG", "SHORT", "LONGS", "SHORTS", "TRADES", "METRIC", "RESULT",
     "BEST", "WORST", "DIA_OPERADO", "DURATION",
 ]
 
@@ -203,8 +203,15 @@ def leer_excel_modelox(filepath: str) -> Tuple[pd.DataFrame, List[str], List[str
             else:
                 metric_cols.append(col)
 
+    # ── Limpieza de NaNs ──
+    n_total = len(df)
+    if param_cols:
+        df = df.dropna(subset=param_cols).copy()
+    
+    n_clean = len(df)
+    
     print(f"\n  📊 Estructura detectada:")
-    print(f"     • {len(df)} trials")
+    print(f"     • {n_clean} trials" + (f" (de {n_total} leídos, {n_total-n_clean} eliminados por NaN)" if n_clean < n_total else ""))
     print(f"     • {len(id_cols)} columnas ID: {id_cols}")
     print(f"     • {len(metric_cols)} métricas: {metric_cols}")
     print(f"     • {len(param_cols)} parámetros: {param_cols}")
@@ -348,10 +355,17 @@ def construir_features_ponderadas(
 
     for col in df_params.columns:
         info = param_info[col]
-        if info.get("type") == "constant" or info.get("weight", 0) == 0:
+        if info.get("type") in ["constant", "unknown"] or info.get("weight", 0) == 0:
             continue
 
         values = df_params[col].values.reshape(-1, 1)
+        
+        # Doble seguridad: imputar medianas si queda algún NaN residual
+        if np.isnan(values).any():
+            from sklearn.impute import SimpleImputer
+            imputer = SimpleImputer(strategy="median")
+            values = imputer.fit_transform(values)
+
         scaler = RobustScaler()
         scaled = scaler.fit_transform(values).ravel()
 
