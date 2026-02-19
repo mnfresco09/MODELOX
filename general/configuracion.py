@@ -108,7 +108,7 @@ OPTUNA_STORAGE = None   # None = todo en RAM (más rápido)
 #   "ML"   → ML-Forest: Analista Senior con Machine Learning.
 #            Fase 1: Explora 500 trials. Fase 2: Random Forest guía.
 #            Score 0-100. Dos cerebros: Codicioso + Paranoico.
-#   "QMC"  → Quasi-Monte Carlo: Secuencias Sobol de baja discrepancia.
+#   "QMC"  → Quasi-Monte Carlo: Secuencias Sobol de baja discrepancia. (32,64,128,256,512,1024,2048,4096,8192,16384,)
 #            Cobertura EQUIDISTANTE del espacio de parámetros.
 #            NO usa el score para guiar — pura matemática.
 #            Ideal para exploración exhaustiva sin sesgo ni overfitting.

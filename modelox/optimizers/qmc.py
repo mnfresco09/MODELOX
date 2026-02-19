@@ -403,7 +403,8 @@ class QMCOptimizerConfig:
     # QMCSampler usa un sampler base como fallback para parámetros
     # categóricos o condicionales que Sobol no puede manejar.
     # Por defecto se usa RandomSampler como independiente.
-    WARN_INDEPENDENT_SAMPLING: bool = False
+    # True: avisa si usas suggest_categorical (no compatible con QMC); usa solo suggest_float/suggest_int.
+    WARN_INDEPENDENT_SAMPLING: bool = True
     WARN_ASYNCHRONOUS_SEEDING: bool = False
     
     # QMC tipo de secuencia: "sobol" (por defecto en Optuna)
