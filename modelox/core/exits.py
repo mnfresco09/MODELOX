@@ -40,11 +40,13 @@ EJEMPLO:
     - Stake = 100€, sl_pct = 8%  → Salir si pierdo 8€
     - Stake = 100€, tp_pct = 14% → Salir si gano 14€
 
-IMPORTANTE: USO DE VELAS DE 1 MINUTO PARA SALIDAS
+IMPORTANTE: USO DE VELAS DE 1 MINUTO PARA SALIDAS (✓ IMPLEMENTADO)
 
 REGLA FUNDAMENTAL:
-    Las SALIDAS (SL/TP/Trailing) deben SIEMPRE evaluarse usando velas de 1 minuto,
+    Las SALIDAS (SL/TP/Trailing/Custom) SIEMPRE se evalúan usando velas de 1 minuto,
     independientemente del timeframe configurado para las ENTRADAS.
+    
+    ESTA FUNCIONALIDAD ESTÁ COMPLETAMENTE IMPLEMENTADA Y ACTIVA.
 
 JUSTIFICACIÓN:
     - Si usas timeframe de 5m, 15m, 1h, etc. para señales de entrada, pero el
@@ -54,19 +56,34 @@ JUSTIFICACIÓN:
     - Usando velas de 1m para salidas, obtienes precisión casi tick-a-tick
       sin perder rendimiento computacional.
 
-IMPLEMENTACIÓN:
+IMPLEMENTACIÓN ACTUAL:
 
-    1. BACKTESTING (engine.py):
-       - Si el timeframe de entrada es > 1m, obtener TAMBIÉN datos de 1m
-       - Evaluar salidas iterando vela por vela de 1m
-       - Ajustar precio de salida al high/low REAL de la vela 1m donde se tocó
+    1. BACKTESTING (engine.py) — ✓ IMPLEMENTADO:
+       - _simulate_trades_with_1m_exits(): Kernel Numba optimizado para salidas en 1m
+       - Si timeframe de entrada > 1m, automáticamente usa datos de 1m para salidas
+       - Evalúa SL/TP/Trailing/Custom vela a vela en resolución de 1 minuto
+       - Precio de salida = nivel exacto del SL/TP (no el extremo de la vela)
+       
+       Flujo:
+       ┌─────────────────────────────────────────────────────────────────────┐
+       │  runner.py                                                          │
+       │    └── Detecta si TF entrada > 1m                                  │
+       │    └── Carga datos de 1m automáticamente                           │
+       │    └── Pasa df_1m a BacktestEngine.run_backtest()                  │
+       │                    │                                               │
+       │                    ▼                                               │
+       │  engine.py                                                         │
+       │    └── calculate_performance_vectorized_numba()                    │
+       │    └── Si df_1m disponible → usa _simulate_trades_with_1m_exits()  │
+       │    └── Si no → usa _simulate_trades_sequential() (legacy)          │
+       └─────────────────────────────────────────────────────────────────────┘
     
     2. TRADING EN VIVO (trader.py):
        - Obtener velas de 1m en paralelo al timeframe de señales
        - Verificar SL/TP/Trailing cada vela de 1m
        - Ejecutar orden de cierre cuando se detecte toque de nivel
     
-    3. AJUSTE DE PRECIOS:
+    3. AJUSTE DE PRECIOS — ✓ IMPLEMENTADO:
        - SL tocado en LONG → exit_price = sl_price (no el low de la vela)
        - TP tocado en LONG → exit_price = tp_price (no el high de la vela)
        - SL tocado en SHORT → exit_price = sl_price (no el high de la vela)
@@ -75,18 +92,23 @@ IMPLEMENTACIÓN:
        Esto simula la ejecución REAL donde la orden se llena al nivel exacto,
        no al extremo de la vela (que sería demasiado optimista).
     
-    4. TRAILING STOP:
+    4. TRAILING STOP — ✓ IMPLEMENTADO:
        - La DISTANCIA del trailing se calcula al CIERRE de la vela PREVIA
-       - Ejemplo LONG: 
+       - Ejemplo LONG:
          * Vela N cierra en 100€, trailing_distance = 2€
          * trailing_level = 98€
          * En vela N+1, si low toca 98€ → salir a 98€
        
-       - El trailing_level se ACTUALIZA cada vela:
+       - El trailing_level se ACTUALIZA cada vela de 1m:
          * LONG: Si nuevo high > high previo → actualizar trailing hacia arriba
          * SHORT: Si nuevo low < low previo → actualizar trailing hacia abajo
     
-    5. SLIPPAGE Y REALISMO:
+    5. SALIDAS PERSONALIZADAS (exit_long/exit_short) — ✓ IMPLEMENTADO:
+       - Si la estrategia define generate_exit_signals_1m(), se generan señales en 1m
+       - Las señales exit_long/exit_short se evalúan en resolución de 1 minuto
+       - Prioridad: Custom Exit > SL > TP > Trailing
+    
+    6. SLIPPAGE Y REALISMO:
        - Los precios calculados (sl_price, tp_price, trailing_level) son TEÓRICOS
        - En trading real, puede haber slippage (especialmente en mercado rápido)
        - BingX ejecuta órdenes SL/TP como STOP_MARKET, no LIMIT
@@ -96,7 +118,7 @@ EJEMPLO PRÁCTICO:
 
     Configuración:
     - Timeframe señales: 5m
-    - Timeframe salidas: 1m (SIEMPRE)
+    - Timeframe salidas: 1m (AUTOMÁTICO)
     - Entry: LONG @ 50,000€
     - SL: 49,500€
     - TP: 51,000€
@@ -104,18 +126,31 @@ EJEMPLO PRÁCTICO:
     Escenario:
     - Vela 5m en curso: open=50,000, high=50,200, low=49,400, close=50,100
     
-    Sin velas 1m (INCORRECTO):
+    Sin velas 1m (INCORRECTO - ya no ocurre):
     - Se esperaría al cierre de la vela 5m para detectar que low=49,400 < SL
     - Exit price = 49,400 o 50,100 (close) → INCORRECTO
     
-    Con velas 1m (CORRECTO):
+    Con velas 1m (CORRECTO - comportamiento actual):
     - Minuto 2 de la vela 5m: low=49,450 → SL aún no tocado
     - Minuto 3 de la vela 5m: low=49,480 → SL tocado!
     - Exit price = 49,500 (el SL exacto) → CORRECTO
     - No esperamos al cierre de la vela 5m
 
+CÓMO USAR:
+
+    1. AUTOMÁTICO (recomendado):
+       - Simplemente usa un timeframe > 1m en tu configuración
+       - El sistema cargará automáticamente los datos de 1m si están disponibles
+       - No necesitas hacer nada especial
+    
+    2. MANUAL (para casos especiales):
+       - Asegúrate de que los datos de 1m estén en el cache de timeframes
+       - El runner los pasará automáticamente al engine
+
 REFERENCIA DE IMPLEMENTACIÓN:
-    Ver engine.py → find_exits_numba() para la lógica Numba optimizada
+    Ver engine.py → _simulate_trades_with_1m_exits() para el kernel Numba
+    Ver engine.py → calculate_performance_vectorized_numba() para la lógica de decisión
+    Ver runner.py → _create_single_objective() para la carga de datos de 1m
     Ver trader.py → check_and_update_positions() para trading en vivo
 
 ================================================================================
@@ -132,7 +167,7 @@ from typing import Any, Dict
 # =============================================================================
 
 # ─── TIPO DE SALIDA ──────────────────────────────────────────────────────────
-DEFAULT_EXIT_TYPE = "pnl_fixed"
+DEFAULT_EXIT_TYPE = "pnl_fixed" # pnl_fixed, pnl_trailing
 
 # ─── PARÁMETROS DE SL/TP (% SOBRE STAKE) ────────────────────────────────────
 DEFAULT_EXIT_SL_PCT = 8.0                    # Stop Loss

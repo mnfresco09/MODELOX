@@ -221,12 +221,15 @@ def main() -> None:
 
                 # Resamplear de 1m al timeframe base elegido en config
                 tf_base_suffix = normalize_timeframe_to_suffix(tf_base)
-                df = resample_to_base_timeframe(df, tf_base_suffix)
+                
+                if tf_base_suffix == "1m":
+                    print(f"   ⏱️ Timeframe base: {tf_base_suffix.upper()} (data original 1m)")
+                else:
+                    df = resample_to_base_timeframe(df, tf_base_suffix)
+                    print(f"   ⏱️ Timeframe base: {tf_base_suffix.upper()} (resampleado desde 1m)")
 
                 # Filtrar por FECHA_INICIO → FECHA_FIN
                 df_filtrado = filter_by_date(df, FECHA_INICIO, FECHA_FIN)
-
-                print(f"   ⏱️ Timeframe base: {tf_base_suffix.upper()} (resampleado desde 1m)")
 
                 # Velas por mes según timeframe base
                 candles_per_month = candles_per_month_for_tf(tf_base_suffix)

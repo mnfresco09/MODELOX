@@ -107,15 +107,15 @@ if TYPE_CHECKING:
 #
 
 _COLOR_PALETTE = [
-  "#60a5fa",  # blue
-  "#f472b6",  # pink
-  "#fb923c",  # orange
-  "#22c55e",  # green
-  "#a78bfa",  # purple
-  "#22d3ee",  # cyan
-  "#fbbf24",  # amber
-  "#ef4444",  # red
-  "#94a3b8",  # gray
+  "#4F94CD",  # Steel Blue 3 (Rich Secondary - Standard)
+  "#1C86EE",  # Dodger Blue 2 (Rich Primary - Active)
+  "#CDAD00",  # Gold 3 (Rich Accent - Highlight)
+  "#7B88A1",  # Slate (Neutral)
+  "#6CA6CD",  # Sky Blue 3 (Medium)
+  "#36648B",  # Steel Blue 4 (Dark)
+  "#5F9EA0",  # Cadet Blue (Muted Teal-Blue)
+  "#9FB6CD",  # Slate Gray 3 (Light Neutral)
+  "#6495ED",  # Cornflower Blue (Soft Blue)
 ]
 
 
@@ -286,27 +286,21 @@ def _detect_indicators(
       continue
     spec = specs.get(col, {}) if isinstance(specs.get(col, {}), dict) else {}
 
+    # PRIORIDAD 0: Specs (Direct override)
     panel = spec.get("panel", None)
 
-    # PRIORIDAD 0: Respetar panel info de __indicator_bounds
-    # Si la estrategia define panel como "overlay"/"sub" o numérico (1,2,3 = sub-panel)
-    if panel not in {"overlay", "sub"}:
-      # Verificar si __indicator_bounds tiene info de panel para esta columna
+    # PRIORIDAD 1: Bounds (Si no hay specs, mirar si bounds define panel)
+    if panel is None:
       col_bounds = bounds_map.get(col, None)
       if isinstance(col_bounds, dict) and "panel" in col_bounds:
-        bounds_panel = col_bounds["panel"]
-        if bounds_panel == "overlay":
-          panel = "overlay"
-        elif isinstance(bounds_panel, (int, float)) or bounds_panel == "sub":
-          panel = "sub"  # Numérico (1, 2, 3...) = sub-panel dedicado
+        panel = col_bounds["panel"]
 
-    if panel not in {"overlay", "sub"}:
-      # PRIORIDAD 1: Word-boundary matching contra patrones conocidos
+    # PRIORIDAD 2: Heurísticas (Solo si no se definió explícitamente)
+    if panel is None:
       col_lower = col.lower()
       if _is_overlay_by_name(col_lower):
         panel = "overlay"
       else:
-        # PRIORIDAD 2: Heurística por valores
         panel = "overlay" if _is_overlay_heuristic(df[col], price_range) else "sub"
 
     series_type = str(spec.get("type", "line"))
@@ -341,6 +335,7 @@ def _detect_indicators(
           "type": series_type,
           "bounds": bounds,
           "precision": precision,
+          "panel_id": panel if (isinstance(panel, (int, str)) and panel != "sub") else None,
         }
       )
 
@@ -448,7 +443,8 @@ def _prepare_ohlcv_vectorized(
         closes = np.round(closes * factor).astype(np.int64)
 
     if volumes is not None:
-        volumes = np.round(volumes).astype(np.int64)
+        # Preserve fractional volume for crypto (don't round to int)
+        pass
 
     return timestamps, opens, highs, lows, closes, volumes, factor
 
@@ -1033,7 +1029,7 @@ html,body{{width:100%;height:100%;background:var(--bg-app);font-family:'Inter',s
 /* CHARTS AREA */
 .p{{flex:1;display:flex;flex-direction:column;min-height:0;position:relative}}
 .m{{position:relative;margin-bottom:0;border-bottom:1px solid var(--border-subtle)}}
-.sub{{position:relative;margin-bottom:0;border-bottom:1px solid var(--border-subtle)}}
+.sub{{position:relative;margin-bottom:0;border-bottom:1px solid var(--border-subtle);flex:1 1 0;min-height:60px;overflow:hidden}}
 
 /* PANEL LABELS - SUBTLE */
 .l{{
@@ -1208,6 +1204,19 @@ const _scaleMarginsByChart = new WeakMap();
 
 // HELPERS
 function _clamp(v, lo, hi){ return Math.max(lo, Math.min(hi, v)); }
+function _findDataAt(s, t) {
+    if (!s) return null;
+    const d = s.data();
+    let l = 0, r = d.length - 1;
+    while (l <= r) {
+        const m = (l + r) >>> 1;
+        const v = d[m];
+        if (v.time === t) return v;
+        if (v.time < t) l = m + 1;
+        else r = m - 1;
+    }
+    return null;
+}
 function _getOrInitMargins(ch){
   if(_scaleMarginsByChart.has(ch)) return _scaleMarginsByChart.get(ch);
   const m = { top: 0.1, bottom: 0.1 };
@@ -1252,8 +1261,23 @@ function _attachScaleMarginHandles(panelEl, ch){
 const baseOpts={
 layout:{background:{type:'solid',color:'#121212'},textColor:'#6E7681',fontSize:11,fontFamily:"'Inter',sans-serif"},
 grid:{vertLines:{visible:false},horzLines:{color:'#1e1e1e',style:0}},
-crosshair:{mode:1,vertLine:{visible:false,labelVisible:false},horzLine:{visible:true,color:'#333',labelBackgroundColor:'#333'}},
-timeScale:{borderColor:'#2A2A2A',rightOffset:5,barSpacing:6,minBarSpacing:1,fixLeftEdge:false,fixRightEdge:false,lockVisibleTimeRangeOnResize:true,visible:false},
+crosshair:{mode:0,vertLine:{visible:false,labelVisible:false},horzLine:{visible:true,color:'#333',labelBackgroundColor:'#333'}},
+timeScale:{
+    borderColor:'#2A2A2A',
+    rightOffset:5,
+    barSpacing:6,
+    minBarSpacing:1,
+    fixLeftEdge:false,
+    fixRightEdge:false,
+    lockVisibleTimeRangeOnResize:true,
+    visible:false,
+    tickMarkFormatter: (time, tickMarkType, locale) => {
+        const d = new Date(time * 1000);
+        if (d.getUTCMinutes() !== 0) return '';
+        const h = d.getUTCHours();
+        return h === 0 ? '00' : h.toString();
+    }
+},
 rightPriceScale:{borderColor:'#2A2A2A',scaleMargins:{top:.15,bottom:.15},autoScale:true,alignLabels:true,borderVisible:false},
 handleScale:{axisPressedMouseMove:false,mouseWheel:false,pinch:false},
 handleScroll:{mouseWheel:true,pressedMouseMove:true,horzTouchDrag:true,vertTouchDrag:false},
@@ -1270,7 +1294,7 @@ function mkPanel(id,lbl,isMain){
   const p=document.createElement('div');
   p.className=isMain?'m':'sub';
   p.id=id;
-  p.style.flex=isMain?'5':'1.5';
+  p.style.flex=isMain?'3':'1';
   
   const l=document.createElement('div');
   l.className='l';
@@ -1291,6 +1315,73 @@ function mkPanel(id,lbl,isMain){
   }
   
   ct.appendChild(p);
+
+  // === RESIZER LOGIC ===
+  if(isMain){
+      // Ensure CSS exists
+      if(!document.getElementById('resizer-style')){
+          const s = document.createElement('style');
+          s.id = 'resizer-style';
+          s.innerHTML = `.resizer { height: 6px; flex: 0 0 6px; background: #333; cursor: row-resize; width: 100%; transition: background 0.2s; z-index: 10; } .resizer:hover, .resizer.active { background: #2962FF; }`;
+          document.head.appendChild(s);
+      }
+
+      const resizer = document.createElement('div');
+      resizer.className = 'resizer';
+      ct.appendChild(resizer);
+
+      let isResizing = false;
+      let startY, startHeight;
+
+      resizer.addEventListener('mousedown', (e) => {
+          isResizing = true;
+          startY = e.clientY;
+          startHeight = p.getBoundingClientRect().height;
+          resizer.classList.add('active');
+          document.body.style.cursor = 'row-resize';
+          p.style.flex = 'none'; // Disable flex grow to allow manual sizing
+          p.style.height = startHeight + 'px';
+      });
+
+      document.addEventListener('mousemove', (e) => {
+          if (!isResizing) return;
+          const dy = e.clientY - startY;
+          let newH = startHeight + dy;
+          if(newH < 100) newH = 100; // Min height for Main
+          
+          // Max height constraint (leave room for sub panels)
+          const totalH = ct.clientHeight;
+          const subPanelsCount = charts.length - 1; // logical count since 'mc' is main
+          const minSubH = 60 * subPanelsCount;
+          const maxH = totalH - minSubH - 20; // -20 buffer
+          
+          if(newH > maxH) newH = maxH;
+          
+          p.style.height = newH + 'px';
+          
+          // Force resize main chart immediately
+          charts.find(c=>c.id===id).ch.resize(p.clientWidth, newH);
+          
+          // Force resize others (flex will adjust them, but canvas needs update)
+          // We can just rely on the ResizeObserver if we added it, but let's be explicit for smoothness
+          requestAnimationFrame(() => {
+             charts.forEach(c => {
+                 if(c.id !== id) c.ch.resize(c.p.clientWidth, c.p.clientHeight);
+             });
+          });
+      });
+
+      document.addEventListener('mouseup', () => {
+          if(isResizing){
+            isResizing = false;
+            resizer.classList.remove('active');
+            document.body.style.cursor = '';
+            // Trigger resize for all to be safe
+            charts.forEach(c => c.ch.resize(c.p.clientWidth, c.p.clientHeight));
+          }
+      });
+  }
+
   const opts={...baseOpts,width:p.clientWidth,height:p.clientHeight};
   const ch=LightweightCharts.createChart(p,opts);
   _getOrInitMargins(ch);
@@ -1312,6 +1403,39 @@ const cs=mc.addCandlestickSeries({
     wickDownColor:'#CD5C5C',
     priceFormat:{type:'price',precision:2},
 });
+
+// VISIBILITY & RESIZE FIX (Tab Open/Restore)
+document.addEventListener('visibilitychange', () => {
+    if(!document.hidden){
+        setTimeout(() => {
+            charts.forEach(c => {
+                if(c.ch && c.p) c.ch.resize(c.p.clientWidth, c.p.clientHeight);
+            });
+        }, 100);
+    }
+});
+// Force initial resize check
+setTimeout(() => {
+    charts.forEach(c => {
+        if(c.ch && c.p && c.p.clientHeight < 50) {
+             c.p.style.flex = '1 1 0'; // Reset flex if squashed
+             c.ch.resize(c.p.clientWidth, c.p.clientHeight);
+        }
+    });
+}, 500);
+
+// RESIZE OBSERVER (Safari/Window Fix)
+const ro = new ResizeObserver(entries => {
+    window.requestAnimationFrame(() => {
+        if(!charts || charts.length===0) return;
+        charts.forEach(c => {
+            if(c.p && c.ch){
+                c.ch.resize(c.p.clientWidth, c.p.clientHeight);
+            }
+        });
+    });
+});
+if(ct) ro.observe(ct);
 
 const f=D.f;
 const cData=D.t.map((t,i)=>({time:t,open:dq(D.o[i],f),high:dq(D.h[i],f),low:dq(D.l[i],f),close:dq(D.c[i],f)}));
@@ -1353,9 +1477,21 @@ const exitSeries = mc.addLineSeries({
     priceLineVisible: false
 });
 
+const trailingSeries = mc.addLineSeries({
+    color: '#FFFF00', // Yellow
+    lineWidth: 0,
+    pointMarkersVisible: true,
+    pointMarkersRadius: 4, 
+    crosshairMarkerVisible: false,
+    lineVisible: false,
+    lastValueVisible: false,
+    priceLineVisible: false
+});
+
 const leData = [];
 const seData = [];
 const exData = [];
+const taData = [];
 const tooltipMap = new Map();
 
 if(T.list && Array.isArray(T.list)){
@@ -1381,16 +1517,23 @@ if(T.list && Array.isArray(T.list)){
                 tooltipMap.set(tr.exit_ts, tr);
             }
         }
+
+        // TRAILING ACTIVATION
+        if(tr.ta_ts !== null && tr.ta_p !== null) {
+            taData.push({time: tr.ta_ts, value: tr.ta_p});
+        }
     });
     
     // Sort required by Lightweight Charts
     leData.sort((a,b) => a.time - b.time);
     seData.sort((a,b) => a.time - b.time);
     exData.sort((a,b) => a.time - b.time);
+    taData.sort((a,b) => a.time - b.time);
 
     longEntrySeries.setData(leData);
     shortEntrySeries.setData(seData);
     exitSeries.setData(exData);
+    trailingSeries.setData(taData);
 }
 
 // OVERLAYS (MA, Bands)
@@ -1399,7 +1542,7 @@ if(I.overlays && Array.isArray(I.overlays)){
         try{
             if(ov.v && ov.v.length>0){
                 const ls=mc.addLineSeries({
-                    color:ov.color||'#A3BE8C',
+                    color:ov.color||'#1C86EE', // Rich Dodger Blue
                     lineWidth:1,
                     crosshairMarkerVisible:false,
                     priceLineVisible:false,
@@ -1413,51 +1556,126 @@ if(I.overlays && Array.isArray(I.overlays)){
 
 // === VOLUME (Separate Panel) ===
 if(D.vol && D.vol.length>0){
-    const vc=mkPanel('vc','VOL',false);
-    vc.priceScale('right').applyOptions({scaleMargins:{top:0.1,bottom:0}, borderVisible:false});
-    const vs=vc.addHistogramSeries({
-        color: '#333',
-        priceFormat:{type:'volume'},
-        priceLineVisible:false,
+    const vc = mkPanel('vc', 'VOL', false);
+    
+    // Configurar márgenes para que ocupe bien su panel
+    vc.priceScale('right').applyOptions({
+        scaleMargins: { top: 0.1, bottom: 0 },
+        borderVisible: false,
+        autoScale: true,
     });
-    vs.setData(D.t.map((t,i)=>({time:t,value:D.vol[i],color:D.c[i]>=D.o[i]?'rgba(46,139,87,0.3)':'rgba(205,92,92,0.3)'})));
+    
+    const vs = vc.addHistogramSeries({
+        color: '#4F94CD', // Rich Steel Blue
+        priceFormat: { type: 'volume' },
+        priceLineVisible: false,
+        lastValueVisible: true, // Mostrar valor actual en eje Y
+    });
+
+    vs.setData(D.t.map((t,i)=>({
+        time:t, 
+        value:D.vol[i], 
+        color: D.c[i] >= D.o[i] ? 'rgba(38, 166, 154, 0.5)' : 'rgba(239, 83, 80, 0.5)' // Green/Red muted
+    })));
+    
+    // Registrar para updates
     const vi = charts.findIndex(x=>x.id==='vc');
     if(vi>=0) charts[vi].series = vs;
 }
 
 // === INDICATOR PANELS ===
 if(I.sub_panels){
-    I.sub_panels.forEach((p,i)=>{
-        const pc=mkPanel('sp'+i, p.name, false);
-        let s;
-        const data = p.data.v.map((v,idx)=>({time:p.data.t[idx],value:v!==null?dq(v,p.data.f):null})).filter(x=>x.value!==null);
-        
-        if(p.type==='histogram'){
-            s=pc.addHistogramSeries({color:p.color,priceLineVisible:false,base:0});
-        }else{
-            s=pc.addLineSeries({color:p.color,lineWidth:1,priceLineVisible:false,crosshairMarkerVisible:false});
+    I.sub_panels.forEach((grp,i)=>{
+        const pc=mkPanel('sp'+i, grp.title, false);
+        grp.series.forEach(ser => {
+            let s;
+            const data = ser.data.v.map((v,idx)=>({time:ser.data.t[idx],value:v!==null?dq(v,ser.data.f):null})).filter(x=>x.value!==null);
             
-            // Bounds lines (Overbought/Oversold) - Minimalist lines
-            if(p.bounds){
-                const b=p.bounds;
-                [b.hi,b.lo,b.mid].forEach(val=>{
-                    if(val!==undefined){
-                         const bl=pc.addLineSeries({
-                             color:'#333',lineWidth:1,lineStyle:2,
-                             priceLineVisible:false,lastValueVisible:false
-                         });
-                         bl.setData(p.data.t.map(t=>({time:t,value:val})));
+            if(ser.type==='histogram'){
+                s=pc.addHistogramSeries({color:ser.color,priceLineVisible:false,base:0});
+            }else{
+                s=pc.addLineSeries({color:ser.color,lineWidth:1,priceLineVisible:false,crosshairMarkerVisible:false});
+                
+                if(ser.bounds){
+                    const b=ser.bounds;
+                    
+                    // Helper to get color and style for bound
+                    const getBoundStyle = (key) => {
+                        const k = key.toLowerCase();
+                        if(k.includes('upper') || k.includes('hi')) return { c: 'rgba(255, 82, 82, 0.6)', s: 2 }; // Red for Short Entry Zone
+                        if(k.includes('lower') || k.includes('lo')) return { c: 'rgba(76, 175, 80, 0.6)', s: 2 }; // Green for Long Entry Zone
+                        return { c: 'rgba(255, 255, 255, 0.3)', s: 2 }; // Neutral/Mid
+                    };
+
+                    // Iterate explicitly to assign correct colors
+                    [
+                        {k:'upper', v:b.upper}, 
+                        {k:'lower', v:b.lower}, 
+                        {k:'mid', v:b.mid}, 
+                        {k:'hi', v:b.hi}, 
+                        {k:'lo', v:b.lo}
+                    ].forEach(item => {
+                        if(item.v !== undefined && item.v !== null){
+                             const style = getBoundStyle(item.k);
+                             const bl=pc.addLineSeries({
+                                 color: style.c,
+                                 lineWidth: 1,
+                                 lineStyle: style.s,
+                                 priceLineVisible:false,
+                                 lastValueVisible:false,
+                                 crosshairMarkerVisible:false
+                             });
+                             bl.setData(ser.data.t.map(t=>({time:t, value:item.v})));
+                        }
+                    });
+                }
+                if(ser.zero_line){
+                     const zl=pc.addLineSeries({color:'rgba(255, 255, 255, 0.2)',lineWidth:1,lineStyle:2});
+                     zl.setData(ser.data.t.map(t=>({time:t,value:0})));
+                }
+            }
+            s.setData(data);
+            
+            // === ADD MARKERS TO INDICATOR SERIES ===
+            // Filter trades within this series timeframe
+            // We use the raw trade list T.list
+            if(T && T.list && T.list.length > 0){
+                const indMarkers = [];
+                const firstTs = ser.data.t[0];
+                const lastTs = ser.data.t[ser.data.t.length-1];
+                
+                // Map timestamps to values for precise placement if needed, 
+                // but setMarkers works relative to the checking visible range? 
+                // No, setMarkers is for the entire series.
+                
+                T.list.forEach(tr => {
+                    // Entry Marker - Blue (Long) / Orange (Short) Circles
+                    if(tr.entry_ts && tr.entry_ts >= firstTs && tr.entry_ts <= lastTs){
+                        indMarkers.push({
+                            time: tr.entry_ts,
+                            position: 'inBar', // Places it on the data point value
+                            color: tr.type === 'LONG' ? '#2962FF' : '#FF6D00',
+                            shape: 'circle',
+                            size: 1
+                        });
+                    }
+                    // Exit Marker - White Circle
+                    if(tr.exit_ts && tr.exit_ts >= firstTs && tr.exit_ts <= lastTs){
+                        indMarkers.push({
+                            time: tr.exit_ts,
+                            position: 'inBar',
+                            color: '#FFFFFF', 
+                            shape: 'circle',
+                            size: 1
+                        });
                     }
                 });
+                s.setMarkers(indMarkers);
             }
-            if(p.zero_line){
-                 const zl=pc.addLineSeries({color:'#222',lineWidth:1,lineStyle:2});
-                 zl.setData(p.data.t.map(t=>({time:t,value:0})));
-            }
-        }
-        s.setData(data);
-        const pi = charts.findIndex(x=>x.id==='sp'+i);
-        if(pi>=0) charts[pi].series = s;
+
+            const pi = charts.findIndex(x=>x.id==='sp'+i);
+            if(pi>=0) charts[pi].series = s;
+        });
     });
 }
 
@@ -1479,11 +1697,8 @@ charts.forEach(c1=>{
 });
 
 // Resize
-new ResizeObserver(entries=>{
-    charts.forEach(c=>{
-       if(c.ch && c.p) c.ch.applyOptions({width:c.p.clientWidth,height:c.p.clientHeight});
-    });
-}).observe(ct);
+// Resize observer handled earlier (lines ~1400)
+// Removed duplicate to prevent conflicts
 
 // Initial Fit - START AT BEGINNING
 setTimeout(()=>{
@@ -1496,9 +1711,10 @@ setTimeout(()=>{
     });
 }, 100);
 
-// Global Crosshair
+// Global Crosshair & Keyboard Nav
 const gl=document.getElementById('globalCrosshair');
 const gll=document.getElementById('globalCrosshairLabel');
+let lastFocusedTime = null;
 
 function updateCrosshair(param, sourceCh){
    if(!param.time || !param.point){
@@ -1506,6 +1722,9 @@ function updateCrosshair(param, sourceCh){
        return;
    }
    
+   // TRACK FOCUS
+   lastFocusedTime = param.time;
+
    gl.style.display='block';
    gl.style.left=param.point.x+'px';
    
@@ -1515,10 +1734,17 @@ function updateCrosshair(param, sourceCh){
    const date = new Date(param.time*1000);
    gll.textContent = date.toISOString().slice(0,16).replace('T',' ');
    
-   // Sync others
+   // Sync others (Time only - vertical line)
+   // Sync others (Time only - vertical line + Horizontal Magnet)
    charts.forEach(c=>{
        if(c.ch!==sourceCh && c.ch && c.series){
-           c.ch.setCrosshairPosition(0, param.time, c.series);
+           const data = _findDataAt(c.series, param.time);
+           if(data){
+               const val = data.value !== undefined ? data.value : data.close;
+               c.ch.setCrosshairPosition(val, param.time, c.series);
+           } else {
+               c.ch.clearCrosshairPosition();
+           }
        }
    });
    
@@ -1587,6 +1813,43 @@ document.getElementById('zoomOut').onclick = () => {
     charts.forEach(c=>c.ch.timeScale().applyOptions({barSpacing: c.ch.timeScale().options().barSpacing * 0.8}));
 };
 
+// KEYBOARD NAVIGATION
+document.addEventListener('keydown', e => {
+    if(e.key === 'ArrowLeft' || e.key === 'ArrowRight'){
+        e.preventDefault();
+        
+        let idx = -1;
+        if(lastFocusedTime !== null) idx = D.t.indexOf(lastFocusedTime);
+        if(idx === -1) idx = D.t.length - 1; // Default to end if no focus
+        
+        if(e.key === 'ArrowLeft') idx = Math.max(0, idx - 1);
+        else idx = Math.min(D.t.length - 1, idx + 1);
+        
+        const t = D.t[idx];
+        const candle = cData[idx];
+        if(!candle) return;
+        
+        // Use Main Chart for coords
+        const mainCh = charts[0].ch;
+        const mainSer = charts[0].series;
+        
+        const x = mainCh.timeScale().timeToCoordinate(t);
+        const y = mainSer.priceToCoordinate(candle.close);
+        
+        if(x !== null && y !== null){
+            updateCrosshair({time: t, point: {x: x, y: y}}, null);
+            mainCh.setCrosshairPosition(candle.close, t, mainSer);
+            
+            // Auto-Scroll if out of view
+            const logIdx = mainCh.timeScale().coordinateToLogical(x);
+             // Simple fallback: if coordinate is extremely left or right
+             if(x < 50 || x > mainCh.timeScale().width() - 50){
+                 mainCh.timeScale().scrollToPosition(- (D.t.length - 1 - idx), true);
+             }
+        }
+    }
+});
+
 '''
 
 
@@ -1653,8 +1916,9 @@ def plot_trades(
         highs = df["high"].to_numpy().astype(np.float64)
         lows = df["low"].to_numpy().astype(np.float64)
         closes = df["close"].to_numpy().astype(np.float64)
-        volumes = df["volume"].to_numpy().astype(np.float64) if "volume" in df.columns else None
-        set(df.columns)
+        # Robust volume detection (case-insensitive)
+        vol_col = next((c for c in df.columns if c.lower() in ("volume", "vol", "v")), None)
+        volumes = df[vol_col].to_numpy().astype(np.float64) if vol_col else None
     else:
         df_pd = df if isinstance(df, pd.DataFrame) else pd.DataFrame(df)
         if not isinstance(df_pd.index, pd.DatetimeIndex):
@@ -1665,8 +1929,10 @@ def plot_trades(
         highs = df_pd["high"].values.astype(np.float64)
         lows = df_pd["low"].values.astype(np.float64)
         closes = df_pd["close"].values.astype(np.float64)
-        volumes = df_pd["volume"].values.astype(np.float64) if "volume" in df_pd.columns else None
-        set(df_pd.columns)
+        
+        # Robust volume detection (case-insensitive)
+        vol_col = next((c for c in df_pd.columns if c.lower() in ("volume", "vol", "v")), None)
+        volumes = df_pd[vol_col].values.astype(np.float64) if vol_col else None
 
     # ================== DATE FILTERING ==================
     start_pd = pd.to_datetime(fecha_inicio_plot, utc=True)
@@ -1833,6 +2099,8 @@ def plot_trades(
         cols = df_trades.columns
         entry_col = "timestamp_entry" if "timestamp_entry" in cols else "entry_time"
         exit_col = "timestamp_exit" if "timestamp_exit" in cols else "exit_time"
+        trail_act_time_col = "trail_act_time"
+        trail_act_price_col = "trail_act_price"
         
         if entry_col in cols:
             # Snap timestamps to candles
@@ -1859,6 +2127,20 @@ def plot_trades(
                     # Use snapped time if valid, else ignore for marker purposes
                     ts_entry = int(ts_q[idx_entry]) if entry_valid else None
                     ts_exit = int(ts_q[idx_exit]) if exit_valid else None
+
+                    # Trailing Activation Logic
+                    ts_ta = None
+                    p_ta = None
+                    if trail_act_time_col in tr and trail_act_price_col in tr:
+                        t_ta = tr.get(trail_act_time_col)
+                        val_ta = tr.get(trail_act_price_col)
+                        
+                        if pd.notna(t_ta) and pd.notna(val_ta):
+                            ts_ta_raw = int(t_ta.timestamp()) if hasattr(t_ta, 'timestamp') else int(t_ta)
+                            idx_ta = np.searchsorted(ts_q, ts_ta_raw, side='right') - 1
+                            if 0 <= idx_ta < len(ts_q):
+                                ts_ta = int(ts_q[idx_ta])
+                                p_ta = float(val_ta)
                     
                     if ts_entry is None and ts_exit is None:
                         continue 
@@ -1888,7 +2170,9 @@ def plot_trades(
                         "pnl": pnl,
                         "fees": float(fees),
                         "dur": dur_str,
-                        "win": pnl >= 0
+                        "win": pnl >= 0,
+                        "ta_ts": ts_ta,
+                        "ta_p": p_ta
                     }
                     trades_data["list"].append(trade_obj)
                     
@@ -1934,24 +2218,30 @@ def plot_trades(
             })
 
     # Sub-panels
+    grouped_panels = {}
     for panel in indicators_meta["sub_panels"]:
         col = panel["col"]
         if col in df.columns:
             vals = get_col_values(col)
             q_vals, factor, _ = mapper.align_quantized(timestamps_all, vals, precision=panel["precision"])
             
-            indicators_data["sub_panels"].append({
+            pid = str(panel.get("panel_id")) if panel.get("panel_id") is not None else f"auto_{col}"
+            
+            if pid not in grouped_panels:
+                grouped_panels[pid] = { "title": panel["name"], "series": [] }
+            else:
+                grouped_panels[pid]["title"] += f" / {panel['name']}"
+
+            grouped_panels[pid]["series"].append({
                 "name": panel["name"],
                 "color": panel["color"],
                 "type": panel["type"],
                 "bounds": panel["bounds"],
-                "zero_line": False, # TODO: detect
-                "data": {
-                    "t": ts_q.tolist(),
-                    "v": q_vals,
-                    "f": factor
-                }
+                "zero_line": (panel["bounds"] and panel["bounds"].get("mid") == 0),
+                "data": { "t": ts_q.tolist(), "v": q_vals, "f": factor }
             })
+            
+    indicators_data["sub_panels"] = list(grouped_panels.values())
 
     # ================== WRITE HTML ==================
     import os
@@ -1963,7 +2253,7 @@ def plot_trades(
             
     # Clean filename
     clean_combo = "".join(c for c in str(combo) if c.isalnum() or c in ('_','-'))
-    filename = f"PLOT_TRIAL{trial_number}_{clean_combo}_{int(score)}.html"
+    filename = f"TRIAL {trial_number}.html"
     filepath = os.path.join(plot_base, filename)
     
     # Try using metric get helper or safe get

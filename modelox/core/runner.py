@@ -521,12 +521,43 @@ class BacktestEngine:
         config: BacktestConfig,
         params: Dict[str, Any],
         strategy: Strategy,
+        df_1m: Optional[pl.DataFrame] = None,
+        signals_1m: Optional[pl.DataFrame] = None,
     ) -> Tuple[pl.DataFrame, List[float], Dict[str, Any]]:
+        """
+        Ejecuta backtest y retorna métricas.
+        
+        IMPORTANTE - SALIDAS EN 1M:
+            Si df_1m es proporcionado y el timeframe de entrada > 1m,
+            las salidas (SL/TP/Trailing/Custom) se evalúan usando velas
+            de 1 minuto para máxima precisión.
+        
+        Args:
+            df: DataFrame con datos OHLCV del timeframe de entrada
+            signals: DataFrame con señales de entrada/salida
+            config: Configuración del backtest
+            params: Parámetros del trial
+            strategy: Estrategia
+            df_1m: DataFrame con datos OHLCV de 1 minuto (para salidas precisas)
+            signals_1m: DataFrame con señales de salida en 1m (opcional)
+        
+        Returns:
+            Tuple[trades_df, equity_curve, metrics]
+        """
+        from modelox.core.types import suffix_to_minutes
+        
         backtest_params = BacktestParams.from_config_and_params(config, params)
         timeframe = params.get("__timeframe_base", "1m")
+        timeframe_minutes = suffix_to_minutes(timeframe)
         
         trades_df, equity_curve = calculate_performance_vectorized_numba(
-            df=df, signals=signals, params=backtest_params, strategy=strategy,
+            df=df,
+            signals=signals,
+            params=backtest_params,
+            strategy=strategy,
+            df_1m=df_1m,
+            signals_1m=signals_1m,
+            timeframe_minutes=timeframe_minutes,
         )
         
         metrics: Dict[str, Any]
@@ -657,9 +688,27 @@ class OptimizationRunner:
         base_timeframe: Optional[str] = None,
     ) -> optuna.study.Study:
         """Optimiza una estrategia."""
+        from modelox.core.types import suffix_to_minutes
+        
         base_tf = normalize_timeframe_to_suffix(base_timeframe or "1m")
-        df_map = df_by_timeframe or {base_tf: df}
+        df_map = df_by_timeframe.copy() if df_by_timeframe else {base_tf: df}
         df_base = df_map.get(base_tf, df)
+        
+        # ================================================================
+        # ASEGURAR DATOS DE 1M PARA SALIDAS PRECISAS
+        # ================================================================
+        # Si el timeframe base > 1m y no tenemos datos de 1m en el cache,
+        # intentamos cargarlos para usarlos en las salidas
+        base_tf_minutes = suffix_to_minutes(base_tf)
+        if base_tf_minutes > 1 and "1m" not in df_map:
+            # Intentar cargar datos de 1m si hay un futuro_data_provider
+            if self.futuro_data_provider is not None:
+                try:
+                    # El provider cargará los datos de 1m cuando se necesiten
+                    # No los precargamos aquí para no consumir memoria innecesariamente
+                    pass
+                except Exception:
+                    pass
         
         # Reset stats de perturbación
         self._perturbation_stats = {
@@ -743,154 +792,223 @@ class OptimizationRunner:
         """Crea función objetivo para TPE (Single-Objective)."""
         
         def objective(trial: optuna.trial.Trial) -> float:
-            t0_total = time.perf_counter()
-            
-            # LIMPIEZA PERIÓDICA para mantener velocidad constante
-            periodic_cleanup(trial.number)
-            
-            params_rt = self._prepare_params(trial, strategy, base_tf)
-            entry_tf = params_rt["__timeframe_entry"]
-            
-            # ================================================================
-            # DATOS FUTUROS CON RANGO DISTINTO POR TRIAL
-            # ================================================================
-            if self.futuro_data_provider is not None:
-                # Obtener datos únicos para este trial
-                try:
-                    timeframes_needed = list(set([base_tf, entry_tf]))
-                    df_map_trial = self.futuro_data_provider.get_trial_data_multiframe(
-                        trial_number=trial.number,
-                        timeframes=timeframes_needed,
-                        verbose=(trial.number % 50 == 0),  # Verbose cada 50 trials
-                    )
-                    df_entry = df_map_trial.get(entry_tf, df_map_trial.get(base_tf))
-                    df_base_trial = df_map_trial.get(base_tf, df_entry)
-                    
-                    # Guardar rango de meses en params para display
-                    if hasattr(self.futuro_data_provider, 'last_range_months') and self.futuro_data_provider.last_range_months:
-                        params_rt["__rango_meses"] = self.futuro_data_provider.last_range_months
-                except Exception as e:
-                    # Fallback a datos originales
+            try:
+                t0_total = time.perf_counter()
+                
+                # LIMPIEZA PERIÓDICA para mantener velocidad constante
+                periodic_cleanup(trial.number)
+                
+                params_rt = self._prepare_params(trial, strategy, base_tf)
+                entry_tf = params_rt["__timeframe_entry"]
+                
+                # ================================================================
+                # DATOS FUTUROS CON RANGO DISTINTO POR TRIAL
+                # ================================================================
+                if self.futuro_data_provider is not None:
+                    # Obtener datos únicos para este trial
+                    try:
+                        timeframes_needed = list(set([base_tf, entry_tf]))
+                        df_map_trial = self.futuro_data_provider.get_trial_data_multiframe(
+                            trial_number=trial.number,
+                            timeframes=timeframes_needed,
+                            verbose=(trial.number % 50 == 0),  # Verbose cada 50 trials
+                        )
+                        df_entry = df_map_trial.get(entry_tf, df_map_trial.get(base_tf))
+                        df_base_trial = df_map_trial.get(base_tf, df_entry)
+                        
+                        # Guardar rango de meses en params para display
+                        if hasattr(self.futuro_data_provider, 'last_range_months') and self.futuro_data_provider.last_range_months:
+                            params_rt["__rango_meses"] = self.futuro_data_provider.last_range_months
+                    except Exception as e:
+                        # Fallback a datos originales
+                        df_map_trial = df_map
+                        df_entry = df_map.get(entry_tf, df_base)
+                        df_base_trial = df_base
+                else:
                     df_map_trial = df_map
                     df_entry = df_map.get(entry_tf, df_base)
                     df_base_trial = df_base
-            else:
-                df_map_trial = df_map
-                df_entry = df_map.get(entry_tf, df_base)
-                df_base_trial = df_base
-            
-            # ================================================================
-            # PERTURBACIÓN DE DATOS (SOLO SI NO HAY FUTURO PROVIDER)
-            # ================================================================
-            # Si usamos FuturoTrialDataProvider, cada trial ya tiene datos
-            # diferentes, por lo que NO aplicamos perturbación adicional
-            df_trial = df_entry
-            df_map_perturbed = df_map_trial  # Por defecto, usar el del trial
-            perturb_info = {"perturbation_applied": False}
-            perturb_seed = 0
-            
-            # Solo perturbar si NO hay futuro_data_provider activo
-            if self.perturbation_config.enabled and self.futuro_data_provider is None:
-                # Calcular semilla única para este trial
-                base_seed = self.perturbation_config.seed or 42
-                perturb_seed = base_seed + trial.number
                 
-                # Perturbar TODOS los timeframes con la misma semilla
-                df_map_perturbed = {}
-                for tf_key, tf_df in df_map_trial.items():
-                    perturbed_df, _, tf_perturb_info = apply_perturbation(
-                        tf_df, self.perturbation_config, trial.number
-                    )
-                    df_map_perturbed[tf_key] = perturbed_df
+                # ================================================================
+                # PERTURBACIÓN DE DATOS (SOLO SI NO HAY FUTURO PROVIDER)
+                # ================================================================
+                # Si usamos FuturoTrialDataProvider, cada trial ya tiene datos
+                # diferentes, por lo que NO aplicamos perturbación adicional
+                df_trial = df_entry
+                df_map_perturbed = df_map_trial  # Por defecto, usar el del trial
+                perturb_info = {"perturbation_applied": False}
+                perturb_seed = 0
+                
+                # Solo perturbar si NO hay futuro_data_provider activo
+                if self.perturbation_config.enabled and self.futuro_data_provider is None:
+                    # Calcular semilla única para este trial
+                    base_seed = self.perturbation_config.seed or 42
+                    perturb_seed = base_seed + trial.number
                     
-                    # Guardar info del timeframe de entrada
-                    if tf_key == entry_tf:
-                        df_trial = perturbed_df
-                        perturb_info = tf_perturb_info
+                    # Perturbar TODOS los timeframes con la misma semilla
+                    df_map_perturbed = {}
+                    for tf_key, tf_df in df_map_trial.items():
+                        perturbed_df, _, tf_perturb_info = apply_perturbation(
+                            tf_df, self.perturbation_config, trial.number
+                        )
+                        df_map_perturbed[tf_key] = perturbed_df
+                        
+                        # Guardar info del timeframe de entrada
+                        if tf_key == entry_tf:
+                            df_trial = perturbed_df
+                            perturb_info = tf_perturb_info
+                    
+                    self._perturbation_stats["trials_perturbed"] += 1
+                    if "mean_diff_pct" in perturb_info:
+                        diffs = self._perturbation_stats["mean_diff_pcts"]
+                        diffs.append(perturb_info["mean_diff_pct"])
+                        if len(diffs) > 100:
+                            self._perturbation_stats["mean_diff_pcts"] = diffs[-100:]
                 
-                self._perturbation_stats["trials_perturbed"] += 1
-                if "mean_diff_pct" in perturb_info:
-                    diffs = self._perturbation_stats["mean_diff_pcts"]
-                    diffs.append(perturb_info["mean_diff_pct"])
-                    if len(diffs) > 100:
-                        self._perturbation_stats["mean_diff_pcts"] = diffs[-100:]
-            
-            # Generar señales
-            t1_signals = time.perf_counter()
-            signals_df = SignalGenerator.generate_signals(df_trial, strategy, params_rt, df_map_perturbed)
-            t2_signals = time.perf_counter()
-            
-            # Ejecutar backtest
-            t1_backtest = time.perf_counter()
-            trades_df, equity_curve, metrics = BacktestEngine.run_backtest(
-                df_trial, signals_df, self.config, params_rt, strategy,
-            )
-            t2_backtest = time.perf_counter()
-            
-            if trades_df.is_empty():
-                return 0.0
-            
-            trial.set_user_attr("metricas", metrics)
-            # Usar scoring correspondiente al sampler elegido
-            score_func = self._get_score_func()
-            score = float(score_func(metrics, trial=trial))
-            
-            t_total = time.perf_counter() - t0_total
-            
-            if _TIMINGS_VERBOSE and (trial.number % _TIMINGS_PRINT_EVERY == 0):
-                perturb_str = f" [P]" if perturb_info.get("perturbation_applied", False) else ""
-                print(
-                    f"  ⏱ TRIAL {trial.number:3d}{perturb_str} │ "
-                    f"signals {(t2_signals - t1_signals)*1000:6.1f}ms │ "
-                    f"backtest {(t2_backtest - t1_backtest)*1000:6.1f}ms │ "
-                    f"total {t_total*1000:6.1f}ms │ "
-                    f"trades {len(trades_df):5d}"
+                # Generar señales
+                t1_signals = time.perf_counter()
+                signals_df = SignalGenerator.generate_signals(df_trial, strategy, params_rt, df_map_perturbed)
+                t2_signals = time.perf_counter()
+                
+                # ================================================================
+                # OBTENER DATOS DE 1M PARA SALIDAS PRECISAS
+                # ================================================================
+                # Si el timeframe de entrada > 1m, usamos datos de 1m para evaluar
+                # las salidas (SL/TP/Trailing/Custom) con precisión tick-a-tick
+                from modelox.core.types import suffix_to_minutes
+                
+                entry_tf_minutes = suffix_to_minutes(entry_tf)
+                df_1m_for_exits = None
+                signals_1m_for_exits = None
+                
+                if entry_tf_minutes > 1:
+                    # Intentar obtener datos de 1m del cache de timeframes
+                    df_1m_for_exits = df_map_perturbed.get("1m", df_map_trial.get("1m"))
+                    
+                    # Si no hay datos de 1m en el cache, intentar cargarlos
+                    if df_1m_for_exits is None and self.futuro_data_provider is not None:
+                        try:
+                            df_1m_data = self.futuro_data_provider.get_trial_data_multiframe(
+                                trial_number=trial.number,
+                                timeframes=["1m"],
+                                verbose=False,
+                            )
+                            df_1m_for_exits = df_1m_data.get("1m")
+                        except Exception:
+                            pass
+                    
+                    # Generar señales de salida en 1m si la estrategia las soporta
+                    if df_1m_for_exits is not None:
+                        if hasattr(strategy, "generate_exit_signals_1m") and callable(strategy.generate_exit_signals_1m):
+                            try:
+                                signals_1m_for_exits = strategy.generate_exit_signals_1m(df_1m_for_exits, params_rt)
+                            except Exception:
+                                signals_1m_for_exits = None
+                
+                # Ejecutar backtest con datos de 1m para salidas
+                t1_backtest = time.perf_counter()
+                trades_df, equity_curve, metrics = BacktestEngine.run_backtest(
+                    df_trial, signals_df, self.config, params_rt, strategy,
+                    df_1m=df_1m_for_exits,
+                    signals_1m=signals_1m_for_exits,
                 )
-            
-            # Crear artifacts
-            df_signals_for_artifacts = None
-            df_for_artifacts = df_base_trial if self.futuro_data_provider is not None else df_base
-            for reporter in self.reporters:
-                if hasattr(reporter, "needs_dataframe") and reporter.needs_dataframe(score):
-                    ohlc_cols = ["timestamp", "open", "high", "low", "close", "volume"]
-                    base_cols = [c for c in ohlc_cols if c in df_for_artifacts.columns]
-                    signal_cols = [c for c in signals_df.columns if c not in base_cols]
-                    df_signals_for_artifacts = df_for_artifacts.select(base_cols).hstack(
-                        signals_df.select(signal_cols)
+                t2_backtest = time.perf_counter()
+                
+                if trades_df.is_empty():
+                    # Handle empty trades as valid result but poor score
+                    metrics = {"roi": -100.0, "sharpe": -999.0, "sqn": -999.0, "profit_factor": 0.0}
+                    score = -9999.0
+                else:
+                    trial.set_user_attr("metricas", metrics)
+                    # Usar scoring correspondiente al sampler elegido
+                    score_func = self._get_score_func()
+                    score = float(score_func(metrics, trial=trial))
+                
+                t_total = time.perf_counter() - t0_total
+                
+                if _TIMINGS_VERBOSE and (trial.number % _TIMINGS_PRINT_EVERY == 0):
+                    perturb_str = f" [P]" if perturb_info.get("perturbation_applied", False) else ""
+                    print(
+                        f"  ⏱ TRIAL {trial.number:3d}{perturb_str} │ "
+                        f"signals {(t2_signals - t1_signals)*1000:6.1f}ms │ "
+                        f"backtest {(t2_backtest - t1_backtest)*1000:6.1f}ms │ "
+                        f"total {t_total*1000:6.1f}ms │ "
+                        f"trades {len(trades_df):5d}"
                     )
-                    break
-            
-            # Calcular rango de fechas real del trial (para plots dinámicos)
-            _trial_date_range = None
-            if self.futuro_data_provider is not None and "timestamp" in df_base_trial.columns:
-                try:
-                    _ts = df_base_trial["timestamp"]
-                    _t0 = str(_ts[0])[:10]
-                    _t1 = str(_ts[-1])[:10]
-                    _trial_date_range = (_t0, _t1)
-                except Exception:
-                    pass
+                
+                # Crear artifacts
+                df_signals_for_artifacts = None
+                df_for_artifacts = df_base_trial if self.futuro_data_provider is not None else df_base
+                for reporter in self.reporters:
+                    if hasattr(reporter, "needs_dataframe") and reporter.needs_dataframe(score):
+                        ohlc_cols = ["timestamp", "open", "high", "low", "close", "volume"]
+                        base_cols = [c for c in ohlc_cols if c in df_for_artifacts.columns]
+                        signal_cols = [c for c in signals_df.columns if c not in base_cols]
+                        df_signals_for_artifacts = df_for_artifacts.select(base_cols).hstack(
+                            signals_df.select(signal_cols)
+                        )
+                        break
+                
+                # Calcular rango de fechas real del trial (para plots dinámicos)
+                _trial_date_range = None
+                if self.futuro_data_provider is not None and "timestamp" in df_base_trial.columns:
+                    try:
+                        _ts = df_base_trial["timestamp"]
+                        _t0 = str(_ts[0])[:10]
+                        _t1 = str(_ts[-1])[:10]
+                        _trial_date_range = (_t0, _t1)
+                    except Exception:
+                        pass
 
-            artifacts = TrialArtifacts(
-                strategy_name=strategy.name,
-                trial_number=trial.number,
-                params=params_rt,
-                params_reporting=params_rt,
-                score=score,
-                metrics=metrics,
-                df_signals=df_signals_for_artifacts,
-                trades=trades_df.to_pandas(),
-                equity_curve=equity_curve,
-                indicators_used=params_rt.get("__indicators_used", []),
-                perturbado=perturb_info.get("perturbation_applied", False),
-                perturb_seed=perturb_seed if perturb_info.get("perturbation_applied", False) else None,
-                trial_date_range=_trial_date_range,
-            )
-            
-            for reporter in self.reporters:
-                reporter.on_trial_end(artifacts)
-            
-            return score
+                artifacts = TrialArtifacts(
+                    strategy_name=strategy.name,
+                    trial_number=trial.number,
+                    params=params_rt,
+                    params_reporting=params_rt,
+                    score=score,
+                    metrics=metrics,
+                    df_signals=df_signals_for_artifacts,
+                    trades=trades_df.to_pandas() if not trades_df.is_empty() else None,
+                    equity_curve=equity_curve,
+                    indicators_used=params_rt.get("__indicators_used", []),
+                    perturbado=perturb_info.get("perturbation_applied", False),
+                    perturb_seed=perturb_seed if perturb_info.get("perturbation_applied", False) else None,
+                    trial_date_range=_trial_date_range,
+                )
+                
+                for reporter in self.reporters:
+                    reporter.on_trial_end(artifacts)
+                
+                return score
+
+            except Exception as e:
+                # ERROR HANDLING: Report failure and continue
+                print(f"\n❌ TRIAL {trial.number} FAILED: {str(e)}")
+                import traceback
+                traceback.print_exc()
+                
+                # Create dummy artifacts for reporting
+                dummy_metrics = {"roi": 0.0, "sharpe": 0.0, "sqn": 0.0}
+                dummy_artifacts = TrialArtifacts(
+                    strategy_name=strategy.name,
+                    trial_number=trial.number,
+                    params={},
+                    params_reporting={},
+                    score=-9999.0,
+                    metrics=dummy_metrics,
+                    df_signals=None,
+                    trades=None,
+                    equity_curve=[],
+                    indicators_used=[],
+                    perturbado=False,
+                    perturb_seed=None,
+                    trial_date_range=None,
+                )
+                
+                for reporter in self.reporters:
+                    reporter.on_trial_end(dummy_artifacts)
+                
+                return -9999.0
         
         return objective
     
@@ -1099,7 +1217,7 @@ def run_single_exit_type(
         if usar_excel and excel_dir:
             from visual.excel import ExcelReporter
             reporters.append(ExcelReporter(
-                resumen_path=f"{excel_dir}/RESUMEN.xlsx",
+                resumen_path=f"{excel_dir}/RESUMEN ID{strategy.combinacion_id}.xlsx",
                 trades_base_dir=excel_dir,
                 max_archivos=max_archivos,
             ))
@@ -1143,10 +1261,21 @@ def run_single_exit_type(
     runner.activo = activo
 
     try:
+        from modelox.core.types import suffix_to_minutes
+        
         # Carga diferida de timeframes extra
         entry_tf = getattr(strategy, "timeframe_entry", None) or timeframe_base
         exit_tf = getattr(strategy, "timeframe_exit", None) or timeframe_base
         needed_tfs = [timeframe_base, entry_tf, exit_tf]
+        
+        # ================================================================
+        # SIEMPRE CARGAR DATOS DE 1M PARA SALIDAS PRECISAS
+        # ================================================================
+        # Si el timeframe base > 1m, necesitamos datos de 1m para evaluar
+        # las salidas (SL/TP/Trailing/Custom) con precisión tick-a-tick
+        base_tf_minutes = suffix_to_minutes(normalize_timeframe_to_suffix(timeframe_base))
+        if base_tf_minutes > 1 and "1m" not in needed_tfs:
+            needed_tfs.append("1m")
 
         for tf in needed_tfs:
             tf_suf = normalize_timeframe_to_suffix(tf)
@@ -1162,8 +1291,15 @@ def run_single_exit_type(
                     if fecha_inicio and fecha_fin:
                         df_tf = filter_by_date(df_tf, fecha_inicio, fecha_fin)
                     tf_cache[tf_suf] = df_tf
+                    
+                    # Log si cargamos datos de 1m para salidas
+                    if tf_suf == "1m" and base_tf_minutes > 1:
+                        logger.info(f"✓ Datos de 1m cargados para salidas precisas (TF entrada: {timeframe_base})")
                 except Exception as e:
-                    logger.warning(f"No se pudo cargar TF extra {tf}: {e}")
+                    if tf_suf == "1m":
+                        logger.warning(f"⚠ No se pudieron cargar datos de 1m para salidas: {e}")
+                    else:
+                        logger.warning(f"No se pudo cargar TF extra {tf}: {e}")
 
         runner.optimize_strategies(
             df=df_filtrado,

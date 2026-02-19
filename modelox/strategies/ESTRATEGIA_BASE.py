@@ -332,6 +332,32 @@ class EstrategiaBase:
             extras = [c for c in keep_cols if c not in base]
             cols = base + extras
 
+        # AUTO-INCLUDE OHLCV (Case-Insensitive)
+        # Esto asegura que el DF final tenga los datos necesarios para plot_trades
+        try:
+            # Obtener esquema para detectar columnas existentes
+            schema_keys = q.collect_schema().names()
+            
+            # Definir columnas críticas que siempre queremos conservar
+            target_cols = {"open", "high", "low", "close", "volume", "vol"}
+            
+            # Buscar coincidencias case-insensitive
+            ohlcv_found = []
+            existing_cols_lower = {c.lower(): c for c in schema_keys}
+            
+            for target in target_cols:
+                if target in existing_cols_lower:
+                    real_name = existing_cols_lower[target]
+                    if real_name not in cols:
+                        ohlcv_found.append(real_name)
+            
+            # Añadirlas a la selección
+            if ohlcv_found:
+                cols.extend(ohlcv_found)
+                
+        except Exception:
+            pass # Si falla la introspección (raro), seguimos con lo básico
+
         out = q.select(cols).collect()
         self.validate_signals_df(out)
         return out

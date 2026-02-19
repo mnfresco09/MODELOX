@@ -26,9 +26,14 @@ import urllib.parse
 import json
 
 
+
 # ─── CONFIG ──────────────────────────────────────────────────────────────────
 
 import os as _os
+try:
+    from general.configuracion import TELEGRAM
+except ImportError:
+    TELEGRAM = False  # Default safe
 
 BOT_TOKEN = _os.getenv(
     "MODELOX_TELEGRAM_TOKEN",
@@ -70,10 +75,13 @@ def _get_chat_id() -> Optional[str]:
 
 
 def _send(text: str) -> bool:
+    if not TELEGRAM:
+        return False
+
     chat_id = _get_chat_id()
     if not chat_id:
         return False
-
+    
     def _do():
         try:
             payload = urllib.parse.urlencode({
@@ -332,6 +340,9 @@ def notificar_fin_optimizacion(
 
 def _send_document(file_path: str, caption: str = "") -> None:
     """Envía un documento a Telegram."""
+    if not TELEGRAM:
+        return
+
     chat_id = _get_chat_id()
     if not chat_id:
         print("⚠️ TELEGRAM ERROR: No Chat ID found.")

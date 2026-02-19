@@ -927,6 +927,116 @@ def _filtrar_clusters_roi_negativo(
     return df_filtered, labels_filtered, order_new
 
 
+def _detectar_col_trades_dia(df: pd.DataFrame) -> Optional[str]:
+    """Detecta la columna de trades por día."""
+    for candidate in ["TRADES_DIA", "TRADES/DIA", "TRADES_PER_DAY", "TRADES / DAY"]:
+        if candidate in df.columns:
+            return candidate
+    for col in df.columns:
+        if "TRADES" in col.upper() and ("DIA" in col.upper() or "DAY" in col.upper()):
+            return col
+    return None
+
+
+def _filtrar_clusters_trades_dia_minimo(
+    df: pd.DataFrame,
+    labels: np.ndarray,
+    optics_order: np.ndarray,
+    min_trades_day: float = 0.17,
+) -> Tuple[pd.DataFrame, np.ndarray, np.ndarray]:
+    """
+    Filtro adicional:
+      Si ALGÚN trial del cluster tiene trades_dia < 0.17 → cluster entero eliminado.
+    """
+    col_tpd = _detectar_col_trades_dia(df)
+
+    if col_tpd is None:
+        print("\n  ⚠️  No se encontró columna TRADES_DIA → no se filtra por actividad mínima")
+        return df, labels, optics_order
+
+    print(f"\n  📉 Validación de actividad mínima:")
+    print(f"     Requisito: 100% trials con > {min_trades_day} trades/día")
+
+    df_work = df.copy()
+    df_work["__CLUSTER__"] = labels
+    df_work["__ORIG_IDX__"] = range(len(df_work))
+    
+    # Asegurarse de que sea numérico
+    df_work[col_tpd] = pd.to_numeric(df_work[col_tpd], errors='coerce').fillna(0)
+
+    clusters_validos = []
+    clusters_eliminados = []
+
+    for cid in sorted(df_work["__CLUSTER__"].unique()):
+        if cid == 0:
+            continue  # Skip outliers
+        sub = df_work[df_work["__CLUSTER__"] == cid]
+        n_total = len(sub)
+        # Condición: si ALGUNO es menor a min_trades_day
+        n_bajos = (sub[col_tpd] < min_trades_day).sum()
+
+        if n_bajos > 0:
+            clusters_eliminados.append((cid, n_total, n_bajos))
+        else:
+            clusters_validos.append(cid)
+
+    n_elim = len(clusters_eliminados)
+    print(f"     • {len(clusters_validos)} clusters cumplen actividad")
+    print(f"     • {n_elim} eliminados por baja actividad (< {min_trades_day})")
+
+    if clusters_eliminados:
+        try:
+             total_elim = sum(n for _, n, _ in clusters_eliminados)
+             print(f"     • {total_elim} trials descartados")
+             for cid, n_total, n_bajos in clusters_eliminados[:5]:
+                 print(f"       ❌ Cluster {cid}: {n_total} trials, {n_bajos} con < {min_trades_day} trades/día")
+             if n_elim > 5:
+                 print(f"       ... y {n_elim - 5} clusters más")
+        except:
+             pass
+
+    if not clusters_validos:
+        print("\n  ❌ NINGÚN cluster cumple el requisito de actividad mínima.")
+        df_empty = df.iloc[:0].copy()
+        # Return empty arrays with correct shape
+        return df_empty, np.array([], dtype=int), np.array([], dtype=int)
+
+    valid_set = set(clusters_validos)
+    
+    # -- Reconstruir dataset filtrado --
+    # Recuperamos índices originales para mantener consistencia con optics_order
+    mask_valid = df_work["__CLUSTER__"].isin(valid_set)
+    # Importante: usar los índices originales que guardamos
+    valid_orig_indices = sorted(df_work.loc[mask_valid, "__ORIG_IDX__"].values)
+    
+    # Filtrar optics_order (mantener solo los que están en valid_orig_indices)
+    valid_indices_set = set(valid_orig_indices)
+    order_filtered = np.array([i for i in optics_order if i in valid_indices_set])
+    
+    # Mapa de viejo índice -> nuevo índice (0..N-1)
+    old_to_new = {old_idx: new_idx for new_idx, old_idx in enumerate(valid_orig_indices)}
+    
+    # Nuevo dataframe
+    df_filtered = df.iloc[valid_orig_indices].reset_index(drop=True)
+    
+    # Nuevos labels (filtrados y remapeados 1..N)
+    labels_filtered = labels[valid_orig_indices]
+    
+    # Nuevo order (remapeado)
+    order_new = np.array([old_to_new[i] for i in order_filtered])
+
+    # Re-numerar clusters secuencialmente
+    unique_labels = sorted(set(labels_filtered))
+    remap = {old: new + 1 for new, old in enumerate(unique_labels)}
+    labels_filtered = np.array([remap[l] for l in labels_filtered])
+    
+    n_final = len(set(labels_filtered))
+    n_trials = len(df_filtered)
+    print(f"\n     ✅ Resultado final: {n_final} clusters, {n_trials} trials")
+
+    return df_filtered, labels_filtered, order_new
+
+
 # ==============================================================================
 # 4. ANÁLISIS Y RESUMEN
 # ==============================================================================
@@ -1387,6 +1497,12 @@ def main():
     df, labels, optics_order = _filtrar_clusters_roi_negativo(
         df, labels, optics_order,
     )
+
+    # 7b. Filtro Actividad Mínima (Trades/Day >= 0.17)
+    if len(df) > 0:
+        df, labels, optics_order = _filtrar_clusters_trades_dia_minimo(
+            df, labels, optics_order, min_trades_day=0.17
+        )
 
     if len(df) == 0:
         print("\n  ❌ No quedan trials tras filtrar. No se genera salida.")

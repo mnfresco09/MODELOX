@@ -46,7 +46,7 @@ from modelox.core.types import normalize_timeframe_to_suffix
 # 1.0 ESTRATEGIAS A EJECUTAR
 # ----------------------------------------------------------------------------
 # Los IDs corresponden a los archivos en  modelox/strategies/
-COMBINACION_A_EJECUTAR = [1]
+COMBINACION_A_EJECUTAR = [7]
 # ----------------------------------------------------------------------------
 # 1.1 SELECCIÓN DE ACTIVOS Y DATOS
 # ----------------------------------------------------------------------------
@@ -62,7 +62,7 @@ COMBINACION_A_EJECUTAR = [1]
 #   "BIST100" → Borsa Istanbul (desde 2024, solo 1h)
 #
 # También acepta varios:  "BTC,GOLD"  →  ejecuta ambos en secuencia
-ACTIVO = "SP500, NASDAQ"
+ACTIVO = "BTC"
 
 # ¿Dónde están los archivos de datos?
 # El sistema busca:  <CARPETA_DATOS>/<ACTIVO>_ohlcv_1m.<FORMATO_DATOS>
@@ -88,7 +88,7 @@ FORMATO_DATOS = "feather"
 #   - 3-10     → prueba rápida (minutos)
 #   - 50-100   → exploración decente (horas)
 #   - 500-1000 → búsqueda exhaustiva (muchas horas)
-N_TRIALS =50
+N_TRIALS = 5000
 
 # OPTUNA_N_JOBS = cuántos cores de CPU usar en paralelo.
 #   -1 = todos los disponibles (recomendado)
@@ -112,7 +112,7 @@ OPTUNA_STORAGE = None   # None = todo en RAM (más rápido)
 #            Cobertura EQUIDISTANTE del espacio de parámetros.
 #            NO usa el score para guiar — pura matemática.
 #            Ideal para exploración exhaustiva sin sesgo ni overfitting.
-OPTUNA_SAMPLER = "TPE"
+OPTUNA_SAMPLER = "QMC"
 
 # ----------------------------------------------------------------------------
 # 1.3 GESTIÓN DE CAPITAL Y COSTES
@@ -150,8 +150,8 @@ COMISION_SIDES = 2
 # Si BTC baja a 50.000$:
 #   → qty = 6.000 / 50.000 = 0.12 BTC (más unidades, mismo volumen)
 #
-SALDO_USADO = 50.0           # Colateral fijo por operación ($)
-APALANCAMIENTO_MAX = 40       # Apalancamiento máximo permitido
+SALDO_USADO = 60.0           # Colateral fijo por operación ($)
+APALANCAMIENTO_MAX = 25       # Apalancamiento máximo permitido
 
 # ----------------------------------------------------------------------------
 # 2.1 TIMEFRAME BASE (RESOLUCIÓN DE OPERACIÓN)
@@ -174,7 +174,7 @@ APALANCAMIENTO_MAX = 40       # Apalancamiento máximo permitido
 #    con el rango COMPLETO de datos (ej: 2017 → 2025).
 #
 # También acepta enteros (minutos): 1, 5, 15, 30, 60, 120, 240, 720, 1440
-TIMEFRAME_BASE = "1"
+TIMEFRAME_BASE = "5"
 TIMEFRAMES = [TIMEFRAME_BASE]  # No tocar — se deriva de TIMEFRAME_BASE
 
 # ----------------------------------------------------------------------------
@@ -194,8 +194,8 @@ TIMEFRAMES = [TIMEFRAME_BASE]  # No tocar — se deriva de TIMEFRAME_BASE
 #   NASDAQ   : 2010-11-14 → 2025-12-31
 #   BIST100  : 2024-02-12 → 2026-02-09 (solo 1h)
 #
-FECHA_INICIO = "2022-05-01"
-FECHA_FIN    = "2025-08-01"
+FECHA_INICIO = "2022-01-01"
+FECHA_FIN    = "2026-02-01"
 
 # ── MODO DE USO DEL RANGO ──
 #
@@ -220,7 +220,7 @@ MESES_POR_TRIAL = 6  # Solo aplica si USAR_RANGOS_POR_TRIAL = True
 # Fechas para el gráfico detallado de trades (zoom visual).
 # Esto NO afecta al backtest, solo al gráfico HTML que se genera.
 FECHA_INICIO_PLOT = "2025-01-01"
-FECHA_FIN_PLOT = "2025-05-01"
+FECHA_FIN_PLOT = "2025-02-10"
 
 # ── PERTURBACIÓN DE DATOS (anti-overfitting) ──
 #
@@ -250,6 +250,8 @@ MAX_ARCHIVOS_GUARDAR = 5   # Guarda solo los N mejores resultados (borra los peo
 # Los resultados se guardan en:
 #   resultados/<ESTRATEGIA>/FIXED/<ACTIVO>/EXCEL/
 #   resultados/<ESTRATEGIA>/FIXED/<ACTIVO>/GRAFICA/
+
+TELEGRAM = True            # Enviar reportes a Telegram (True) o no (False)
 
 # ── Gráfico detallado ──
 # El gráfico HTML muestra un subrango del backtest para ver trades de cerca.
@@ -398,5 +400,6 @@ CONFIG = {
     "PERTURBACION_ACTIVAR": PERTURBACION_ACTIVAR,
     "PERTURBACION_NOISE_SCALE": PERTURBACION_NOISE_SCALE,
     "PERTURBACION_SEED": PERTURBACION_SEED,
-    "PERTURBACION_VERIFY": PERTURBACION_VERIFY
+    "PERTURBACION_VERIFY": PERTURBACION_VERIFY,
+    "TELEGRAM": TELEGRAM,
 }

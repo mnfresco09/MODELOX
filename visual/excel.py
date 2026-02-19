@@ -240,7 +240,8 @@ class ExcelReporter:
                 csv_path=csv_path,
                 strategy_name=strategy_name,
                 activo=activo_safe,
-                output_dir=base_dir
+                output_dir=base_dir,
+                excel_path=self.resumen_path  # Pass the target path for duplication
             )
         except Exception as e:
             logger.warning(f"Error generando Dashboard Excel: {e}")
@@ -413,8 +414,8 @@ class ExcelReporter:
         df_export = df_export[ordered_cols + remaining]
 
         
-        score_str = f"{candidate['score']:.2f}".replace(".", "_")
-        filename = f"TRADES_TRIAL{candidate['trial_number']}_SCORE{score_str}.xlsx"
+        
+        filename = f"TRIAL {candidate['trial_number']}.xlsx"
         filepath = os.path.join(trades_dir, filename)
         
         # Guardar con engine openpyxl explícito
@@ -480,6 +481,37 @@ def convertir_resumen_csv_a_excel(
         cols_params,
         saldo_inicial
     )
+
+    # Continue to duplication logic
+    
+    # 7. Renombrar a excel_path si se especificó (RESUMEN ID7.xlsx)
+    path_to_return = final_excel_path
+    if excel_path:
+        import shutil
+        try:
+            target_abs = os.path.abspath(excel_path)
+            source_abs = os.path.abspath(final_excel_path)
+            if target_abs != source_abs:
+                shutil.move(final_excel_path, excel_path)
+                path_to_return = excel_path
+        except Exception as e:
+            pass
+            
+    # 8. Eliminar CSV original
+    try:
+        if os.path.exists(csv_path):
+            os.remove(csv_path)
+    except Exception:
+        pass
+
+    return path_to_return
+
+    # 8. Eliminar CSV original
+    try:
+        if os.path.exists(csv_path):
+            os.remove(csv_path)
+    except Exception:
+        pass
 
     return final_excel_path
 

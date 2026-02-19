@@ -355,7 +355,7 @@ def mostrar_panel_elegante(
                        if not str(k).startswith("__") and k not in skip_keys}
     
     if strategy_params:
-        for k, v in list(strategy_params.items())[:6]:
+        for k, v in list(strategy_params.items())[:12]:
             name = k.replace("_", " ").upper()[:14]
             if isinstance(v, float):
                 val = f"= {v:.2f}" if abs(v) < 100 else f"= {v:.0f}"
@@ -434,23 +434,25 @@ class EstadisticasOptimizacion:
         self.mejor_score = float("-inf")
         self.mejor_trial = 0
         self.n = 0
+        self.n_total = 0
 
     def actualizar(self, metricas: Dict[str, Any], score: float, trial: int) -> None:
-        self.valores["roi"].append(M.get(metricas, "roi"))
-        self.valores["sqn"].append(M.get(metricas, "sqn"))
-        self.valores["exp"].append(M.get(metricas, "expectativa"))
-        self.valores["sharpe"].append(M.get(metricas, "sharpe"))
-        self.valores["score"].append(score)
-        self.valores["pf"].append(M.get(metricas, "profit_factor"))
-        self.n += 1
-        if score > self.mejor_score:
-            self.mejor_score = score
-            self.mejor_trial = trial
+        self.n_total += 1
+        if metricas:
+            self.valores["roi"].append(M.get(metricas, "roi"))
+            self.valores["sqn"].append(M.get(metricas, "sqn"))
+            self.valores["exp"].append(M.get(metricas, "expectativa"))
+            self.valores["sharpe"].append(M.get(metricas, "sharpe"))
+            self.valores["score"].append(score)
+            self.valores["pf"].append(M.get(metricas, "profit_factor"))
+            self.n += 1  # Only increment valid trials for averages
+            if score > self.mejor_score:
+                self.mejor_score = score
+                self.mejor_trial = trial
 
     def promedio(self, key: str) -> float:
         v = self.valores.get(key, [])
-        # Filtrar NaN e infinitos
-        valid = [x for x in v if x == x and abs(x) != float('inf')]  # x != x es True solo para NaN
+        valid = [x for x in v if x == x and abs(x) != float('inf')]
         return sum(valid) / len(valid) if valid else 0.0
 
     def obtener_promedios(self) -> Dict[str, float]:
@@ -462,6 +464,7 @@ class EstadisticasOptimizacion:
             "score_medio": self.promedio("score"),
             "pf_medio": self.promedio("pf"),
             "n_trials": self.n,
+            "n_total": self.n_total,
             "mejor_score": self.mejor_score,
             "mejor_trial": self.mejor_trial,
         }
@@ -481,7 +484,7 @@ def actualizar_estadisticas(metricas: Dict[str, Any], score: float, trial: int) 
 
 def mostrar_evolucion_metricas(mostrar_cada_n: int = 25, forzar: bool = False) -> None:
     """Show evolution box every N trials - two columns, centered."""
-    if not forzar and (_stats.n == 0 or _stats.n % mostrar_cada_n != 0):
+    if not forzar and (_stats.n_total == 0 or _stats.n_total % mostrar_cada_n != 0):
         return
     
     s = _stats.obtener_promedios()
@@ -497,9 +500,12 @@ def mostrar_evolucion_metricas(mostrar_cada_n: int = 25, forzar: bool = False) -
     grid.add_row("EXP", f"{s['expectativa_media']:.2f}", "SHARPE", f"{s['sharpe_medio']:.2f}")
     grid.add_row("PF", f"{s['pf_medio']:.2f}", "SCORE", f"[{THEME.WHITE}]{_format_score(s['score_medio'])}[/]")
     
+    failed = s['n_total'] - s['n_trials']
+    title_extra = f" | {failed} FAIL" if failed > 0 else ""
+    
     evo_box = Panel(
         grid,
-        title=f"[{THEME.MUTED}]SUMMARY ({s['n_trials']} TRIALS)[/]",
+        title=f"[{THEME.MUTED}]SUMMARY ({s['n_trials']} OK{title_extra})[/]",
         border_style=THEME.BORDER,
         box=box.ROUNDED,
         padding=(0, 1),
@@ -561,7 +567,7 @@ def mostrar_top_trials(study, n: int = 5) -> None:
         bal = M.from_trial(t, "saldo_actual")
         trades = int(M.from_trial(t, "total_trades"))
         
-        mark = "★" if i == 0 else str(t.number)
+        mark = str(t.number)
         score_style = f"bold {THEME.GOLD}" if i == 0 else THEME.BLUE
         
         table.add_row(

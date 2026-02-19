@@ -53,7 +53,7 @@ class StrategyKineticMomentumValidator(EstrategiaBase):
             "zlema_slow_len": slow_len,
 
             # --- FILTRO DE MOMENTUM ---
-            "lookbar": trial.suggest_int("lookbar", 20, 200, step=5),
+            "lookbar": trial.suggest_int("lookbar", 20, 300, step=5),
             "req_dist_pct": trial.suggest_float("req_dist_pct", 0.05, 2.00, step=0.05),
         }
 
