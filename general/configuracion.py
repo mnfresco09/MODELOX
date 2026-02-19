@@ -88,7 +88,7 @@ FORMATO_DATOS = "feather"
 #   - 3-10     → prueba rápida (minutos)
 #   - 50-100   → exploración decente (horas)
 #   - 500-1000 → búsqueda exhaustiva (muchas horas)
-N_TRIALS = 5000
+N_TRIALS = 50
 
 # OPTUNA_N_JOBS = cuántos cores de CPU usar en paralelo.
 #   -1 = todos los disponibles (recomendado)

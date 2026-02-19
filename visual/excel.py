@@ -321,6 +321,11 @@ def _preparar_df_trades(df_trades: pd.DataFrame) -> pd.DataFrame:
         "EXIT_TIME", "EXIT_PRICE", "POSICIÓN", "EXIT_REASON",
         "PNL BRUTO", "COMISIONES", "PNL NETO", "BALANCE"
     ]
+    # Truncar precios a 2 decimales según petición del usuario
+    for price_col in ["ENTRY_PRICE", "EXIT_PRICE", "TRAIL_ACT_PRICE"]:
+        if price_col in df.columns:
+            df[price_col] = df[price_col].apply(lambda x: int(x * 100) / 100.0 if pd.notnull(x) else x)
+
     return df[[c for c in order if c in df.columns]]
 
 
@@ -404,7 +409,7 @@ def _escribir_trades_xlsxwriter(
     FMT = {
         'gen':   (_fmt('#FFFFFF'),                          _fmt('#F7F9FC')),
         'dt':    (_fmt('#FFFFFF', 'dd/mm/yy hh:mm'),        _fmt('#F7F9FC', 'dd/mm/yy hh:mm')),
-        'price': (_fmt('#FFFFFF', '#,##0.00000'),            _fmt('#F7F9FC', '#,##0.00000')),
+        'price': (_fmt('#FFFFFF', '#,##0.00'),               _fmt('#F7F9FC', '#,##0.00')),
         'money': (_fmt('#FFFFFF', '#,##0.00'),               _fmt('#F7F9FC', '#,##0.00')),
         'pct':   (_fmt('#FFFFFF', '0.00%'),                  _fmt('#F7F9FC', '0.00%')),
         'apal':  (_fmt('#FFFFFF', '0.00"x"'),                _fmt('#F7F9FC', '0.00"x"')),
@@ -535,11 +540,10 @@ def _escribir_trades_xlsxwriter(
         # Anclar: fila=BLOCK_ROW (0-indexed), columna=1 (B)
         ws.insert_chart(BLOCK_ROW, 1, chart, {'x_offset': 2, 'y_offset': 5})
 
-    # ── TABLA DE PARÁMETROS: col R (índice 17), junto al gráfico ampliado ────
-    # 1000px de gráfico desde col B(1) ocupa hasta aproximadamente col Q
-    # Col R (índice 17) = inmediatamente después
-    TABLE_COL = 17    # R (0-indexed)
-    TABLE_ROW = BLOCK_ROW
+    # ── TABLA DE PARÁMETROS: Col B, debajo del gráfico ──────────────────────
+    # El gráfico ocupa ~22-23 filas (430px). Ponemos la tabla en la 24.
+    TABLE_COL = 1    # B (0-indexed)
+    TABLE_ROW = BLOCK_ROW + 24
 
     # Fuente 13pt = visualmente "2x" respecto al cuerpo de 10pt
     _TBL = dict(font_name='Arial', font_size=13, valign='vcenter', indent=1)
@@ -637,7 +641,7 @@ def _escribir_trades_openpyxl_fallback(
         if "TIME" in hdr or "DATE" in hdr:
             col_fmt[c] = "DD/MM/YY HH:MM"
         elif "PRICE" in hdr:
-            col_fmt[c] = "#,##0.00000"
+            col_fmt[c] = "#,##0.00"
         elif "PNL" in hdr or "BALANCE" in hdr or "COMISIONES" in hdr:
             col_fmt[c] = "#,##0.00"
         else:
@@ -705,9 +709,9 @@ def _escribir_trades_openpyxl_fallback(
             chart2.height = 14; chart2.width = 44  # Ampliado (ancho 10 eq)
             ws.add_chart(chart2, f"B{max_row + 3}")
 
-    # Tabla fallback en col R
-    TABLE_COL_OP = 18  # openpyxl 1-indexed = R
-    TABLE_ROW_OP = max_row + 3
+    # Tabla fallback debajo del gráfico (B)
+    TABLE_COL_OP = 2   # openpyxl 1-indexed = B
+    TABLE_ROW_OP = max_row + 33  # Justo debajo del gráfico (que es alto)
     for i, (label, value) in enumerate([("SALDO", val_saldo), ("VOLUMEN", val_volumen), ("APALANCAMIENTO", val_apal)]):
         r = TABLE_ROW_OP + i
         ws.cell(r, TABLE_COL_OP).value = label
