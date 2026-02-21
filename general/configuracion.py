@@ -10,7 +10,7 @@ PROPÓSITO:
 CONTENIDO:
      1. EJECUCIÓN                 — Estrategias a correr (IDs)
      2. DATOS                     — Activo, timeframe base, rango fechas
-     3. OPTIMIZACIÓN (OPTUNA)     — Trials, sampler, perturbación
+     3. OPTIMIZACIÓN (OPTUNA)     — Trials, sampler
      4. CAPITAL & RIESGO          — Saldo inicial, comisiones, apalancamiento
      5. SALIDAS & RESULTADOS      — Plots, Excel, limpieza
 
@@ -88,7 +88,7 @@ FORMATO_DATOS = "feather"
 #   - 3-10     → prueba rápida (minutos)
 #   - 50-100   → exploración decente (horas)
 #   - 500-1000 → búsqueda exhaustiva (muchas horas)
-N_TRIALS = 50
+N_TRIALS = 25
 
 # OPTUNA_N_JOBS = cuántos cores de CPU usar en paralelo.
 #   -1 = todos los disponibles (recomendado)
@@ -112,7 +112,7 @@ OPTUNA_STORAGE = None   # None = todo en RAM (más rápido)
 #            Cobertura EQUIDISTANTE del espacio de parámetros.
 #            NO usa el score para guiar — pura matemática.
 #            Ideal para exploración exhaustiva sin sesgo ni overfitting.
-OPTUNA_SAMPLER = "QMC"
+OPTUNA_SAMPLER = "hybrid"
 
 # ----------------------------------------------------------------------------
 # 1.3 GESTIÓN DE CAPITAL Y COSTES
@@ -194,7 +194,7 @@ TIMEFRAMES = [TIMEFRAME_BASE]  # No tocar — se deriva de TIMEFRAME_BASE
 #   NASDAQ   : 2010-11-14 → 2025-12-31
 #   BIST100  : 2024-02-12 → 2026-02-09 (solo 1h)
 #
-FECHA_INICIO = "2021-09-01"
+FECHA_INICIO = "2024-04-01"
 FECHA_FIN    = "2025-08-01"
 
 # ── MODO DE USO DEL RANGO ──
@@ -217,26 +217,34 @@ FECHA_FIN    = "2025-08-01"
 USAR_RANGOS_POR_TRIAL = False
 MESES_POR_TRIAL = 6  # Solo aplica si USAR_RANGOS_POR_TRIAL = True
 
-# Fechas para el gráfico detallado de trades (zoom visual).
+# ── Rango del gráfico detallado (zoom visual) ──
 # Esto NO afecta al backtest, solo al gráfico HTML que se genera.
-FECHA_INICIO_PLOT = "2025-01-01"
-FECHA_FIN_PLOT = "2025-02-10"
-
-# ── PERTURBACIÓN DE DATOS (anti-overfitting) ──
 #
-# Añade ruido microscópico a los precios para que Optuna no memorice
-# patrones exactos del histórico. La estrategia resultante es más robusta.
+# GRAFICA_RANGO_PERSONALIZADO:
+#   False = Automático: muestra los últimos 2 meses de datos del trial.
+#           Si el trial tiene menos de 2 meses, muestra todo.
+#   True  = Manual: usa GRAFICA_FECHA_INICIO / GRAFICA_FECHA_FIN.
+GRAFICA_RANGO_PERSONALIZADO = False
+GRAFICA_FECHA_INICIO = "2025-01-01"
+GRAFICA_FECHA_FIN = "2025-02-10"
+
+
+# ----------------------------------------------------------------------------
+# 2.3 ENTRENAMIENTO ROBUSTO (DATA AUGMENTATION)
+# ----------------------------------------------------------------------------
+# Activa la perturbación de datos por trial de Optuna.
+# Cada trial recibe un dataset OHLCV ligeramente mutado para evitar overfitting.
 #
-#   True  = Activada (recomendado con muchos trials)
-#   False = Datos originales sin modificar
-PERTURBACION_ACTIVAR = False
-
-# Intensidad del ruido: 0.1 = suave, 0.5 = moderado, 1.0 = agresivo.
-# 0.5 significa que el ruido es ~50% de la volatilidad real del activo.
-PERTURBACION_NOISE_SCALE = 0.65
-
-PERTURBACION_SEED = 42               # Semilla (int = reproducible, None = aleatorio)
-PERTURBACION_VERIFY = True           # Verificar que OHLCV sigue siendo coherente
+# Modelo: Deriva Aleatoria Anclada (Leashed Brownian Motion).
+#   Fase 1: Desplaza la gráfica entera con un multiplicador browniano
+#           acumulativo (clipped ±MAX_DRIFT_PCT). Preserva continuidad O/C.
+#   Fase 2: Expande mechas con ruido uniforme positivo. Volumen log-normal.
+#
+ENTRENAMIENTO_ROBUSTO_ACTIVAR = True          # True = activar augmentation por trial
+MAX_DRIFT_PCT = 0.10                          # Máx desviación del precio real (±10%)
+DRIFT_STEP_VOLATILITY = 0.001                 # Volatilidad del paso browniano por vela
+RUIDO_MECHAS_PCT = 0.05                       # Escala de ruido uniforme para mechas
+RUIDO_VOLUMEN_PCT = 0.1                       # Escala de ruido log-normal para volumen
 
 # ----------------------------------------------------------------------------
 # 2.5 SALIDAS Y RESULTADOS
@@ -253,10 +261,7 @@ MAX_ARCHIVOS_GUARDAR = 5   # Guarda solo los N mejores resultados (borra los peo
 
 TELEGRAM = True            # Enviar reportes a Telegram (True) o no (False)
 
-# ── Gráfico detallado ──
-# El gráfico HTML muestra un subrango del backtest para ver trades de cerca.
-PLOT_MESES_DURACION = 2         # Cuántos meses mostrar en el gráfico
-PLOT_UBICACION_ALEATORIA = False # False = desde el inicio, True = zona aleatoria
+
 
 # ── Mantenimiento ──
 CLEANUP_INTERVAL = 200          # Liberar RAM cada N trials (50-200)
@@ -369,7 +374,6 @@ CONFIG = {
     "COMISION_PCT": COMISION_PCT,
     "COMISION_SIDES": COMISION_SIDES,
     "SALDO_MINIMO_OPERATIVO": SALDO_MINIMO_OPERATIVO,
-    "RIESGO_POR_TRADE_PCT": 0.10,  # Legacy (no usado con SALDO_USADO fijo)
     # Optuna
     "N_TRIALS": N_TRIALS,
     "OPTUNA_N_JOBS": OPTUNA_N_JOBS,
@@ -393,13 +397,15 @@ CONFIG = {
     "GENERAR_PLOTS": GENERAR_PLOTS,
     "USAR_EXCEL": USAR_EXCEL,
     "PURGE_PYCACHE_ON_EXIT": PURGE_PYCACHE_ON_EXIT,
-    # Gráficos (subrango)
-    "PLOT_MESES_DURACION": PLOT_MESES_DURACION,
-    "PLOT_UBICACION_ALEATORIA": PLOT_UBICACION_ALEATORIA,
-    # Perturbación
-    "PERTURBACION_ACTIVAR": PERTURBACION_ACTIVAR,
-    "PERTURBACION_NOISE_SCALE": PERTURBACION_NOISE_SCALE,
-    "PERTURBACION_SEED": PERTURBACION_SEED,
-    "PERTURBACION_VERIFY": PERTURBACION_VERIFY,
+    # Gráficos (rango)
+    "GRAFICA_RANGO_PERSONALIZADO": GRAFICA_RANGO_PERSONALIZADO,
+    "GRAFICA_FECHA_INICIO": GRAFICA_FECHA_INICIO,
+    "GRAFICA_FECHA_FIN": GRAFICA_FECHA_FIN,
     "TELEGRAM": TELEGRAM,
+    # Entrenamiento Robusto (Data Augmentation — Leashed Brownian Motion)
+    "ENTRENAMIENTO_ROBUSTO_ACTIVAR": ENTRENAMIENTO_ROBUSTO_ACTIVAR,
+    "MAX_DRIFT_PCT": MAX_DRIFT_PCT,
+    "DRIFT_STEP_VOLATILITY": DRIFT_STEP_VOLATILITY,
+    "RUIDO_MECHAS_PCT": RUIDO_MECHAS_PCT,
+    "RUIDO_VOLUMEN_PCT": RUIDO_VOLUMEN_PCT,
 }

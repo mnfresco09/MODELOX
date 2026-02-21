@@ -112,7 +112,6 @@ class BacktestConfig:
     # qty = (saldo_usado × apalancamiento_max) / precio_entrada
     saldo_usado: float = 75.0                    # Margen fijo por trade ($)
     apalancamiento_max: float = 60.0             # Apalancamiento máximo (x)
-    riesgo_por_trade_pct: float = 0.10           # Riesgo % por trade (legacy)
 
     # ─── SISTEMA DE SALIDAS (SINCRONIZADO DESDE exits.py) ────────────────
     # IMPORTANTE: No modificar estos defaults aquí. Cambiarlos en exits.py.
@@ -171,9 +170,6 @@ class TrialArtifacts:
     equity_curve: List[float]                    # Curva de equity
     indicators_used: List[str]                   # Indicadores para plots
 
-    # ─── PERTURBACIÓN ────────────────────────────────────────────────────
-    perturbado: bool = False                     # ¿Datos perturbados?
-    perturb_seed: Optional[int] = None           # Seed de perturbación
 
     # ─── METADATA EXTRA ──────────────────────────────────────────────────
     trial_date_range: Optional[tuple] = None     # (fecha_inicio, fecha_fin)

@@ -66,7 +66,7 @@ METRICS_ORDER = [
 ID_COLS = ["TRIAL", "ESTRATEGIA", "SCORE"]
 
 EXCLUDED_PARAMS = {
-    "NOMBRE_COMBO", "EXIT_TYPE", "CANTIDAD", "PERTURBADO", "SEED",
+    "NOMBRE_COMBO", "EXIT_TYPE", "CANTIDAD",
     "ACTIVO", "TIMEFRAME", "TF", "ASSET", "SYMBOL",
     "RESULTADO", "METRICS", "COMBO", "ESTATEGIA",
     "SALDO", "VOLUMEN", "APALANCAMIENTO",
@@ -141,8 +141,6 @@ class ExcelReporter:
             "score":         score,
             "metrics":       deepcopy(artifacts.metrics) if artifacts.metrics else {},
             "params":        {k: v for k, v in params.items() if not str(k).startswith("__")},
-            "perturbado":    artifacts.perturbado,
-            "perturb_seed":  artifacts.perturb_seed,
             "strategy_name": artifacts.strategy_name,
         })
 
@@ -166,8 +164,6 @@ class ExcelReporter:
                 "trades":       artifacts.trades,
                 "params":       params,
                 "metrics":      artifacts.metrics,
-                "perturbado":   artifacts.perturbado,
-                "perturb_seed": artifacts.perturb_seed,
             })
             if len(self._trade_candidates) > self.max_archivos:
                 self._trade_candidates.sort(key=lambda x: x["score"], reverse=True)
@@ -1019,7 +1015,7 @@ def _aplicar_estilo_avanzado(filepath, df, metrics_cols, params_cols, saldo_ini)
 
 
 # ==============================================================================
-# EXPORTACIÓN RÁPIDA (API legacy)
+# EXPORTACIÓN RÁPIDA
 # ==============================================================================
 
 def exportar_trades_excel_rapido(
@@ -1031,8 +1027,6 @@ def exportar_trades_excel_rapido(
     trades_actual_base: str = "trades_trial",
     score: float = None,
     max_archivos: int = 5,
-    perturbado: bool = False,
-    perturb_seed: int = None,
     skip_trades_file: bool = False,
 ):
     params = dict(params or {})

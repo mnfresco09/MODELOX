@@ -597,65 +597,6 @@ class StrictAlignmentMapper:
         return sum(1 for v in aligned_values if v is not None)
 
 
-def _prepare_indicator_vectorized_aligned(
-    candle_timestamps: np.ndarray,
-    indicator_values: np.ndarray,
-    precision: int = 4
-) -> tuple:
-    """
-    Vectorized indicator preparation with STRICT 1:1 ALIGNMENT.
-    
-    DEPRECATED: Use StrictAlignmentMapper for new code.
-    Kept for backwards compatibility.
-    """
-    if len(indicator_values) == 0:
-        return None, None, None
-
-    # Ensure arrays have same length
-    if len(candle_timestamps) != len(indicator_values):
-        min_len = min(len(candle_timestamps), len(indicator_values))
-        candle_timestamps = candle_timestamps[:min_len]
-        indicator_values = indicator_values[:min_len]
-
-    factor = 10 ** precision
-
-    # Convert values: NaN -> None, valid -> quantized int
-    values_list = []
-    valid_count = 0
-
-    for val in indicator_values:
-        if np.isnan(val) or np.isinf(val):
-            values_list.append(None)
-        else:
-            values_list.append(int(np.round(val * factor)))
-            valid_count += 1
-
-    if valid_count == 0:
-        return None, None, None
-
-    return candle_timestamps, values_list, factor
-
-
-def _prepare_indicator_vectorized(
-    timestamps: np.ndarray,
-    values: np.ndarray,
-    precision: int = 4
-) -> tuple:
-    """
-    LEGACY: Vectorized indicator preparation (filters NaN - causes desync).
-    DEPRECATED: Use StrictAlignmentMapper instead.
-    """
-    mask = ~np.isnan(values)
-    ts_clean = timestamps[mask]
-    vals_clean = values[mask]
-
-    if len(vals_clean) == 0:
-        return None, None, None
-
-    factor = 10 ** precision
-    vals_quantized = np.round(vals_clean * factor).astype(np.int64)
-
-    return ts_clean, vals_quantized, factor
 
 
 # =============================================================================
@@ -923,20 +864,6 @@ def _generate_dynamic_combo(params: Optional[Dict[str, Any]], strategy_name: str
     return ' | '.join(parts) if parts else strategy_name or "TRIAL"
 
 
-def _detect_indicators_legacy(
-  df_cols: set,
-  price_range: tuple,
-  params: Optional[Dict[str, Any]] = None,
-) -> Dict[str, Any]:
-  """LEGACY – mantenido solo por compatibilidad interna.
-
-  La detección real ahora es 100% guiada por estrategia y se hace con la
-  versión nueva de `_detect_indicators(df: pd.DataFrame, ...)` definida arriba.
-  """
-  raise RuntimeError(
-    "Legacy _detect_indicators(df_cols, ...) ya no está soportado. "
-    "Usa la detección strategy-driven con el DataFrame alineado."
-  )
 
 
 # =============================================================================
@@ -1854,30 +1781,6 @@ document.addEventListener('keydown', e => {
 
 
 
-def _generate_hft_html(
-    candle_data: dict,
-    indicators: dict,
-    trades: dict,
-    config: dict
-) -> str:
-    """
-    DEPRECATED: Use _write_html_streaming for direct file writing.
-    This wrapper builds the HTML in memory for backwards compatibility.
-    """
-    import tempfile
-    import os
-
-    # Create temp file, write with streaming, read back
-    with tempfile.NamedTemporaryFile(mode='wb', suffix='.html', delete=False) as tmp:
-        tmp_path = tmp.name
-
-    try:
-        _write_html_streaming(tmp_path, candle_data, indicators, trades, config)
-        with open(tmp_path, 'r', encoding='utf-8') as f:
-            return f.read()
-    finally:
-        if os.path.exists(tmp_path):
-            os.remove(tmp_path)
 
 
 # =============================================================================
@@ -1888,8 +1791,9 @@ def plot_trades(
     df: DataFrameType,
     df_trades: DataFrameType,
     plot_base: str,
-    fecha_inicio_plot: str,
-    fecha_fin_plot: str,
+    grafica_rango_personalizado: bool,
+    grafica_fecha_inicio: str,
+    grafica_fecha_fin: str,
     trial_number: int,
     params: dict,
     score: float,
@@ -1899,7 +1803,6 @@ def plot_trades(
     saldo_inicial: float = 300.0,
     max_archivos: int = 5,
     activo: Optional[str] = None,
-    plot_meses_duracion: int = 2,
 ):
 
     """
@@ -1935,76 +1838,61 @@ def plot_trades(
         volumes = df_pd[vol_col].values.astype(np.float64) if vol_col else None
 
     # ================== DATE FILTERING ==================
-    start_pd = pd.to_datetime(fecha_inicio_plot, utc=True)
-    end_pd = pd.to_datetime(fecha_fin_plot, utc=True)
-    start = np.datetime64(start_pd.tz_localize(None))
-    end = np.datetime64(end_pd.tz_localize(None))
+    # Sistema binario: rango personalizado o últimos 2 meses automáticos.
+    if grafica_rango_personalizado:
+        # ---- MODO MANUAL: usar fechas fijas del usuario ----
+        start_pd = pd.to_datetime(grafica_fecha_inicio, utc=True)
+        end_pd = pd.to_datetime(grafica_fecha_fin, utc=True)
+        start = np.datetime64(start_pd.tz_localize(None))
+        end = np.datetime64(end_pd.tz_localize(None))
 
-    if np.issubdtype(timestamps.dtype, np.datetime64):
-        ts_compare = timestamps
+        if np.issubdtype(timestamps.dtype, np.datetime64):
+            ts_compare = timestamps
+        else:
+            ts_compare = timestamps.astype('datetime64[ns]')
+
+        mask = (ts_compare >= start) & (ts_compare <= end)
+
+        ts_filtered = timestamps[mask]
+        o_filtered = opens[mask]
+        h_filtered = highs[mask]
+        l_filtered = lows[mask]
+        c_filtered = closes[mask]
+        v_filtered = volumes[mask] if volumes is not None else None
+
+        # Fallback: si el rango manual no cruza el dataset, mostrar todo
+        if len(ts_filtered) == 0:
+            ts_filtered = timestamps
+            o_filtered = opens
+            h_filtered = highs
+            l_filtered = lows
+            c_filtered = closes
+            v_filtered = volumes
+
+        timestamps = ts_filtered
+        opens = o_filtered
+        highs = h_filtered
+        lows = l_filtered
+        closes = c_filtered
+        volumes = v_filtered
     else:
-        ts_compare = timestamps.astype('datetime64[ns]')
+        # ---- MODO AUTO: últimos 2 meses (60 días) del trial ----
+        ts_unix = _normalize_timestamps_to_unix(timestamps)
+        ts_max = int(ts_unix.max())
+        ts_min_auto = ts_max - (60 * 86400)  # 60 días en segundos
 
-    # Guardar copia por si el rango configurado no cruza el dataset.
-    timestamps_all = timestamps
-    opens_all = opens
-    highs_all = highs
-    lows_all = lows
-    closes_all = closes
-    volumes_all = volumes
-
-    mask = (ts_compare >= start) & (ts_compare <= end)
-
-    timestamps = timestamps[mask]
-    opens = opens[mask]
-    highs = highs[mask]
-    lows = lows[mask]
-    closes = closes[mask]
-    if volumes is not None:
-      volumes = volumes[mask]
-
-    # Si el rango de plot no tiene datos (muy común al cambiar timeframe),
-    # hacemos fallback a todo el dataset disponible para no “dejar de generar”.
-    if len(timestamps) == 0:
-      timestamps = timestamps_all
-      opens = opens_all
-      highs = highs_all
-      lows = lows_all
-      closes = closes_all
-      volumes = volumes_all
-
-    # ================== SYNTHETIC DATA: LIMIT PLOT RANGE ==================
-    # Para datasets grandes (sintéticos o multi-año en TF cortos), limitar gráfica
-    # para evitar overflow numérico y mejorar rendimiento visual.
-    # PERO: si el usuario pidió un rango largo (ej: TF 1d, 2017→2025), respetarlo.
-    if len(timestamps) >= 2:
-        ts_arr = timestamps.astype('datetime64[s]').astype(np.int64)
-        first_diff_seconds = abs(ts_arr[1] - ts_arr[0])
-        minutes_per_candle = max(1, first_diff_seconds / 60)
-
-        # Calcular cuántas velas cubre el rango de plot solicitado
-        range_days = (end_pd - start_pd).total_seconds() / 86400
-        candles_for_range = int(range_days * 24 * 60 / minutes_per_candle)
-
-        # Solo recortar si el TF es pequeño (< 12h = 720 min) y hay demasiadas velas
-        # Para TF grandes (12h, 1d) NUNCA recortar — el usuario quiere ver todo
-        if minutes_per_candle < 720:
-            # Velas para N meses (según plot_meses_duracion)
-            target_months = max(1, plot_meses_duracion)
-            candles_target = int(target_months * 30 * 24 * 60 / minutes_per_candle)
-
-            # Si tenemos más velas de las que caben en target_months * 1.5, recortar
-            # (Esto asegura que si el usuario pide 3 meses, se le den 3 meses, pero si
-            #  pide 2 y el rango seleccionado es de un año, se recorte a 2)
-            if len(timestamps) > candles_target * 1.5:
-                # Tomar los últimos N meses (donde probablemente hay más trades)
-                timestamps = timestamps[-candles_target:]
-                opens = opens[-candles_target:]
-                highs = highs[-candles_target:]
-                lows = lows[-candles_target:]
-                closes = closes[-candles_target:]
-                if volumes is not None:
-                    volumes = volumes[-candles_target:]
+        # Solo recortar si el trial tiene más de 60 días de datos
+        ts_min_dataset = int(ts_unix.min())
+        if ts_min_auto > ts_min_dataset:
+            mask = ts_unix >= ts_min_auto
+            timestamps = timestamps[mask]
+            opens = opens[mask]
+            highs = highs[mask]
+            lows = lows[mask]
+            closes = closes[mask]
+            if volumes is not None:
+                volumes = volumes[mask]
+        # Si el trial tiene <= 60 días, no recortamos nada (se grafica todo)
 
     # ================== BANKRUPTCY CUTOFF ==================
     saldo_minimo_operativo = 5.0
@@ -2188,10 +2076,24 @@ def plot_trades(
     
     mapper = StrictAlignmentMapper(ts_q)
     
-    # Simpler approach: Use the passed DF and timestamps_all
-    # We need to make sure we extract values corresponding to timestamps_all
-    # If df is polars:
     is_pl = HAS_POLARS and isinstance(df, pl.DataFrame)
+
+    # Extract full-DF timestamps (source) for indicator alignment against ts_q (target)
+    if is_pl:
+        _ind_ts_raw = df["timestamp"].to_numpy() if "timestamp" in df.columns else None
+    else:
+        df_pd_ind = df if isinstance(df, pd.DataFrame) else pd.DataFrame(df)
+        if isinstance(df_pd_ind.index, pd.DatetimeIndex):
+            _ind_ts_raw = df_pd_ind.index.values
+        elif "timestamp" in df_pd_ind.columns:
+            _ind_ts_raw = df_pd_ind["timestamp"].values
+        else:
+            _ind_ts_raw = None
+
+    if _ind_ts_raw is not None:
+        indicator_ts = _normalize_timestamps_to_unix(_ind_ts_raw)
+    else:
+        indicator_ts = ts_q  # Fallback: assume df is already sliced to match
     
     def get_col_values(c):
         if is_pl:
@@ -2204,8 +2106,7 @@ def plot_trades(
         col = ov["col"]
         if col in df.columns:
             vals = get_col_values(col)
-            # Align using the timestamps_all (which matches df rows)
-            q_vals, factor, _ = mapper.align_quantized(timestamps_all, vals, precision=ov["precision"])
+            q_vals, factor, _ = mapper.align_quantized(indicator_ts, vals, precision=ov["precision"])
 
             
             indicators_data["overlays"].append({
@@ -2223,7 +2124,7 @@ def plot_trades(
         col = panel["col"]
         if col in df.columns:
             vals = get_col_values(col)
-            q_vals, factor, _ = mapper.align_quantized(timestamps_all, vals, precision=panel["precision"])
+            q_vals, factor, _ = mapper.align_quantized(indicator_ts, vals, precision=panel["precision"])
             
             pid = str(panel.get("panel_id")) if panel.get("panel_id") is not None else f"auto_{col}"
             
@@ -2295,17 +2196,17 @@ class PlotReporter:
     def __init__(
         self,
         plot_base: str,
-        fecha_inicio_plot: str,
-        fecha_fin_plot: str,
-        plot_meses_duracion: int = 2,
+        grafica_rango_personalizado: bool,
+        grafica_fecha_inicio: str,
+        grafica_fecha_fin: str,
         max_archivos: int = 5,
         saldo_inicial: float = 1000.0,
         activo: Optional[str] = None,
     ):
         self.plot_base = plot_base
-        self.fecha_inicio_plot = fecha_inicio_plot
-        self.fecha_fin_plot = fecha_fin_plot
-        self.plot_meses_duracion = plot_meses_duracion
+        self.grafica_rango_personalizado = grafica_rango_personalizado
+        self.grafica_fecha_inicio = grafica_fecha_inicio
+        self.grafica_fecha_fin = grafica_fecha_fin
         self.max_archivos = max_archivos
         self.saldo_inicial = saldo_inicial
         self.activo = activo
@@ -2370,8 +2271,9 @@ class PlotReporter:
                     df=artifacts.df_signals,
                     df_trades=artifacts.trades,
                     plot_base=self.plot_base,
-                    fecha_inicio_plot=self.fecha_inicio_plot,
-                    fecha_fin_plot=self.fecha_fin_plot,
+                    grafica_rango_personalizado=self.grafica_rango_personalizado,
+                    grafica_fecha_inicio=self.grafica_fecha_inicio,
+                    grafica_fecha_fin=self.grafica_fecha_fin,
                     trial_number=artifacts.trial_number,
                     params=artifacts.params,
                     score=artifacts.score,
@@ -2380,9 +2282,10 @@ class PlotReporter:
                     equity_curve=artifacts.equity_curve,
                     saldo_inicial=self.saldo_inicial,
                     activo=self.activo,
-                    plot_meses_duracion=self.plot_meses_duracion,
                 )
             except Exception as e:
+                import traceback
+                traceback.print_exc()
                 print(f"Error generando gráfico del trial {artifacts.trial_number}: {e}")
 
         # Limpiar pendientes

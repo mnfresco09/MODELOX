@@ -97,24 +97,22 @@ from general.configuracion import (
     # Timeframe
     TIMEFRAME_BASE,
     # Fechas
-    FECHA_FIN, FECHA_INICIO, 
-    FECHA_FIN_PLOT, FECHA_INICIO_PLOT,
+    FECHA_FIN, FECHA_INICIO,
+    # Gráficos (rango)
+    GRAFICA_RANGO_PERSONALIZADO, GRAFICA_FECHA_INICIO, GRAFICA_FECHA_FIN,
     # Optimización
     N_TRIALS, OPTUNA_SAMPLER,
-    PERTURBACION_ACTIVAR,
     # Rangos por trial
     USAR_RANGOS_POR_TRIAL, MESES_POR_TRIAL,
     # Salidas
     GENERAR_PLOTS, MAX_ARCHIVOS_GUARDAR, USAR_EXCEL,
-    # Gráficos (subrango)
-    PLOT_MESES_DURACION, PLOT_UBICACION_ALEATORIA,
     # Limpieza
     CLEANUP_INTERVAL,
 )
 
 from modelox.core.data import load_data, resample_to_base_timeframe, candles_per_month_for_tf
 from modelox.core.runner import (
-    OptimizationRunner, OptunaConfig, PerturbationConfig,
+    OptimizationRunner, OptunaConfig,
     run_single_exit_type,
 )
 from modelox.core.types import (
@@ -324,7 +322,6 @@ def main() -> None:
                     saldo_minimo_operativo=float(CONFIG["SALDO_MINIMO_OPERATIVO"]),
                     saldo_usado=float(CONFIG["SALDO_USADO"]),
                     apalancamiento_max=float(CONFIG["APALANCAMIENTO_MAX"]),
-                    riesgo_por_trade_pct=float(CONFIG["RIESGO_POR_TRADE_PCT"]),
                     exit_sl_pct=float(CONFIG["EXIT_SL_PCT"]),
                     exit_tp_pct=float(CONFIG["EXIT_TP_PCT"]),
                     exit_trail_act_pct=float(CONFIG["EXIT_TRAIL_ACT_PCT"]),
@@ -371,39 +368,6 @@ def main() -> None:
                             os.makedirs(excel_dir, exist_ok=True)
                             os.makedirs(graficos_dir, exist_ok=True)
 
-                            # Ejecutar
-                            perturbacion_en_uso = PERTURBACION_ACTIVAR
-                            
-                            # ── Auto full-range para TF >= 12h ──
-                            _plot_start = FECHA_INICIO_PLOT
-                            _plot_end = FECHA_FIN_PLOT
-                            _plot_meses = PLOT_MESES_DURACION
-                            tf_minutes = int(tf_base) if isinstance(tf_base, (int, float)) else 1
-                            
-                            # Intentar calcular duración real del rango seleccionado
-                            try:
-                                from datetime import datetime as _dt
-                                _d0_p = _dt.strptime(FECHA_INICIO_PLOT, "%Y-%m-%d")
-                                _d1_p = _dt.strptime(FECHA_FIN_PLOT, "%Y-%m-%d")
-                                _diff_meses_plot = max(1, int((_d1_p - _d0_p).days / 30))
-                                # Si el rango explícito es mayor que el default, lo usamos
-                                if _diff_meses_plot > _plot_meses:
-                                    _plot_meses = _diff_meses_plot + 1
-                            except Exception:
-                                pass
-
-                            if tf_minutes >= 720:  # 12h o 1d → gráfica rango completo
-                                _plot_start = FECHA_INICIO
-                                _plot_end = FECHA_FIN
-                                # Calcular meses del rango completo
-                                try:
-                                    from datetime import datetime as _dt
-                                    _d0 = _dt.strptime(FECHA_INICIO, "%Y-%m-%d")
-                                    _d1 = _dt.strptime(FECHA_FIN, "%Y-%m-%d")
-                                    _plot_meses = max(1, (_d1.year - _d0.year) * 12 + (_d1.month - _d0.month))
-                                except Exception:
-                                    _plot_meses = 120  # ~10 años fallback
-                                print(f"   📈 TF ≥ 12h → Gráfica rango completo: {_plot_start} → {_plot_end}")
 
                             run_single_exit_type(
                                 exit_type=et,
@@ -421,11 +385,6 @@ def main() -> None:
                                 # Configuración
                                 n_trials=int(N_TRIALS),
                                 optuna_sampler=OPTUNA_SAMPLER,
-                                perturbacion_activar=perturbacion_en_uso,
-                                perturbacion_config={
-                                    "noise_scale": float(CONFIG.get("PERTURBACION_NOISE_SCALE", 0.5)),
-                                    "seed": int(CONFIG.get("PERTURBACION_SEED", 42)),
-                                },
                                 # Datos con rangos por trial
                                 synthetic_mode=False,
                                 synthetic_years=MESES_POR_TRIAL // 12 if USAR_RANGOS_POR_TRIAL else 0,
@@ -437,11 +396,10 @@ def main() -> None:
                                 usar_excel=USAR_EXCEL,
                                 generar_plots=GENERAR_PLOTS,
                                 max_archivos=int(MAX_ARCHIVOS_GUARDAR),
-                                fecha_inicio_plot=_plot_start,
-                                fecha_fin_plot=_plot_end,
-                                # Configuración de gráficos (subrango)
-                                plot_meses_duracion=_plot_meses,
-                                plot_ubicacion_aleatoria=PLOT_UBICACION_ALEATORIA,
+                                # Gráficos (rango binario)
+                                grafica_rango_personalizado=GRAFICA_RANGO_PERSONALIZADO,
+                                grafica_fecha_inicio=GRAFICA_FECHA_INICIO,
+                                grafica_fecha_fin=GRAFICA_FECHA_FIN,
                                 # Funciones
                                 resolve_archivo_data_tf_func=resolve_archivo_data_tf,
                                 fecha_inicio=FECHA_INICIO,

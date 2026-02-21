@@ -221,6 +221,20 @@ from .qmc import (
 )
 
 # =============================================================================
+# IMPORTS HYBRID (QMC -> TPE)
+# =============================================================================
+from .hybrid import (
+    HybridOptimizer,
+    HybridOptimizerConfig,
+    HybridScorer,
+    HybridScoringConfig,
+    HYBRID_SCORING_CONFIG,
+    HYBRID_OPTIMIZER_CONFIG,
+    create_hybrid_study,
+    score_hybrid,
+)
+
+# =============================================================================
 # IMPORTS TYPING
 # =============================================================================
 from typing import Optional
@@ -281,6 +295,14 @@ def create_study(
         )
     elif sampler_type == "QMC":
         return create_qmc_study(
+            strategy_name=strategy_name,
+            activo=activo,
+            seed=seed,
+            study_name_prefix=study_name_prefix,
+            storage=storage,
+        )
+    elif sampler_type == "HYBRID":
+        return create_hybrid_study(
             strategy_name=strategy_name,
             activo=activo,
             seed=seed,
@@ -366,4 +388,15 @@ __all__ = [
     "QMC_OPTIMIZER_CONFIG",   # INSTANCIA DEFAULT DE OPTIMIZADOR
     "create_qmc_study",       # CREAR ESTUDIO QMC
     "score_qmc",              # FUNCIÓN STANDALONE DE SCORING
+    # =========================================================================
+    # HYBRID (QMC -> TPE)
+    # =========================================================================
+    "HybridOptimizer",
+    "HybridOptimizerConfig",
+    "HybridScorer",
+    "HybridScoringConfig",
+    "HYBRID_SCORING_CONFIG",
+    "HYBRID_OPTIMIZER_CONFIG",
+    "create_hybrid_study",
+    "score_hybrid",
 ]

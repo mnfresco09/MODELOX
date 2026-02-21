@@ -75,7 +75,7 @@ IMPLEMENTACIÓN ACTUAL:
        │  engine.py                                                         │
        │    └── calculate_performance_vectorized_numba()                    │
        │    └── Si df_1m disponible → usa _simulate_trades_with_1m_exits()  │
-       │    └── Si no → usa _simulate_trades_sequential() (legacy)          │
+       │    └── Si no → usa _simulate_trades_sequential() (mismo TF)          │
        └─────────────────────────────────────────────────────────────────────┘
     
     2. TRADING EN VIVO (trader.py):

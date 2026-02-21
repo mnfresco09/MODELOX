@@ -134,7 +134,7 @@ class BacktestParams:
 
 
 # =============================================================================
-# 3. KERNEL NUMBA: SALIDAS (SL/TP/TRAILING) - VERSIÓN LEGACY SIN 1M
+# 3. KERNEL NUMBA: SALIDAS (SL/TP/TRAILING) - KERNEL ESTÁNDAR (MISMO TF)
 # =============================================================================
 
 @nb.njit(cache=True, fastmath=True)
@@ -752,7 +752,7 @@ def _simulate_trades_sequential(
            np.ndarray, np.ndarray, np.ndarray, np.ndarray, int]:
     """
     Kernel Numba optimizado para simular todos los trades secuencialmente.
-    Versión LEGACY que usa el mismo timeframe para entradas y salidas.
+    Kernel estándar que usa el mismo timeframe para entradas y salidas.
     
     Para salidas en 1m, usar _simulate_trades_with_1m_exits().
     """
@@ -1138,7 +1138,7 @@ def calculate_performance_vectorized_numba(
         # Para timestamps de salida, usar df_1m
         ts_arr_exit = df_1m["timestamp"]
     else:
-        # Usar kernel legacy (mismo TF para entradas y salidas)
+        # Kernel estándar (mismo TF para entradas y salidas)
         (out_entry_idx, out_exit_idx, out_entry_price, out_exit_price,
          out_side, out_reason, out_qty, out_saldo_usado, out_pnl_neto,
          out_pnl_pct, out_saldo_antes, out_saldo_despues,

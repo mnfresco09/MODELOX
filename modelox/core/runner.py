@@ -5,19 +5,17 @@ MODELOX/CORE/RUNNER.PY — RUNNER PRINCIPAL DE OPTIMIZACIÓN
 
 PROPÓSITO:
     Orquesta la optimización bayesiana con Optuna, soportando múltiples
-    samplers (CMA-ES, TPE, GT, ML, QMC) y perturbación de datos.
+    samplers (CMA-ES, TPE, GT, ML, QMC).
 
 CONTENIDO:
      1. CACHÉ DE SEÑALES          — Reutilización entre trials vecinos
-     2. CONFIGURACIÓN             — OptunaConfig, PerturbationConfig
-     3. PERTURBACIÓN              — Validación/coherencia OHLCV, kernel Numba
+     2. CONFIGURACIÓN             — OptunaConfig
      4. HELPERS                   — create_study_for_strategy
      5. PIPELINE                  — DataLoader, SignalGenerator, BacktestEngine
      6. RUNNER PRINCIPAL          — OptimizationRunner (optimize_strategies)
 
-MODOS DE OPERACIÓN:
-    1. NORMAL:       Cada trial usa datos ORIGINALES.
-    2. PERTURBACIÓN: Cada trial usa datos PERTURBADOS (validates robustness).
+MODO DE OPERACIÓN:
+    Cada trial usa datos ORIGINALES.
 
 SAMPLERS DISPONIBLES:
     - CMA: CMA-ES (recomendado para scoring institucional)
@@ -62,8 +60,8 @@ from .exits import resolve_exit_settings_for_trial
 
 # Funciones desde módulo optimizers
 from modelox.optimizers import (
-    CMAScorer, TPEScorer, GTScorer, MLForestScorer, QMCScorer,
-    score_cma, score_tpe, score_gt, score_ml, score_qmc,
+    CMAScorer, TPEScorer, GTScorer, MLForestScorer, QMCScorer, HybridScorer,
+    score_cma, score_tpe, score_gt, score_ml, score_qmc, score_hybrid,
     create_study,  # Factory para crear estudios
 )
 
@@ -161,262 +159,6 @@ class OptunaConfig:
     sampler: str = "CMA"  # Valor recibido desde configuracion.py
 
 
-@dataclass
-class PerturbationConfig:
-    """
-    Configuración de perturbación de datos.
-    
-    NOTA: Los valores se configuran en general/configuracion.py
-          con las variables PERTURBACION_*.
-    """
-    enabled: bool = False
-    method: str = "returns_perturbation"
-    noise_factor: float = 0.3
-    seed: Optional[int] = 42
-    verify_perturbation: bool = True
-
-
-# =============================================================================
-# 3. PERTURBACIÓN (VALIDACIÓN/COHERENCIA OHLCV + KERNEL NUMBA)
-# =============================================================================
-
-def _validate_ohlcv_coherence(df: pl.DataFrame) -> Tuple[bool, str]:
-    """
-    Valida que los datos OHLCV sean coherentes.
-    
-    Reglas:
-    - High >= max(Open, Close)
-    - Low <= min(Open, Close)
-    - Low <= High
-    - Todos los precios > 0
-    
-    Returns:
-        (is_valid, error_message)
-    """
-    open_arr = df["open"].to_numpy()
-    high_arr = df["high"].to_numpy()
-    low_arr = df["low"].to_numpy()
-    close_arr = df["close"].to_numpy()
-    
-    max_oc = np.maximum(open_arr, close_arr)
-    min_oc = np.minimum(open_arr, close_arr)
-    
-    # Verificar coherencia
-    high_valid = np.all(high_arr >= max_oc - 1e-10)
-    low_valid = np.all(low_arr <= min_oc + 1e-10)
-    hl_valid = np.all(low_arr <= high_arr + 1e-10)
-    positive = np.all(open_arr > 0) and np.all(high_arr > 0) and np.all(low_arr > 0) and np.all(close_arr > 0)
-    
-    if not high_valid:
-        return False, "High < max(Open, Close) en algunas velas"
-    if not low_valid:
-        return False, "Low > min(Open, Close) en algunas velas"
-    if not hl_valid:
-        return False, "Low > High en algunas velas"
-    if not positive:
-        return False, "Precios negativos o cero detectados"
-    
-    return True, "OK"
-
-
-def _ensure_ohlcv_coherence(
-    open_arr: np.ndarray,
-    high_arr: np.ndarray,
-    low_arr: np.ndarray,
-    close_arr: np.ndarray,
-) -> Tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
-    """
-    Asegura coherencia OHLCV después de perturbación.
-    
-    Reglas aplicadas:
-    1. High >= max(Open, Close)
-    2. Low <= min(Open, Close)
-    3. Low <= High
-    4. Todos los precios > min_price
-    """
-    min_price = 0.01
-    
-    # Asegurar precios positivos
-    open_arr = np.maximum(open_arr, min_price)
-    high_arr = np.maximum(high_arr, min_price)
-    low_arr = np.maximum(low_arr, min_price)
-    close_arr = np.maximum(close_arr, min_price)
-    
-    # Asegurar coherencia
-    max_oc = np.maximum(open_arr, close_arr)
-    min_oc = np.minimum(open_arr, close_arr)
-    
-    high_arr = np.maximum(high_arr, max_oc)
-    low_arr = np.minimum(low_arr, min_oc)
-    low_arr = np.minimum(low_arr, high_arr)
-    
-    return open_arr, high_arr, low_arr, close_arr
-
-
-# =============================================================================
-# 3b. KERNEL NUMBA PARA PERTURBACIÓN RÁPIDA
-# =============================================================================
-try:
-    from numba import njit
-    
-    @njit(cache=True, fastmath=True)
-    def _perturb_returns_numba(
-        close_arr: np.ndarray,
-        noise: np.ndarray,
-    ) -> np.ndarray:
-        """Kernel Numba para reconstruir precios desde retornos perturbados."""
-        n = len(close_arr)
-        log_returns = np.empty(n - 1, dtype=np.float64)
-        
-        # Calcular log returns
-        for i in range(n - 1):
-            log_returns[i] = np.log(close_arr[i + 1] / close_arr[i])
-        
-        # Añadir ruido y reconstruir
-        perturbed_returns = log_returns + noise
-        
-        new_close = np.empty(n, dtype=np.float64)
-        new_close[0] = close_arr[0]
-        cumsum = 0.0
-        for i in range(n - 1):
-            cumsum += perturbed_returns[i]
-            new_close[i + 1] = close_arr[0] * np.exp(cumsum)
-        
-        return new_close
-    
-    _NUMBA_PERTURB_AVAILABLE = True
-except Exception:
-    _NUMBA_PERTURB_AVAILABLE = False
-
-
-def perturb_returns_professional(
-    df: pl.DataFrame,
-    noise_factor: float = 0.3,
-    seed: Optional[int] = None,
-) -> pl.DataFrame:
-    """
-    PERTURBACIÓN PROFESIONAL DE RETORNOS (Método Quant Estándar)
-    
-    OPTIMIZADO: Usa kernel Numba para cálculos intensivos.
-    """
-    rng = np.random.default_rng(seed)
-    
-    # Extraer arrays originales (views, no copias)
-    close_arr = df["close"].to_numpy()
-    n = len(close_arr)
-    
-    if n < 10:
-        return df
-    
-    # Calcular volatilidad
-    log_returns = np.diff(np.log(np.maximum(close_arr, 1e-10)))
-    volatility = np.std(log_returns)
-    
-    if volatility < 1e-10:
-        return df
-    
-    # Generar ruido
-    noise_std = volatility * noise_factor
-    noise = rng.normal(0, noise_std, len(log_returns))
-    
-    # Reconstruir close (usar Numba si disponible)
-    if _NUMBA_PERTURB_AVAILABLE:
-        new_close = _perturb_returns_numba(close_arr.astype(np.float64), noise)
-    else:
-        perturbed_returns = log_returns + noise
-        new_close = np.zeros(n)
-        new_close[0] = close_arr[0]
-        new_close[1:] = close_arr[0] * np.exp(np.cumsum(perturbed_returns))
-    
-    # Escalar OHLC
-    scale = new_close / np.maximum(close_arr, 1e-10)
-    
-    open_arr = df["open"].to_numpy() * scale
-    high_arr = df["high"].to_numpy() * scale
-    low_arr = df["low"].to_numpy() * scale
-    
-    # Asegurar coherencia
-    new_open, new_high, new_low, new_close = _ensure_ohlcv_coherence(
-        open_arr, high_arr, low_arr, new_close
-    )
-    
-    result = df.with_columns([
-        pl.Series("open", new_open),
-        pl.Series("high", new_high),
-        pl.Series("low", new_low),
-        pl.Series("close", new_close),
-    ])
-    
-    return result
-
-
-def apply_perturbation(
-    df: pl.DataFrame,
-    config: PerturbationConfig,
-    trial_number: int,
-) -> Tuple[pl.DataFrame, int, Dict[str, Any]]:
-    """
-    Aplica perturbación a los datos según la configuración.
-    
-    Returns:
-        (df_perturbado, seed_usado, info_perturbacion)
-    """
-    if not config.enabled:
-        return df, 0, {"perturbation_applied": False}
-    
-    # Semilla única por trial
-    seed = (config.seed or 42) + trial_number
-    
-    # Guardar estadísticas originales para verificación
-    original_close_mean = float(df["close"].mean())
-    original_close_std = float(df["close"].std())
-    
-    # Aplicar perturbación (único método: returns_perturbation)
-    df_perturbed = perturb_returns_professional(df, config.noise_factor, seed)
-    
-    # Verificar que la perturbación se aplicó
-    perturbed_close_mean = float(df_perturbed["close"].mean())
-    perturbed_close_std = float(df_perturbed["close"].std())
-    
-    # Calcular diferencia relativa
-    mean_diff_pct = abs(perturbed_close_mean - original_close_mean) / original_close_mean * 100
-    
-    info = {
-        "perturbation_applied": True,
-        "method": "returns_perturbation",
-        "seed": seed,
-        "noise_factor": config.noise_factor,
-        "original_close_mean": original_close_mean,
-        "perturbed_close_mean": perturbed_close_mean,
-        "mean_diff_pct": mean_diff_pct,
-        "original_close_std": original_close_std,
-        "perturbed_close_std": perturbed_close_std,
-    }
-    
-    # Verificar coherencia OHLCV
-    is_valid, error_msg = _validate_ohlcv_coherence(df_perturbed)
-    info["ohlcv_valid"] = is_valid
-    if not is_valid:
-        info["ohlcv_error"] = error_msg
-        # Si no es válido, intentar corregir
-        open_arr = df_perturbed["open"].to_numpy()
-        high_arr = df_perturbed["high"].to_numpy()
-        low_arr = df_perturbed["low"].to_numpy()
-        close_arr = df_perturbed["close"].to_numpy()
-        
-        open_arr, high_arr, low_arr, close_arr = _ensure_ohlcv_coherence(
-            open_arr, high_arr, low_arr, close_arr
-        )
-        
-        df_perturbed = df_perturbed.with_columns([
-            pl.Series("open", open_arr),
-            pl.Series("high", high_arr),
-            pl.Series("low", low_arr),
-            pl.Series("close", close_arr),
-        ])
-        info["ohlcv_corrected"] = True
-    
-    return df_perturbed, seed, info
 
 
 # =============================================================================
@@ -604,8 +346,6 @@ class OptimizationRunner:
     - TPE: Tree-structured Parzen Estimator (clásico de Optuna)
     
     Soporta:
-    - Backtesting normal (sin perturbación)
-    - Perturbación de datos para validación
     - Scoring institucional multiplicativo (PSR, DSR, K-Ratio, etc.)
     - Datos futuros con rango distinto por trial (FuturoTrialDataProvider)
     """
@@ -616,15 +356,14 @@ class OptimizationRunner:
     optuna: OptunaConfig = field(default_factory=OptunaConfig)
     activo: Optional[str] = None
     
-    # Configuración de perturbación
-    perturbation_config: PerturbationConfig = field(default_factory=PerturbationConfig)
-    
     # Proveedor de datos futuros (opcional)
     futuro_data_provider: Optional[Any] = None
     
+    # Data Augmentation (entrenamiento robusto)
+    augmenter: Optional[Any] = None
+    
     # Estado interno
     _last_study: Optional[optuna.study.Study] = None
-    _perturbation_stats: Dict[str, Any] = field(default_factory=dict)
     
     def _get_score_func(self) -> Callable:
         """
@@ -643,6 +382,8 @@ class OptimizationRunner:
             return score_ml
         if sampler_type == "QMC":
             return score_qmc
+        if sampler_type == "HYBRID":
+            return score_hybrid
         return score_cma  # Default: CMA
     
     def optimize_strategies(
@@ -665,10 +406,6 @@ class OptimizationRunner:
             )
             results[strat.name] = study
             self._last_study = study
-            
-            # Mostrar resumen de perturbación si estaba habilitada
-            if self.perturbation_config.enabled:
-                self._show_perturbation_summary()
             
             for reporter in self.reporters:
                 if hasattr(reporter, "on_strategy_end"):
@@ -710,31 +447,91 @@ class OptimizationRunner:
                 except Exception:
                     pass
         
-        # Reset stats de perturbación
-        self._perturbation_stats = {
-            "enabled": self.perturbation_config.enabled,
-            "method": "returns_perturbation",  # Único método soportado
-            "trials_perturbed": 0,
-            "mean_diff_pcts": [],
-        }
-        
         objective = self._create_single_objective(df_base, df_map, strategy, base_tf)
         
-        study = create_study_for_strategy(
-            cfg=self.optuna, 
-            strategy_name=strategy.name, 
-            activo=self.activo,
-        )
+        sampler_type = self.optuna.sampler.upper() if self.optuna.sampler else "CMA"
         
-        study.optimize(
-            objective,
-            n_trials=int(self.n_trials),
-            n_jobs=int(getattr(self.optuna, "n_jobs", 1)),
-            gc_after_trial=True,
-            catch=(Exception,),
-        )
-        
-        return study
+        if sampler_type == "HYBRID":
+            import math
+            import optuna
+            n_qmc = int(math.ceil(self.n_trials / 2))
+            n_tpe = self.n_trials - n_qmc
+            
+            from optuna.samplers import QMCSampler, TPESampler
+            import re
+            
+            # Use provided storage or create a file-based storage for sharing between samplers
+            if self.optuna.storage:
+                storage = self.optuna.storage
+            else:
+                import os
+                db_path = os.path.join(os.getcwd(), "optuna_hybrid.db")
+                storage = f"sqlite:///{db_path}"
+            
+            # Generar nombre del estudio unificado para HYBRID
+            parts = [self.optuna.study_name_prefix, str(strategy.name), "HYBRID"]
+            if self.activo:
+                parts.append(str(self.activo))
+            
+            s = "_".join(parts).strip().lower()
+            s = re.sub(r'[^a-z0-9]+', '_', s)
+            study_name = s.strip('_')[:50]
+            
+            # Phase 1: QMC
+            sampler_qmc = QMCSampler(seed=self.optuna.seed, warn_independent_sampling=False)
+            study_qmc = optuna.create_study(
+                direction="maximize",
+                sampler=sampler_qmc,
+                study_name=study_name,
+                storage=storage,
+                load_if_exists=True,
+            )
+            
+            if n_qmc > 0:
+                study_qmc.optimize(
+                    objective,
+                    n_trials=n_qmc,
+                    n_jobs=int(getattr(self.optuna, "n_jobs", 1)),
+                    gc_after_trial=True,
+                    catch=(Exception,),
+                )
+            
+            # Phase 2: TPE
+            sampler_tpe = TPESampler(seed=self.optuna.seed, n_startup_trials=0, multivariate=True)
+            study_tpe = optuna.create_study(
+                direction="maximize",
+                sampler=sampler_tpe,
+                study_name=study_name,
+                storage=storage,
+                load_if_exists=True,
+            )
+            
+            if n_tpe > 0:
+                study_tpe.optimize(
+                    objective,
+                    n_trials=n_tpe,
+                    n_jobs=int(getattr(self.optuna, "n_jobs", 1)),
+                    gc_after_trial=True,
+                    catch=(Exception,),
+                )
+                
+            return study_tpe
+        else:
+            study = create_study_for_strategy(
+                cfg=self.optuna, 
+                strategy_name=strategy.name, 
+                activo=self.activo,
+            )
+            
+            study.optimize(
+                objective,
+                n_trials=int(self.n_trials),
+                n_jobs=int(getattr(self.optuna, "n_jobs", 1)),
+                gc_after_trial=True,
+                catch=(Exception,),
+            )
+            
+            return study
     
     def _prepare_params(
         self,
@@ -799,6 +596,16 @@ class OptimizationRunner:
                 periodic_cleanup(trial.number)
                 
                 params_rt = self._prepare_params(trial, strategy, base_tf)
+                
+                # INYECTAR SAMPLER UTILIZADO (Para visualización de HYBRID QMC/TPE)
+                sampler_name = type(trial.study.sampler).__name__
+                if sampler_name == "QMCSampler":
+                    params_rt["__sampler_used"] = "QMC"
+                elif sampler_name == "TPESampler":
+                    params_rt["__sampler_used"] = "TPE"
+                else:
+                    params_rt["__sampler_used"] = sampler_name
+                
                 entry_tf = params_rt["__timeframe_entry"]
                 
                 # ================================================================
@@ -830,63 +637,16 @@ class OptimizationRunner:
                     df_base_trial = df_base
                 
                 # ================================================================
-                # PERTURBACIÓN DE DATOS (SOLO SI NO HAY FUTURO PROVIDER)
+                # OBTENER DATOS DE 1M (Para Augmentation y Salidas)
                 # ================================================================
-                # Si usamos FuturoTrialDataProvider, cada trial ya tiene datos
-                # diferentes, por lo que NO aplicamos perturbación adicional
-                df_trial = df_entry
-                df_map_perturbed = df_map_trial  # Por defecto, usar el del trial
-                perturb_info = {"perturbation_applied": False}
-                perturb_seed = 0
-                
-                # Solo perturbar si NO hay futuro_data_provider activo
-                if self.perturbation_config.enabled and self.futuro_data_provider is None:
-                    # Calcular semilla única para este trial
-                    base_seed = self.perturbation_config.seed or 42
-                    perturb_seed = base_seed + trial.number
-                    
-                    # Perturbar TODOS los timeframes con la misma semilla
-                    df_map_perturbed = {}
-                    for tf_key, tf_df in df_map_trial.items():
-                        perturbed_df, _, tf_perturb_info = apply_perturbation(
-                            tf_df, self.perturbation_config, trial.number
-                        )
-                        df_map_perturbed[tf_key] = perturbed_df
-                        
-                        # Guardar info del timeframe de entrada
-                        if tf_key == entry_tf:
-                            df_trial = perturbed_df
-                            perturb_info = tf_perturb_info
-                    
-                    self._perturbation_stats["trials_perturbed"] += 1
-                    if "mean_diff_pct" in perturb_info:
-                        diffs = self._perturbation_stats["mean_diff_pcts"]
-                        diffs.append(perturb_info["mean_diff_pct"])
-                        if len(diffs) > 100:
-                            self._perturbation_stats["mean_diff_pcts"] = diffs[-100:]
-                
-                # Generar señales
-                t1_signals = time.perf_counter()
-                signals_df = SignalGenerator.generate_signals(df_trial, strategy, params_rt, df_map_perturbed)
-                t2_signals = time.perf_counter()
-                
-                # ================================================================
-                # OBTENER DATOS DE 1M PARA SALIDAS PRECISAS
-                # ================================================================
-                # Si el timeframe de entrada > 1m, usamos datos de 1m para evaluar
-                # las salidas (SL/TP/Trailing/Custom) con precisión tick-a-tick
                 from modelox.core.types import suffix_to_minutes
-                
                 entry_tf_minutes = suffix_to_minutes(entry_tf)
-                df_1m_for_exits = None
-                signals_1m_for_exits = None
                 
-                if entry_tf_minutes > 1:
-                    # Intentar obtener datos de 1m del cache de timeframes
-                    df_1m_for_exits = df_map_perturbed.get("1m", df_map_trial.get("1m"))
-                    
-                    # Si no hay datos de 1m en el cache, intentar cargarlos
-                    if df_1m_for_exits is None and self.futuro_data_provider is not None:
+                df_1m_for_exits = df_map_trial.get("1m")
+                
+                # Intentar cargar 1m si no está en el cache, lo necesitamos si hay exits tick-tick o augmentation
+                if df_1m_for_exits is None and self.futuro_data_provider is not None:
+                    if entry_tf_minutes > 1 or self.augmenter is not None:
                         try:
                             df_1m_data = self.futuro_data_provider.get_trial_data_multiframe(
                                 trial_number=trial.number,
@@ -896,14 +656,57 @@ class OptimizationRunner:
                             df_1m_for_exits = df_1m_data.get("1m")
                         except Exception:
                             pass
-                    
-                    # Generar señales de salida en 1m si la estrategia las soporta
+                
+                # ================================================================
+                # DATOS DEL TRIAL Y DATA AUGMENTATION (COHERENCIA FRACTAL)
+                # ================================================================
+                df_trial = df_entry
+                
+                if self.augmenter is not None:
                     if df_1m_for_exits is not None:
-                        if hasattr(strategy, "generate_exit_signals_1m") and callable(strategy.generate_exit_signals_1m):
-                            try:
-                                signals_1m_for_exits = strategy.generate_exit_signals_1m(df_1m_for_exits, params_rt)
-                            except Exception:
-                                signals_1m_for_exits = None
+                        try:
+                            # 1. Perturbar ÚNICAMENTE el dataframe atómico de 1 minuto
+                            df_1m_aug = self.augmenter.augment(df_1m_for_exits.clone().lazy())
+                            
+                            # 2. Asignarlo para que el BacktestEngine use los mismos precios en Salidas
+                            df_1m_for_exits = df_1m_aug
+                            
+                            # 3. Reconstruir df_trial (ej. 5m) a partir del 1m perturbado
+                            if entry_tf == "1m":
+                                df_trial = df_1m_aug
+                            else:
+                                df_trial = df_1m_aug.group_by_dynamic("timestamp", every=entry_tf).agg(
+                                    pl.col("open").first(),
+                                    pl.col("high").max(),
+                                    pl.col("low").min(),
+                                    pl.col("close").last(),
+                                    pl.col("volume").sum()
+                                )
+                        except Exception as e:
+                            # Fallback silencioso a datos originales
+                            pass
+                    else:
+                        # Si por alguna razón no logramos obtener 1m, perturbamos df_trial directamente (fallback)
+                        try:
+                            df_trial = self.augmenter.augment(df_trial.clone().lazy())
+                        except Exception:
+                            pass
+                
+                # Generar señales
+                t1_signals = time.perf_counter()
+                signals_df = SignalGenerator.generate_signals(df_trial, strategy, params_rt, df_map_trial)
+                t2_signals = time.perf_counter()
+                
+                # ================================================================
+                # GENERAR SEÑALES DE SALIDA EN 1M (Tick a Tick precise exits)
+                # ================================================================
+                signals_1m_for_exits = None
+                if entry_tf_minutes > 1 and df_1m_for_exits is not None:
+                    if hasattr(strategy, "generate_exit_signals_1m") and callable(strategy.generate_exit_signals_1m):
+                        try:
+                            signals_1m_for_exits = strategy.generate_exit_signals_1m(df_1m_for_exits, params_rt)
+                        except Exception:
+                            signals_1m_for_exits = None
                 
                 # Ejecutar backtest con datos de 1m para salidas
                 t1_backtest = time.perf_counter()
@@ -927,9 +730,8 @@ class OptimizationRunner:
                 t_total = time.perf_counter() - t0_total
                 
                 if _TIMINGS_VERBOSE and (trial.number % _TIMINGS_PRINT_EVERY == 0):
-                    perturb_str = f" [P]" if perturb_info.get("perturbation_applied", False) else ""
                     print(
-                        f"  ⏱ TRIAL {trial.number:3d}{perturb_str} │ "
+                        f"  ⏱ TRIAL {trial.number:3d} │ "
                         f"signals {(t2_signals - t1_signals)*1000:6.1f}ms │ "
                         f"backtest {(t2_backtest - t1_backtest)*1000:6.1f}ms │ "
                         f"total {t_total*1000:6.1f}ms │ "
@@ -937,23 +739,25 @@ class OptimizationRunner:
                     )
                 
                 # Crear artifacts
+                # ⚠ CRITICAL: usar df_trial (perturbado) para que los precios
+                # OHLC en gráficos/excel coincidan con los trades ejecutados.
+                # ANTES: usaba df_base_trial/df_base → DATA LEAKAGE (markers desalineados)
                 df_signals_for_artifacts = None
-                df_for_artifacts = df_base_trial if self.futuro_data_provider is not None else df_base
                 for reporter in self.reporters:
                     if hasattr(reporter, "needs_dataframe") and reporter.needs_dataframe(score):
                         ohlc_cols = ["timestamp", "open", "high", "low", "close", "volume"]
-                        base_cols = [c for c in ohlc_cols if c in df_for_artifacts.columns]
+                        base_cols = [c for c in ohlc_cols if c in df_trial.columns]
                         signal_cols = [c for c in signals_df.columns if c not in base_cols]
-                        df_signals_for_artifacts = df_for_artifacts.select(base_cols).hstack(
+                        df_signals_for_artifacts = df_trial.select(base_cols).hstack(
                             signals_df.select(signal_cols)
                         )
                         break
                 
                 # Calcular rango de fechas real del trial (para plots dinámicos)
                 _trial_date_range = None
-                if self.futuro_data_provider is not None and "timestamp" in df_base_trial.columns:
+                if "timestamp" in df_trial.columns:
                     try:
-                        _ts = df_base_trial["timestamp"]
+                        _ts = df_trial["timestamp"]
                         _t0 = str(_ts[0])[:10]
                         _t1 = str(_ts[-1])[:10]
                         _trial_date_range = (_t0, _t1)
@@ -971,8 +775,6 @@ class OptimizationRunner:
                     trades=trades_df.to_pandas() if not trades_df.is_empty() else None,
                     equity_curve=equity_curve,
                     indicators_used=params_rt.get("__indicators_used", []),
-                    perturbado=perturb_info.get("perturbation_applied", False),
-                    perturb_seed=perturb_seed if perturb_info.get("perturbation_applied", False) else None,
                     trial_date_range=_trial_date_range,
                 )
                 
@@ -1000,8 +802,6 @@ class OptimizationRunner:
                     trades=None,
                     equity_curve=[],
                     indicators_used=[],
-                    perturbado=False,
-                    perturb_seed=None,
                     trial_date_range=None,
                 )
                 
@@ -1011,42 +811,6 @@ class OptimizationRunner:
                 return -9999.0
         
         return objective
-    
-    def _show_perturbation_summary(self):
-        """Muestra resumen de perturbación al final."""
-        if not self._perturbation_stats.get("enabled", False):
-            return
-        
-        try:
-            from rich.console import Console
-            from rich.panel import Panel
-            from rich.table import Table
-            
-            console = Console()
-            
-            table = Table(show_header=True, header_style="bold cyan")
-            table.add_column("Métrica", style="white")
-            table.add_column("Valor", justify="right", style="green")
-            
-            table.add_row("Método", self._perturbation_stats.get("method", "unknown"))
-            table.add_row("Trials Perturbados", str(self._perturbation_stats.get("trials_perturbed", 0)))
-            
-            diffs = self._perturbation_stats.get("mean_diff_pcts", [])
-            if diffs:
-                avg_diff = np.mean(diffs)
-                table.add_row("Divergencia Promedio", f"{avg_diff:.2f}%")
-            
-            panel = Panel(
-                table,
-                title="📊 RESUMEN DE PERTURBACIÓN DE DATOS",
-                border_style="blue",
-            )
-            
-            console.print()
-            console.print(panel)
-            
-        except Exception:
-            pass  # No fallar si Rich no está disponible
 
 
 # =============================================================================
@@ -1086,8 +850,6 @@ def run_single_exit_type(
     # Configuración de optimización
     n_trials: int,
     optuna_sampler: str = "CMA",
-    perturbacion_activar: bool = False,
-    perturbacion_config: dict = None,
     # Datos sintéticos/futuros
     synthetic_mode: bool = False,
     synthetic_years: int = 0,
@@ -1099,11 +861,10 @@ def run_single_exit_type(
     usar_excel: bool = True,
     generar_plots: bool = True,
     max_archivos: int = 5,
-    fecha_inicio_plot: str = "2025-01-01",
-    fecha_fin_plot: str = "2025-01-20",
-    # Configuración de gráficos (subrango dentro del trial)
-    plot_meses_duracion: int = 2,
-    plot_ubicacion_aleatoria: bool = True,
+    # Configuración de gráficos (rango binario)
+    grafica_rango_personalizado: bool = False,
+    grafica_fecha_inicio: str = "2025-01-01",
+    grafica_fecha_fin: str = "2025-02-10",
     # Funciones auxiliares
     resolve_archivo_data_tf_func = None,
     fecha_inicio: str = None,
@@ -1142,15 +903,14 @@ def run_single_exit_type(
         periodo_datos: String con el periodo (ej: "2021-01-01 -> 2024-01-01")
         n_trials: Número de trials de optimización
         optuna_sampler: "CMA" o "TPE"
-        perturbacion_activar: Si activar perturbación de datos
-        perturbacion_config: Dict con configuración de perturbación
         excel_dir: Directorio para guardar Excel
         graficos_dir: Directorio para guardar gráficos
         usar_excel: Si generar reportes Excel
         generar_plots: Si generar gráficos HTML
         max_archivos: Máximo de archivos a guardar
-        fecha_inicio_plot: Fecha inicio para plots
-        fecha_fin_plot: Fecha fin para plots
+        grafica_rango_personalizado: True=rango manual, False=últimos 2 meses auto
+        grafica_fecha_inicio: Fecha inicio (solo si grafica_rango_personalizado=True)
+        grafica_fecha_fin: Fecha fin (solo si grafica_rango_personalizado=True)
         resolve_archivo_data_tf_func: Función para resolver rutas de TF
         fecha_inicio: Fecha inicio del backtest
         fecha_fin: Fecha fin del backtest
@@ -1196,7 +956,6 @@ def run_single_exit_type(
             periodo=periodo_datos,
             exit_type=exit_type,
             strategy_exit_enabled=strategy_exit_enabled,
-            perturbacion_activar=perturbacion_activar,
             sampler_type=optuna_sampler,
             synthetic_mode=synthetic_mode,
             synthetic_years=synthetic_years,
@@ -1227,9 +986,9 @@ def run_single_exit_type(
             
             reporters.append(PlotReporter(
                 plot_base=graficos_dir,
-                fecha_inicio_plot=fecha_inicio_plot,
-                fecha_fin_plot=fecha_fin_plot,
-                plot_meses_duracion=plot_meses_duracion,
+                grafica_rango_personalizado=grafica_rango_personalizado,
+                grafica_fecha_inicio=grafica_fecha_inicio,
+                grafica_fecha_fin=grafica_fecha_fin,
                 max_archivos=max_archivos,
                 saldo_inicial=cfg_updated.saldo_inicial,
                 activo=activo,
@@ -1243,19 +1002,31 @@ def run_single_exit_type(
         futuro_data_provider=futuro_data_provider,
     )
 
+    # 5b. DATA AUGMENTATION (ENTRENAMIENTO ROBUSTO)
+    try:
+        from general.configuracion import (
+            ENTRENAMIENTO_ROBUSTO_ACTIVAR,
+            MAX_DRIFT_PCT,
+            DRIFT_STEP_VOLATILITY,
+            RUIDO_MECHAS_PCT,
+            RUIDO_VOLUMEN_PCT,
+        )
+        if ENTRENAMIENTO_ROBUSTO_ACTIVAR:
+            from modelox.perturbaciones import HighFrequencyOHLCVAugmenter
+            runner.augmenter = HighFrequencyOHLCVAugmenter(
+                max_drift_pct=MAX_DRIFT_PCT,
+                drift_step_volatility=DRIFT_STEP_VOLATILITY,
+                wick_noise_scale=RUIDO_MECHAS_PCT,
+                volume_noise_scale=RUIDO_VOLUMEN_PCT,
+            )
+    except ImportError:
+        pass  # Sin perturbaciones si no está disponible
+
     runner.optuna = OptunaConfig(
         seed=None, 
         n_jobs=1, 
         storage=None,
         sampler=optuna_sampler,
-    )
-
-    # Configurar perturbación
-    perturbacion_config = perturbacion_config or {}
-    runner.perturbation_config = PerturbationConfig(
-        enabled=perturbacion_activar,
-        noise_factor=float(perturbacion_config.get("noise_scale", 0.5)),
-        seed=int(perturbacion_config.get("seed", 42)),
     )
 
     runner.activo = activo
@@ -1366,12 +1137,15 @@ def run_single_exit_type(
         del runner
         del reporters
         nuclear_cleanup()
+        
+        # Eliminar base de datos híbrida al acabar la optimización
+        if optuna_sampler.upper() == "HYBRID":
+            import os
+            db_path = os.path.join(os.getcwd(), "optuna_hybrid.db")
+            if os.path.exists(db_path):
+                try:
+                    os.remove(db_path)
+                    logger.info("✓ Base de datos Optuna Híbrida eliminada")
+                except Exception as e:
+                    logger.warning(f"⚠ No se pudo eliminar la base de datos Optuna Híbrida: {e}")
 
-
-# =============================================================================
-# ALIAS DE COMPATIBILIDAD
-# =============================================================================
-
-# Mantener el nombre anterior para compatibilidad
-MonteCarloRunner = OptimizationRunner
-MonteCarloConfig = PerturbationConfig

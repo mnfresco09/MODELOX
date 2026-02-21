@@ -598,7 +598,7 @@ def mostrar_cabecera_inicio(
     periodo: str = "",
     exit_type: str = "FIXED",
     strategy_exit_enabled: bool = False,
-    perturbacion_activar: bool = False,
+
     sampler_type: str = "CMA",
     synthetic_mode: bool = False,
     synthetic_years: int = 0,
@@ -610,7 +610,6 @@ def mostrar_cabecera_inicio(
     icon = icons.get(activo.upper(), "○")
     
     exit_d = "CUSTOM" if strategy_exit_enabled else exit_type.upper()
-    perturb = "ON" if perturbacion_activar else "OFF"
     
     # Main info grid - centered alignment
     info_grid = Table.grid(padding=(0, 3))
@@ -627,7 +626,7 @@ def mostrar_cabecera_inicio(
     info_grid.add_row("", "")
     info_grid.add_row("EXIT MODE", f"{exit_d}")
     info_grid.add_row("TRIALS", f"[bold]{n_trials}[/]")
-    info_grid.add_row("PERTURBATION", f"{perturb}")
+
     
     if indicadores:
         inds = " ".join([i[:6].upper() for i in indicadores[:4]])
@@ -809,33 +808,10 @@ def mostrar_trial_compacto(
     )
 
 
-# ============================================================================
-# LEGACY COMPATIBILITY
-# ============================================================================
-
-def mostrar_panel_rich(
-    metrics: dict,
-    params: dict,
-    score: float,
-    trial_num: int,
-    saldo_inicial: float,
-    indicadores_activos: list[str] | None = None,
-    combo_idx: int = 1,
-    n_combos: int = 1,
-    combo_str: str = "",
-    activo: str = "",
-) -> None:
-    """Legacy wrapper."""
-    mostrar_panel_elegante(
-        metrics=metrics, params=params, score=score, trial_num=trial_num,
-        saldo_inicial=saldo_inicial, indicadores_activos=indicadores_activos,
-        combo_str=combo_str, activo=activo,
-        best_so_far=params.get("__best_score_so_far"),
-    )
-
 
 # Alias for MetricMapper
 MetricMapper = M
+
 
 
 # ============================================================================
@@ -913,6 +889,7 @@ class ElegantRichReporter:
         
         # Extraer rango de meses para datos sintéticos
         rango_meses = params_for_reporting.get('__rango_meses', None)
+        sampler_used = params_for_reporting.get('__sampler_used', "")
 
         mostrar_panel_elegante(
             metrics=metrics,
@@ -927,6 +904,7 @@ class ElegantRichReporter:
             timeframe_entry=tf_entry,
             timeframe_exit=tf_exit,
             rango_meses=rango_meses,
+            phase_name=sampler_used,
         )
         
         # Notificar Telegram si es nuevo best
@@ -995,8 +973,7 @@ class ElegantRichReporter:
 
 __all__ = [
     "THEME", "MetricMapper", "M",
-    "mostrar_panel_elegante", "mostrar_panel_rich",
-    "mostrar_resultado_vecindario",
+    "mostrar_panel_elegante",
     "mostrar_top_trials",
     "mostrar_fin_optimizacion", 
     "mostrar_cabecera_inicio",
