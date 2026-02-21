@@ -945,6 +945,11 @@ def run_single_exit_type(
         strategy_exit_enabled = False
 
     # 3. MOSTRAR HEADER
+    try:
+        from general.configuracion import ENTRENAMIENTO_ROBUSTO_ACTIVAR
+    except ImportError:
+        ENTRENAMIENTO_ROBUSTO_ACTIVAR = False
+
     if mostrar_cabecera_func:
         mostrar_cabecera_func(
             activo=activo,
@@ -959,6 +964,7 @@ def run_single_exit_type(
             sampler_type=optuna_sampler,
             synthetic_mode=synthetic_mode,
             synthetic_years=synthetic_years,
+            perturbacion=ENTRENAMIENTO_ROBUSTO_ACTIVAR,
         )
 
     # 4. REPORTEROS

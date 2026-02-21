@@ -234,6 +234,7 @@ class HybridOptimizerConfig:
     N_JOBS: int = 1                       
     STORAGE: Optional[str] = None         # Base de datos. Si es None, creará en memoria
     STUDY_NAME_PREFIX: str = "MODELOX"    
+    SCRAMBLE: bool = True
 
 HYBRID_OPTIMIZER_CONFIG = HybridOptimizerConfig()
 
@@ -397,7 +398,11 @@ class HybridOptimizer:
         n_tpe = self.n_trials - n_qmc
         
         if n_qmc > 0:
-            sampler_qmc = QMCSampler(seed=cfg.SEED, warn_independent_sampling=False)
+            sampler_qmc = QMCSampler(
+                seed=cfg.SEED, 
+                scramble=getattr(cfg, "SCRAMBLE", True),
+                warn_independent_sampling=False
+            )
             study_qmc = optuna.create_study(
                 direction="maximize",
                 sampler=sampler_qmc,
@@ -458,7 +463,7 @@ def create_hybrid_study(
     study_name = HybridOptimizer._slug("_".join(parts))
     
     if phase == "QMC":
-        sampler = QMCSampler(seed=seed, warn_independent_sampling=False)
+        sampler = QMCSampler(seed=seed, scramble=True, warn_independent_sampling=False)
     else:
         sampler = TPESampler(seed=seed, n_startup_trials=0, multivariate=True)
     

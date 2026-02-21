@@ -255,16 +255,17 @@ class ExcelReporter:
                     sample = next((v for v in s.head(50).tolist() if v is not None), None)
                     if sample and getattr(sample, "tzinfo", None):
                         df_trades[col] = s.apply(
-                            lambda v: v.replace(tzinfo=None) if hasattr(v, "tzinfo") and v.tzinfo else v
                         )
                 except Exception:
                     continue
         except Exception:
             pass
 
-        df_export = _preparar_df_trades(df_trades)
+        exit_type = str(candidate["params"].get("__exit_type", candidate["params"].get("exit_type", "FIXED"))).upper()
+        df_export = _preparar_df_trades(df_trades, exit_type)
 
         saldo = candidate['params'].get('__saldo_usado') or 0
+
         apal  = candidate['params'].get('__apalancamiento_max') or 0
         vol   = saldo * apal
 
@@ -282,8 +283,9 @@ class ExcelReporter:
 # PREPARACIÓN DEL DATAFRAME
 # ==============================================================================
 
-def _preparar_df_trades(df_trades: pd.DataFrame) -> pd.DataFrame:
+def _preparar_df_trades(df_trades: pd.DataFrame, exit_type: str = "") -> pd.DataFrame:
     rename_map = {
+
         "entry_time": "ENTRY_TIME", "exit_time": "EXIT_TIME",
         "type": "POSICIÓN", "entry_price": "ENTRY_PRICE", "exit_price": "EXIT_PRICE",
         "qty": "CANTIDAD", "saldo_usado": "SALDO",
@@ -317,7 +319,13 @@ def _preparar_df_trades(df_trades: pd.DataFrame) -> pd.DataFrame:
         "EXIT_TIME", "EXIT_PRICE", "POSICIÓN", "EXIT_REASON",
         "PNL BRUTO", "COMISIONES", "PNL NETO", "BALANCE"
     ]
+    
+    # Si la salida es FIXED (no TRAILING), no mostramos columnas de activación de Trail
+    if "TRAIL" not in exit_type:
+        order = [c for c in order if c not in ("TRAIL_ACT_PRICE", "TRAIL_ACT_TIME")]
+
     # Truncar precios a 2 decimales según petición del usuario
+
     for price_col in ["ENTRY_PRICE", "EXIT_PRICE", "TRAIL_ACT_PRICE"]:
         if price_col in df.columns:
             df[price_col] = df[price_col].apply(lambda x: int(x * 100) / 100.0 if pd.notnull(x) else x)

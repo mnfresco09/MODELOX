@@ -167,7 +167,7 @@ from typing import Any, Dict
 # =============================================================================
 
 # ─── TIPO DE SALIDA ──────────────────────────────────────────────────────────
-DEFAULT_EXIT_TYPE = "pnl_fixed" # pnl_fixed, pnl_trailing
+DEFAULT_EXIT_TYPE = "pnl_trailing" # pnl_fixed, pnl_trailing
 
 # ─── PARÁMETROS DE SL/TP (% SOBRE STAKE) ────────────────────────────────────
 DEFAULT_EXIT_SL_PCT = 8.0                    # Stop Loss

@@ -602,6 +602,7 @@ def mostrar_cabecera_inicio(
     sampler_type: str = "CMA",
     synthetic_mode: bool = False,
     synthetic_years: int = 0,
+    perturbacion: bool = False,
 ) -> None:
     """Display elegant startup header with comprehensive info - centered, white text."""
     os.system('cls' if os.name == 'nt' else 'clear')
@@ -626,6 +627,9 @@ def mostrar_cabecera_inicio(
     info_grid.add_row("", "")
     info_grid.add_row("EXIT MODE", f"{exit_d}")
     info_grid.add_row("TRIALS", f"[bold]{n_trials}[/]")
+    
+    pert_status = f"[bold {THEME.GREEN}]ON[/]" if perturbacion else f"[{THEME.MUTED}]OFF[/]"
+    info_grid.add_row("PERTURBACION", pert_status)
 
     
     if indicadores:

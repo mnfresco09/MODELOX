@@ -208,13 +208,14 @@ def _prepare_params_matrix(
 # 4. FILTRO POST-CLUSTERING (eliminar clústeres con ROI<0 o trades_dia<0.17)
 # =============================================================================
 
-ROI_MIN = 0.0
-TRADES_DIA_MIN = 0.17
+ROI_MIN = 0.17
+TRADES_DIA_MIN = 0.20
 
-def _find_metric_columns(df: pd.DataFrame) -> Tuple[Optional[str], Optional[str]]:
-    """Detecta columnas ROI y TRADES_DIA por nombre."""
+def _find_metric_columns(df: pd.DataFrame) -> Tuple[Optional[str], Optional[str], Optional[str]]:
+    """Detecta columnas ROI, TRADES_DIA y SCORE por nombre."""
     roi_col = None
     td_col = None
+    score_col = None
     cols_upper = {c: str(c).upper() for c in df.columns}
     for c in df.columns:
         u = cols_upper[c]
@@ -222,7 +223,9 @@ def _find_metric_columns(df: pd.DataFrame) -> Tuple[Optional[str], Optional[str]
             roi_col = c
         if not td_col and ("TRADES_DIA" in u or "TRADES_POR_DIA" in u or "TRADES_PER_DAY" in u):
             td_col = c
-    return roi_col, td_col
+        if not score_col and u == "SCORE":
+            score_col = c
+    return roi_col, td_col, score_col
 
 
 def _filter_clusters(
@@ -230,37 +233,53 @@ def _filter_clusters(
     labels: np.ndarray,
     roi_col: Optional[str],
     td_col: Optional[str],
+    score_col: Optional[str] = None,
 ) -> np.ndarray:
     """
     Máscara booleana: True = mantener trial.
     - Clústeres: eliminar todo el clúster si algún trial tiene ROI<0 o trades_dia<0.17.
+    - Clústeres: eliminar si todos los trials del clúster tienen el mismo SCORE (sin varianza).
     - Sin Grupo: eliminar cada trial que falle individualmente.
     """
     keep = np.ones(len(df), dtype=bool)
     clusters_to_drop = set()
 
     for cluster_id in np.unique(labels):
+        if str(cluster_id) == LABEL_RUIDO:
+            continue
+            
         mask = labels == cluster_id
         subset = df.loc[mask]
-        fails = False
+        
+        # 1. Filtro por ROI o Trades/Día negativos/bajos
+        fails_metrics = False
         if roi_col and roi_col in df.columns:
             roi_vals = pd.to_numeric(subset[roi_col], errors="coerce").fillna(0)
             if (roi_vals < ROI_MIN).any():
-                fails = True
+                fails_metrics = True
         if td_col and td_col in df.columns:
             td_vals = pd.to_numeric(subset[td_col], errors="coerce").fillna(0)
             if (td_vals < TRADES_DIA_MIN).any():
-                fails = True
+                fails_metrics = True
+                
+        # 2. Restricción de varianza de SCORE: si todos tienen el mismo score, eliminar clúster
+        fails_variance = False
+        if score_col and score_col in df.columns and len(subset) > 1:
+            score_vals = pd.to_numeric(subset[score_col], errors="coerce").fillna(-9999)
+            if score_vals.nunique() == 1:
+                fails_variance = True
 
-        if str(cluster_id) == LABEL_RUIDO:
-            # Sin Grupo: eliminar solo los trials que fallen individualmente
-            for i in np.where(mask)[0]:
-                r = float(pd.to_numeric(df.iloc[i][roi_col], errors="coerce") or 0) if roi_col and roi_col in df.columns else 0
-                t = float(pd.to_numeric(df.iloc[i][td_col], errors="coerce") or 0) if td_col and td_col in df.columns else 0
-                if (roi_col and roi_col in df.columns and r < ROI_MIN) or (td_col and td_col in df.columns and t < TRADES_DIA_MIN):
-                    keep[i] = False
-        elif fails:
+        if fails_metrics or fails_variance:
             clusters_to_drop.add(cluster_id)
+
+    # Procesar "Sin Grupo" individualmente
+    mask_ruido = labels == LABEL_RUIDO
+    if mask_ruido.any():
+        for i in np.where(mask_ruido)[0]:
+            r = float(pd.to_numeric(df.iloc[i][roi_col], errors="coerce") or 0) if roi_col and roi_col in df.columns else 0
+            t = float(pd.to_numeric(df.iloc[i][td_col], errors="coerce") or 0) if td_col and td_col in df.columns else 0
+            if (roi_col and roi_col in df.columns and r < ROI_MIN) or (td_col and td_col in df.columns and t < TRADES_DIA_MIN):
+                keep[i] = False
 
     for cluster_id in clusters_to_drop:
         keep[labels == cluster_id] = False
@@ -387,15 +406,14 @@ def _apply_excel_style(
         if c == 1:
             cell.value = "Rango Total Absoluto"
         elif df_col and df_col in params_set and df_col in df.columns:
-            vals = pd.to_numeric(df[df_col], errors="coerce").dropna()
-            if len(vals) > 0:
-                mn, mx = vals.min(), vals.max()
-                if mn == int(mn) and mx == int(mx):
-                    cell.value = f"{int(mn)} - {int(mx)}"
-                else:
-                    cell.value = f"{mn:.2f} - {mx:.2f}"
-            else:
-                cell.value = "-"
+            col_letter = get_column_letter(c)
+            # Usar fórmula de Excel para que se ajuste automáticamente si el usuario borra filas
+            formula = (
+                f'=IF(COUNT({col_letter}2:{col_letter}{max_row})>0, '
+                f'MIN({col_letter}2:{col_letter}{max_row}) & " - " & MAX({col_letter}2:{col_letter}{max_row}), '
+                f'"-")'
+            )
+            cell.value = formula
         else:
             cell.value = ""
 
@@ -408,18 +426,7 @@ def _apply_excel_style(
                 max_len = max(max_len, len(str(v)))
         ws.column_dimensions[get_column_letter(col)].width = min((max_len + 2) * 1.15, 28)
 
-    # Formato condicional SCORE si existe
-    col_map = {str(ws.cell(1, c).value or "").strip(): get_column_letter(c) for c in range(1, max_col + 1)}
-    if "SCORE" in col_map:
-        ws.conditional_formatting.add(
-            f"{col_map['SCORE']}2:{col_map['SCORE']}{max_row}",
-            ColorScaleRule(
-                start_type="min", start_color="FFFFFF",
-                mid_type="percentile", mid_value=50, mid_color="E3EAF6",
-                end_type="max", end_color="B3C9F7",
-            ),
-        )
-
+    # Congelar paneles
     ws.freeze_panes = ws.cell(row=2, column=2)
     wb.save(filepath)
 
@@ -493,9 +500,9 @@ def main() -> None:
         progress.update(t3, completed=True)
 
         # ── Filtrar clústeres: eliminar si ROI<0 o trades_dia<0.17 ───────
-        t3b = progress.add_task("Filtrando clústeres (ROI≥0, trades/día≥0.17)...", total=None)
-        roi_col, td_col = _find_metric_columns(df)
-        keep_mask = _filter_clusters(df, labels_str, roi_col, td_col)
+        t3b = progress.add_task("Filtrando clústeres (ROI≥0, trades/día≥0.17, varianza SCORE)...", total=None)
+        roi_col, td_col, score_col = _find_metric_columns(df)
+        keep_mask = _filter_clusters(df, labels_str, roi_col, td_col, score_col)
         df_out = df[keep_mask].copy()
         labels_str = labels_str[keep_mask]
         df_out.insert(0, "Clúster_ID", labels_str)
