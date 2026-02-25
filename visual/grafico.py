@@ -107,15 +107,27 @@ if TYPE_CHECKING:
 #
 
 _COLOR_PALETTE = [
-  "#4F94CD",  # Steel Blue 3 (Rich Secondary - Standard)
-  "#1C86EE",  # Dodger Blue 2 (Rich Primary - Active)
-  "#CDAD00",  # Gold 3 (Rich Accent - Highlight)
-  "#7B88A1",  # Slate (Neutral)
-  "#6CA6CD",  # Sky Blue 3 (Medium)
-  "#36648B",  # Steel Blue 4 (Dark)
-  "#5F9EA0",  # Cadet Blue (Muted Teal-Blue)
-  "#9FB6CD",  # Slate Gray 3 (Light Neutral)
-  "#6495ED",  # Cornflower Blue (Soft Blue)
+  # Paleta institucional/neutra (estilo Rich) con más variedad
+  "#4F94CD",  # Steel Blue 3
+  "#6C8EAD",  # Dusty Blue
+  "#5F9EA0",  # Cadet Blue
+  "#6B8BA4",  # Muted Blue-Gray
+  "#7B88A1",  # Slate
+  "#8A99A8",  # Cool Gray-Blue
+  "#9FB6CD",  # Light Slate
+  "#4C7A9F",  # Deep Soft Blue
+  "#6F8F7A",  # Desaturated Green
+  "#7A9B8E",  # Muted Sea Green
+  "#8E9A6B",  # Olive Gray
+  "#A3926B",  # Warm Stone
+  "#B19A6A",  # Muted Gold
+  "#C2A36B",  # Soft Ocher
+  "#7A7FA3",  # Soft Indigo
+  "#8D7AA8",  # Dusty Violet
+  "#9A86A8",  # Muted Purple
+  "#A48F9B",  # Mauve Gray
+  "#7D8C95",  # Neutral Steel
+  "#8A949B",  # Soft Neutral Gray
 ]
 
 
@@ -236,6 +248,25 @@ def _detect_indicators(
     "zscore", "z_score",
   )
 
+  def _normalize_panel(panel_value: Any) -> Any:
+    """Normaliza alias de panel sin tocar lógica de cálculo.
+
+    Convenciones soportadas:
+    - "main", "price", "overlay" -> "overlay"
+    - "sub", "sub1", "sub2", ... -> se mantienen para agrupación
+    - int -> se mantiene (panel numérico explícito)
+    """
+    if panel_value is None:
+      return None
+    if isinstance(panel_value, str):
+      p = panel_value.strip().lower()
+      if p in {"main", "price", "overlay"}:
+        return "overlay"
+      return panel_value
+    if isinstance(panel_value, int):
+      return panel_value
+    return None
+
   def _is_overlay_by_name(col_lower: str) -> bool:
     """Verifica si el nombre del indicador corresponde a un overlay REAL.
     Usa word-boundary matching: 'alma' matchea 'alma' pero NO 'alma_acc'."""
@@ -287,13 +318,13 @@ def _detect_indicators(
     spec = specs.get(col, {}) if isinstance(specs.get(col, {}), dict) else {}
 
     # PRIORIDAD 0: Specs (Direct override)
-    panel = spec.get("panel", None)
+    panel = _normalize_panel(spec.get("panel", None))
 
     # PRIORIDAD 1: Bounds (Si no hay specs, mirar si bounds define panel)
     if panel is None:
       col_bounds = bounds_map.get(col, None)
       if isinstance(col_bounds, dict) and "panel" in col_bounds:
-        panel = col_bounds["panel"]
+        panel = _normalize_panel(col_bounds["panel"])
 
     # PRIORIDAD 2: Heurísticas (Solo si no se definió explícitamente)
     if panel is None:
@@ -303,7 +334,8 @@ def _detect_indicators(
       else:
         panel = "overlay" if _is_overlay_heuristic(df[col], price_range) else "sub"
 
-    series_type = str(spec.get("type", "line"))
+    # Compat: las estrategias usan "tipo" históricamente.
+    series_type = str(spec.get("type", spec.get("tipo", "line")))
     if series_type not in {"line", "histogram"}:
       series_type = "line"
 
