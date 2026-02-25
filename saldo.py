@@ -53,23 +53,23 @@ from modelox.strategies.registry import instantiate_strategies
 #  CONFIGURACIÓN
 # ══════════════════════════════════════════════════════════════════
 
-SALDOS_BARRIDO          = list(range(50, 100, 10))
-APALANCAMIENTOS_BARRIDO = list(range(10, 30, 5))
+SALDOS_BARRIDO          = list(range(80, 110, 10))
+APALANCAMIENTOS_BARRIDO = list(range(10, 25, 5))
 MODO_SALIDA             = "TRAILING"          # "FIXED" | "TRAILING" | "AMBOS"
 OPTIMIZAR_SALIDAS_EN_OPT = True
 RICH_MODO_VISUAL = "TRIALS"  # "TRIALS" (como ejecutar.py) | "BARRA"
 
 FIXED_SL_PCT            = 17.0
 FIXED_TP_PCT            = 17.0
-FIXED_SL_PCT_RANGE      = (25.0, 45.0, 5.0)
+FIXED_SL_PCT_RANGE      = (30.0, 45.0, 5.0)
 FIXED_TP_PCT_RANGE      = (35.0, 55.0, 5.0)
 
 TRAILING_SL_PCT         = 17.0
 TRAILING_TP_ACT_PCT     = 15.0
 TRAILING_DISTANCE_PCT   = 3.0
-TRAILING_SL_PCT_RANGE   = (20.0,  40.0, 2.0)
-TRAILING_TP_ACT_PCT_RANGE = (16.0, 40.0, 2.0)
-TRAILING_DISTANCE_PCT_RANGE = (5.0, 15.0, 2.0)
+TRAILING_SL_PCT_RANGE   = (30.0,  40.0, 5.0)
+TRAILING_TP_ACT_PCT_RANGE = (30.0, 50.0, 5.0)
+TRAILING_DISTANCE_PCT_RANGE = (5.0, 15.0, 5.0)
 
 
 # ══════════════════════════════════════════════════════════════════

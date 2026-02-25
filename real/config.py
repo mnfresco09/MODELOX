@@ -44,29 +44,29 @@ BINGX_BASE_URL_LIVE = "https://open-api.bingx.com"
 MONEDA = "VST"
 
 # APALANCAMIENTO: De 1x a 150x segun el activo
-APALANCAMIENTO = 150
+APALANCAMIENTO = 20
 
 # MONTO POR TRADE: Saldo que se usa para abrir cada posicion (en USD)
-MONTO_POR_TRADE = 1000.0
+MONTO_POR_TRADE = 100.0
 
 # STOP LOSS: Porcentaje sobre el MARGEN. Ej: 10% con 150x = cierra si pierde 10% del margen
-STOP_LOSS_PCT = 10.0
+STOP_LOSS_PCT = 35.0
 
 # TAKE PROFIT: Porcentaje sobre el MARGEN. Ej: 20% con 150x = cierra si gana 20% del margen
 TAKE_PROFIT_PCT = 20.0
 
 # TRAILING STOP: Sigue el precio para maximizar ganancias
-TRAILING_STOP_ACTIVADO = False
-TRAILING_STOP_ACTIVACION_PCT = 2.0   # Se activa cuando hay +2% de ganancia
-TRAILING_STOP_DISTANCIA_PCT = 1.0    # Sigue a 1% de distancia del maximo
+TRAILING_STOP_ACTIVADO = True
+TRAILING_STOP_ACTIVACION_PCT = 35.0   # Se activa cuando hay +2% de ganancia
+TRAILING_STOP_DISTANCIA_PCT = 5.0    # Sigue a 1% de distancia del maximo
 
 # TIMEFRAME: Temporalidad de las velas para señales (1m, 5m, 15m, 1h, 4h)
-TIMEFRAME = "1m"
+TIMEFRAME = "30m"
 
 # MODO DE EJECUCION:
 #   "manual" = ABRE TRADE INMEDIATAMENTE AL INICIAR
 #   "auto"   = ESPERA SEÑALES DE LA ESTRATEGIA PARA ABRIR
-MODO_EJECUCION = "manual"
+MODO_EJECUCION = "auto"
 
 # DIRECCION DEL TRADE (SOLO PARA MODO MANUAL):
 #   "LONG"  = COMPRA (apuesta a que sube)

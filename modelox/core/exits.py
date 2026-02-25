@@ -170,24 +170,24 @@ from typing import Any, Dict
 DEFAULT_EXIT_TYPE = "pnl_trailing" # pnl_fixed, pnl_trailing
 
 # ─── PARÁMETROS DE SL/TP (% SOBRE STAKE) ────────────────────────────────────
-DEFAULT_EXIT_SL_PCT = 17.0                    # Stop Loss
+DEFAULT_EXIT_SL_PCT = 30.0                    # Stop Loss
 DEFAULT_EXIT_TP_PCT = 17.0                   # Take Profit
 
 # ─── PARÁMETROS DE TRAILING (% SOBRE STAKE) ─────────────────────────────────
-DEFAULT_EXIT_TRAIL_ACT_PCT = 15.0            # Activación del trailing
-DEFAULT_EXIT_TRAIL_DIST_PCT = 3.0            # Distancia del trailing
+DEFAULT_EXIT_TRAIL_ACT_PCT = 45.0            # Activación del trailing
+DEFAULT_EXIT_TRAIL_DIST_PCT = 5.0            # Distancia del trailing
 
 
 # =============================================================================
 # 2. RANGOS DE OPTIMIZACIÓN (MIN, MAX, STEP)
 # =============================================================================
 
-DEFAULT_OPTIMIZE_EXITS = True
+DEFAULT_OPTIMIZE_EXITS = False
 
-DEFAULT_EXIT_SL_PCT_RANGE = (20.0, 50.0, 1.0)
+DEFAULT_EXIT_SL_PCT_RANGE = (30.0, 30.0, 1.0)
 DEFAULT_EXIT_TP_PCT_RANGE = (55.0, 55.0, 1.0)
-DEFAULT_EXIT_TRAIL_ACT_PCT_RANGE = (15.0, 50.0, 1.0)
-DEFAULT_EXIT_TRAIL_DIST_PCT_RANGE = (5.0, 15.0, 1.0)
+DEFAULT_EXIT_TRAIL_ACT_PCT_RANGE = (35.0, 60.0, 5.0)
+DEFAULT_EXIT_TRAIL_DIST_PCT_RANGE = (5.0, 10.0, 5.0)
 
 
 # =============================================================================

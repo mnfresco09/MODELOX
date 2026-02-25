@@ -86,7 +86,7 @@ class EstrategiaID20CCIBREAK(EstrategiaBase):
         """
         return {
             "cci_window":    trial.suggest_int("cci_window",    14, 40,  step=2),
-            "cci_threshold": trial.suggest_int("cci_threshold", 100, 200, step=25),
+            "cci_threshold": trial.suggest_int("cci_threshold", 150, 200, step=10),
         }
 
     def get_required_timeframes(self, params: Dict[str, Any]) -> List[str]:

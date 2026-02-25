@@ -81,7 +81,7 @@ class EstrategiaID21BBEMA(EstrategiaBase):
         Total combinaciones: 9 — espacio mínimo absoluto.
         """
         return {
-            "bb_window": trial.suggest_int("bb_window", 10, 50, step=5),
+            "bb_window": trial.suggest_int("bb_window", 25, 40, step=1),
         }
 
     def get_required_timeframes(self, params: Dict[str, Any]) -> List[str]:

@@ -162,6 +162,7 @@ class OptunaConfig:
     create_database: bool = True
     study_name_prefix: str = "MODELOX"
     sampler: str = "CMA"  # Valor recibido desde configuracion.py
+    guardar_equity_en_db: bool = False  # True = guarda equity_curve de cada trial (Monte Carlo)
 
 
 
@@ -771,6 +772,13 @@ class OptimizationRunner:
                     score = 0.0
                 else:
                     trial.set_user_attr("metricas", metrics)
+
+                    # Guardar equity curve para análisis Monte Carlo
+                    if self.optuna.guardar_equity_en_db and equity_curve:
+                        try:
+                            trial.set_user_attr("equity_curve", [float(x) for x in equity_curve])
+                        except Exception:
+                            pass
                     
                     # Extraer pnl_neto array y total_days para score_universal
                     if isinstance(trades_df, pl.DataFrame):
@@ -1078,10 +1086,11 @@ def run_single_exit_type(
     # 5. RUNNER
     # Reinicio limpio opcional de DB Optuna (evita reutilizar estudios previos)
     try:
-        from general.configuracion import OPTUNA_RESET_DB_ON_START, OPTUNA_CREATE_DATABASE
+        from general.configuracion import OPTUNA_RESET_DB_ON_START, OPTUNA_CREATE_DATABASE, GUARDAR_EQUITY_EN_DB
     except ImportError:
         OPTUNA_RESET_DB_ON_START = False
         OPTUNA_CREATE_DATABASE = True
+        GUARDAR_EQUITY_EN_DB = False
 
     if bool(OPTUNA_CREATE_DATABASE) and bool(OPTUNA_RESET_DB_ON_START):
         try:
@@ -1120,10 +1129,11 @@ def run_single_exit_type(
         pass  # Sin perturbaciones si no está disponible
 
     runner.optuna = OptunaConfig(
-        seed=None, 
-        n_jobs=1, 
+        seed=None,
+        n_jobs=1,
         create_database=bool(locals().get("OPTUNA_CREATE_DATABASE", True)),
         sampler=optuna_sampler,
+        guardar_equity_en_db=bool(locals().get("GUARDAR_EQUITY_EN_DB", False)),
     )
 
     runner.activo = activo

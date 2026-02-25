@@ -46,7 +46,7 @@ from modelox.core.types import normalize_timeframe_to_suffix
 # 1.0 ESTRATEGIAS A EJECUTAR
 # ----------------------------------------------------------------------------
 # Los IDs corresponden a los archivos en  modelox/strategies/
-COMBINACION_A_EJECUTAR = [2,20,19,18]
+COMBINACION_A_EJECUTAR = [2]
 # ----------------------------------------------------------------------------
 # 1.1 SELECCIÓN DE ACTIVOS Y DATOS
 # ----------------------------------------------------------------------------
@@ -90,7 +90,7 @@ FORMATO_DATOS = "feather"
 #   - 500-1000 → búsqueda exhaustiva (muchas horas)
 #   - # QMC E HYBRID (16,32,64,128,256,512,1024,2048,4096,8192,16384,32768)
 
-N_TRIALS = 16
+N_TRIALS = 20
 # OPTUNA_N_JOBS = cuántos cores de CPU usar en paralelo.
 #   -1 = todos los disponibles (recomendado)
 #    1 = secuencial (más lento, menos RAM)
@@ -100,6 +100,7 @@ OPTUNA_SEED = None      # None = resultados diferentes cada vez
                         # 42 (o cualquier int) = reproducible
 OPTUNA_CREATE_DATABASE = True  # True = crear SQLite por estrategia (IDx.db)
 OPTUNA_RESET_DB_ON_START = True  # True = borra IDx.db + -wal/-shm al arrancar cada ejecución
+GUARDAR_EQUITY_EN_DB = True     # True = guarda curva de equity de cada trial (para Monte Carlo)
 
 # ALGORITMO DE BÚSQUEDA (SAMPLER)
 #   "CMA"  → CMA-ES: Bueno para parámetros continuos (precios, %).
@@ -196,8 +197,8 @@ TIMEFRAMES = [TIMEFRAME_BASE]  # No tocar — se deriva de TIMEFRAME_BASE
 #   NASDAQ   : 2010-11-14 → 2025-12-31
 #   BIST100  : 2024-02-12 → 2026-02-09 (solo 1h)
 #
-FECHA_INICIO = "2022-01-01"
-FECHA_FIN    = "2025-06-01"
+FECHA_INICIO = "2018-06-01"
+FECHA_FIN    = "2026-02-01"
 
 # ── MODO DE USO DEL RANGO ──
 #
@@ -217,7 +218,7 @@ FECHA_FIN    = "2025-06-01"
 #       Mar-2021 a Sep-2021, el trial 2 puede probar Nov-2023 a May-2024, etc.
 #
 USAR_RANGOS_POR_TRIAL = False
-MESES_POR_TRIAL =9  # Solo aplica si USAR_RANGOS_POR_TRIAL = True
+MESES_POR_TRIAL =3  # Solo aplica si USAR_RANGOS_POR_TRIAL = True
 
 # ── Rango del gráfico detallado (zoom visual) ──
 # Esto NO afecta al backtest, solo al gráfico HTML que se genera.
@@ -243,9 +244,9 @@ GRAFICA_FECHA_FIN = "2025-02-10"
 #   Fase 2: Expande mechas con ruido uniforme positivo. Volumen log-normal.
 #
 ENTRENAMIENTO_ROBUSTO_ACTIVAR = True          # True = activar augmentation por trial
-MAX_DRIFT_PCT = 0.08                         # Máx desviación del precio real (±6.7%)
-DRIFT_STEP_VOLATILITY = 0.0020              # Volatilidad del paso browniano por vela
-RUIDO_MECHAS_PCT = 0.050                     # Escala de ruido uniforme para mechas
+MAX_DRIFT_PCT = 0.15                         # Máx desviación del precio real (±6.7%)
+DRIFT_STEP_VOLATILITY = 0.0050              # Volatilidad del paso browniano por vela
+RUIDO_MECHAS_PCT = 0.10                     # Escala de ruido uniforme para mechas
 RUIDO_VOLUMEN_PCT = 0.08                     # Escala de ruido log-normal para volumen
 
 # ----------------------------------------------------------------------------
@@ -382,6 +383,7 @@ CONFIG = {
     "OPTUNA_SEED": OPTUNA_SEED,
     "OPTUNA_CREATE_DATABASE": OPTUNA_CREATE_DATABASE,
     "OPTUNA_RESET_DB_ON_START": OPTUNA_RESET_DB_ON_START,
+    "GUARDAR_EQUITY_EN_DB": GUARDAR_EQUITY_EN_DB,
     "OPTUNA_SAMPLER": OPTUNA_SAMPLER,
     "COMBINACION_A_EJECUTAR": COMBINACION_A_EJECUTAR,
     # Exits (valores de modelox/core/exits.py)

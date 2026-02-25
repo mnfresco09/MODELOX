@@ -170,9 +170,9 @@ class EstrategiaID18OLSREV(EstrategiaBase):
         Total combinaciones: 11 x 6 x 4 = 264 — controlado.
         """
         return {
-            "ols_window":    trial.suggest_int  ("ols_window",    10,   60,  step=5),
-            "r2_min":        trial.suggest_float("r2_min",        0.60, 0.85, step=0.05),
-            "rsi_threshold": trial.suggest_int  ("rsi_threshold", 60,   75,  step=5),
+            "ols_window":    trial.suggest_int  ("ols_window",    10,   30,  step=2),
+            "r2_min":        trial.suggest_float("r2_min",        0.70, 0.85, step=0.01),
+            "rsi_threshold": trial.suggest_int  ("rsi_threshold", 55,   75,  step=5),
         }
 
     def get_required_timeframes(self, params: Dict[str, Any]) -> List[str]:

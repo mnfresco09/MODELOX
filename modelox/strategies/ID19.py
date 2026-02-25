@@ -163,9 +163,9 @@ class EstrategiaID19ENTROEMA(EstrategiaBase):
         Total combinaciones: 5 x 6 x 11 = 330 — controlado.
         """
         return {
-            "ema_fast":       trial.suggest_int("ema_fast",       5,  25, step=5),
-            "ema_slow":       trial.suggest_int("ema_slow",      35,  60, step=5),
-            "entropy_window": trial.suggest_int("entropy_window", 10,  60, step=5),
+            "ema_fast":       trial.suggest_int("ema_fast",       4,  18, step=2),
+            "ema_slow":       trial.suggest_int("ema_slow",      38,  55, step=2),
+            "entropy_window": trial.suggest_int("entropy_window", 30,  60, step=5),
         }
 
     def get_required_timeframes(self, params: Dict[str, Any]) -> List[str]:

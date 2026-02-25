@@ -132,7 +132,7 @@ class EstrategiaID2RLOG(EstrategiaBase):
     # ==========================================================================
     def suggest_params(self, trial: Any) -> Dict[str, Any]:
         return {
-            "ols_window": trial.suggest_int  ("ols_window", 35,    35,   step=1),
+            "ols_window": trial.suggest_int  ("ols_window", 38,    38,   step=1),
             "r2_min":     trial.suggest_float("r2_min",     0.80, 0.80, step=0.01),
         }
 

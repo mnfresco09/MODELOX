@@ -124,8 +124,8 @@ class EstrategiaID25RSIOLS(EstrategiaBase):
         Total combinaciones: 10 x 4 = 40 — espacio mínimo.
         """
         return {
-            "ols_window": trial.suggest_int("ols_window", 6,  42, step=4),
-            "rsi_mid":    trial.suggest_int("rsi_mid",   35,  50, step=5),
+            "ols_window": trial.suggest_int("ols_window", 22,  40, step=2),
+            "rsi_mid":    trial.suggest_int("rsi_mid",   35,  45, step=5),
         }
 
     def get_required_timeframes(self, params: Dict[str, Any]) -> List[str]:
