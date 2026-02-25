@@ -60,9 +60,14 @@ from .exits import resolve_exit_settings_for_trial
 
 # Funciones desde módulo optimizers
 from modelox.optimizers import (
-    CMAScorer, TPEScorer, GTScorer, MLForestScorer, QMCScorer, HybridScorer,
-    score_cma, score_tpe, score_gt, score_ml, score_qmc, score_hybrid,
+    TPEScorer, QMCScorer, HybridScorer,
+    score_tpe, score_qmc, score_hybrid,
     create_study,  # Factory para crear estudios
+)
+from modelox.optimizers.storage import (
+    resolve_storage_for_strategy,
+    get_database_file_path,
+    delete_strategy_database,
 )
 
 # Silenciar warnings experimentales de Optuna
@@ -154,7 +159,7 @@ class OptunaConfig:
     """
     seed: Optional[int] = None
     n_jobs: int = 1
-    storage: Optional[str] = None
+    create_database: bool = True
     study_name_prefix: str = "MODELOX"
     sampler: str = "CMA"  # Valor recibido desde configuracion.py
 
@@ -169,6 +174,7 @@ def create_study_for_strategy(
     *,
     cfg: OptunaConfig,
     strategy_name: str,
+    strategy_id: Optional[int] = None,
     activo: Optional[str] = None,
 ) -> optuna.study.Study:
     """
@@ -182,10 +188,11 @@ def create_study_for_strategy(
     return create_study(
         sampler=cfg.sampler,
         strategy_name=strategy_name,
+        strategy_id=strategy_id,
         activo=activo,
         seed=cfg.seed,
         study_name_prefix=cfg.study_name_prefix,
-        storage=cfg.storage,
+        create_database=cfg.create_database,
     )
 
 
@@ -369,22 +376,16 @@ class OptimizationRunner:
         """
         Retorna la función de scoring correspondiente al sampler elegido.
         
-        - CMA → score_cma (scoring institucional con PSR/DSR/SAM)
-        - TPE → score_tpe (scoring simple exploratorio)
-        - GT  → score_gt  (GT-Score anti-overfitting con interceptor topológico)
+        - TPE → score_tpe
+        - QMC → score_qmc
+        - HYBRID → score_hybrid (default)
         """
-        sampler_type = self.optuna.sampler.upper() if self.optuna.sampler else "CMA"
+        sampler_type = self.optuna.sampler.upper() if self.optuna.sampler else "HYBRID"
         if sampler_type == "TPE":
             return score_tpe
-        if sampler_type == "GT":
-            return score_gt
-        if sampler_type in ("ML", "MLFOREST", "ML_FOREST"):
-            return score_ml
         if sampler_type == "QMC":
             return score_qmc
-        if sampler_type == "HYBRID":
-            return score_hybrid
-        return score_cma  # Default: CMA
+        return score_hybrid  # Default: HYBRID
     
     def optimize_strategies(
         self,
@@ -460,13 +461,10 @@ class OptimizationRunner:
             from optuna.samplers import QMCSampler, TPESampler
             import re
             
-            # Use provided storage or create a file-based storage for sharing between samplers
-            if self.optuna.storage:
-                storage = self.optuna.storage
-            else:
-                import os
-                db_path = os.path.join(os.getcwd(), "optuna_hybrid.db")
-                storage = f"sqlite:///{db_path}"
+            storage = resolve_storage_for_strategy(
+                create_database=bool(self.optuna.create_database),
+                strategy_id=getattr(strategy, "combinacion_id", None),
+            )
             
             # Generar nombre del estudio unificado para HYBRID
             parts = [self.optuna.study_name_prefix, str(strategy.name), "HYBRID"]
@@ -520,6 +518,7 @@ class OptimizationRunner:
             study = create_study_for_strategy(
                 cfg=self.optuna, 
                 strategy_name=strategy.name, 
+                strategy_id=getattr(strategy, "combinacion_id", None),
                 activo=self.activo,
             )
             
@@ -552,26 +551,41 @@ class OptimizationRunner:
         params_rt["__comision_sides"] = int(self.config.comision_sides)
         params_rt["__saldo_usado"] = float(self.config.saldo_usado)
         params_rt["__apalancamiento_max"] = float(self.config.apalancamiento_max)
-        params_rt["__strategy_exit_enabled"] = bool(getattr(strategy, "SALIDAS_PERSONALIZADAS", False))
+        salidas_personalizadas = bool(getattr(strategy, "SALIDAS_PERSONALIZADAS", False))
+        params_rt["__strategy_exit_enabled"] = salidas_personalizadas
         
         # Resolver configuración de salida
-        exit_settings = resolve_exit_settings_for_trial(trial=trial, config=self.config)
-        params_rt["__exit_type"] = exit_settings.exit_type
-        params_rt["__exit_sl_pct"] = exit_settings.sl_pct
-        params_rt["__exit_tp_pct"] = exit_settings.tp_pct
-        params_rt["__exit_trail_act_pct"] = exit_settings.trail_act_pct
-        params_rt["__exit_trail_dist_pct"] = exit_settings.trail_dist_pct
-        
-        # Aliases para compatibilidad
-        params_rt["exit_type"] = exit_settings.exit_type
-        params_rt["exit_sl_pct"] = exit_settings.sl_pct
-        params_rt["exit_tp_pct"] = exit_settings.tp_pct
-        params_rt["exit_trail_act_pct"] = exit_settings.trail_act_pct
-        params_rt["exit_trail_dist_pct"] = exit_settings.trail_dist_pct
+        if salidas_personalizadas:
+            params_rt["__exit_type"] = "custom"
+            params_rt["__exit_sl_pct"] = 999.0
+            params_rt["__exit_tp_pct"] = 999.0
+            params_rt["__exit_trail_act_pct"] = 999.0
+            params_rt["__exit_trail_dist_pct"] = 999.0
+            
+            params_rt["exit_type"] = "custom"
+            params_rt["exit_sl_pct"] = 999.0
+            params_rt["exit_tp_pct"] = 999.0
+            params_rt["exit_trail_act_pct"] = 999.0
+            params_rt["exit_trail_dist_pct"] = 999.0
+        else:
+            exit_settings = resolve_exit_settings_for_trial(trial=trial, config=self.config)
+            params_rt["__exit_type"] = exit_settings.exit_type
+            params_rt["__exit_sl_pct"] = exit_settings.sl_pct
+            params_rt["__exit_tp_pct"] = exit_settings.tp_pct
+            params_rt["__exit_trail_act_pct"] = exit_settings.trail_act_pct
+            params_rt["__exit_trail_dist_pct"] = exit_settings.trail_dist_pct
+            
+            # Aliases para compatibilidad
+            params_rt["exit_type"] = exit_settings.exit_type
+            params_rt["exit_sl_pct"] = exit_settings.sl_pct
+            params_rt["exit_tp_pct"] = exit_settings.tp_pct
+            params_rt["exit_trail_act_pct"] = exit_settings.trail_act_pct
+            params_rt["exit_trail_dist_pct"] = exit_settings.trail_dist_pct
         
         # Timeframes
         entry_tf = normalize_timeframe_to_suffix(getattr(strategy, "timeframe_entry", None) or base_tf)
-        exit_tf = normalize_timeframe_to_suffix(getattr(strategy, "timeframe_exit", None) or base_tf)
+        # FORZAR salidas SIEMPRE en 1m para máxima precisión (SL/TP/Trailing)
+        exit_tf = "1m"
         
         params_rt["__timeframe_base"] = base_tf
         params_rt["__timeframe_entry"] = entry_tf
@@ -645,8 +659,9 @@ class OptimizationRunner:
                 df_1m_for_exits = df_map_trial.get("1m")
                 
                 # Intentar cargar 1m si no está en el cache, lo necesitamos si hay exits tick-tick o augmentation
-                if df_1m_for_exits is None and self.futuro_data_provider is not None:
-                    if entry_tf_minutes > 1 or self.augmenter is not None:
+                # SIEMPRE intentamos cargar 1m, incluso si entry_tf_minutes == 1, para tener coherencia
+                if df_1m_for_exits is None:
+                    if self.futuro_data_provider is not None:
                         try:
                             df_1m_data = self.futuro_data_provider.get_trial_data_multiframe(
                                 trial_number=trial.number,
@@ -656,11 +671,43 @@ class OptimizationRunner:
                             df_1m_for_exits = df_1m_data.get("1m")
                         except Exception:
                             pass
+                    
+                    # Fallback SIEMPRE: si el provider no devolvió 1m, usar el cache global
+                    # Esto es CRÍTICO para que las salidas en 1m funcionen con TrialDataProvider
+                    if df_1m_for_exits is None:
+                        df_1m_for_exits = df_map.get("1m")
+
+                # Deshabilitar 1m para salidas si la estrategia gestiona sus propias salidas
+                # pero NO implementa generate_exit_signals_1m (fuerza uso del timeframe de entrada)
+                salidas_personalizadas = bool(getattr(strategy, "SALIDAS_PERSONALIZADAS", False))
+                if salidas_personalizadas:
+                    if not (hasattr(strategy, "generate_exit_signals_1m") and callable(strategy.generate_exit_signals_1m)):
+                        df_1m_for_exits = None
                 
                 # ================================================================
                 # DATOS DEL TRIAL Y DATA AUGMENTATION (COHERENCIA FRACTAL)
                 # ================================================================
                 df_trial = df_entry
+
+                # ================================================================
+                # ALINEAR SIEMPRE EL 1M AL RANGO REAL DEL TRIAL
+                # ================================================================
+                # Evita data leakage cuando hay rangos por trial: si usamos el 1m
+                # global (dataset completo), las salidas podrían evaluarse fuera de
+                # la ventana del trial y desalinear métricas como TRADES/DAY.
+                if df_1m_for_exits is not None and "timestamp" in df_trial.columns and len(df_trial) > 0:
+                    try:
+                        _ts_ini = df_trial["timestamp"][0]
+                        _ts_fin = df_trial["timestamp"][-1]
+                        df_1m_for_exits = df_1m_for_exits.filter(
+                            (pl.col("timestamp") >= _ts_ini) &
+                            (pl.col("timestamp") <= _ts_fin)
+                        )
+                        if len(df_1m_for_exits) == 0:
+                            df_1m_for_exits = None
+                    except Exception:
+                        # Fallback defensivo: mejor no usar 1m que usar 1m desalineado
+                        df_1m_for_exits = None
                 
                 if self.augmenter is not None:
                     if df_1m_for_exits is not None:
@@ -701,7 +748,8 @@ class OptimizationRunner:
                 # GENERAR SEÑALES DE SALIDA EN 1M (Tick a Tick precise exits)
                 # ================================================================
                 signals_1m_for_exits = None
-                if entry_tf_minutes > 1 and df_1m_for_exits is not None:
+                # Generar señales 1m siempre que sea posible y df_1m exista
+                if df_1m_for_exits is not None:
                     if hasattr(strategy, "generate_exit_signals_1m") and callable(strategy.generate_exit_signals_1m):
                         try:
                             signals_1m_for_exits = strategy.generate_exit_signals_1m(df_1m_for_exits, params_rt)
@@ -719,13 +767,35 @@ class OptimizationRunner:
                 
                 if trades_df.is_empty():
                     # Handle empty trades as valid result but poor score
-                    metrics = {"roi": -100.0, "sharpe": -999.0, "sqn": -999.0, "profit_factor": 0.0}
-                    score = -9999.0
+                    metrics = {"roi": 0.0, "sharpe": -1.0, "sqn": -1.0, "profit_factor": 0.0}
+                    score = 0.0
                 else:
                     trial.set_user_attr("metricas", metrics)
+                    
+                    # Extraer pnl_neto array y total_days para score_universal
+                    if isinstance(trades_df, pl.DataFrame):
+                        _pnl_arr = trades_df["pnl_neto"].to_numpy().astype(np.float64)
+                    else:
+                        _pnl_arr = trades_df["pnl_neto"].to_numpy(dtype=np.float64)
+                    
+                    _total_days = 0.0
+                    if "timestamp" in df_trial.columns and len(df_trial) > 0:
+                        try:
+                            _ts0 = df_trial["timestamp"][0]
+                            _ts1 = df_trial["timestamp"][-1]
+                            _delta = pl.DataFrame({"s": [_ts0], "e": [_ts1]}).select(
+                                ((pl.col("e") - pl.col("s")).dt.total_seconds() / 86400.0).alias("d")
+                            )
+                            _total_days = max(1.0, float(_delta["d"][0]))
+                        except Exception:
+                            _total_days = 1.0
+                    
                     # Usar scoring correspondiente al sampler elegido
                     score_func = self._get_score_func()
-                    score = float(score_func(metrics, trial=trial))
+                    score = float(score_func(
+                        metrics, trial=trial,
+                        trades_pnl=_pnl_arr, total_days=_total_days,
+                    ))
                 
                 t_total = time.perf_counter() - t0_total
                 
@@ -796,7 +866,7 @@ class OptimizationRunner:
                     trial_number=trial.number,
                     params={},
                     params_reporting={},
-                    score=-9999.0,
+                    score=0.0,
                     metrics=dummy_metrics,
                     df_signals=None,
                     trades=None,
@@ -808,7 +878,7 @@ class OptimizationRunner:
                 for reporter in self.reporters:
                     reporter.on_trial_end(dummy_artifacts)
                 
-                return -9999.0
+                return 0.0
         
         return objective
 
@@ -951,13 +1021,18 @@ def run_single_exit_type(
         ENTRENAMIENTO_ROBUSTO_ACTIVAR = False
 
     if mostrar_cabecera_func:
+        # Salidas SIEMPRE en 1m para máxima precisión
+        _tf_exit_display = "1m"
+        
         mostrar_cabecera_func(
             activo=activo,
             combo_nombre=strategy_name,
             indicadores=indicadores,
             n_trials=n_trials,
+            strategy_id=getattr(strategy, "combinacion_id", None),
             archivo_data=archivo_data,
             timeframe=tf_display,
+            timeframe_exit=_tf_exit_display,
             periodo=periodo_datos,
             exit_type=exit_type,
             strategy_exit_enabled=strategy_exit_enabled,
@@ -1001,6 +1076,21 @@ def run_single_exit_type(
             ))
 
     # 5. RUNNER
+    # Reinicio limpio opcional de DB Optuna (evita reutilizar estudios previos)
+    try:
+        from general.configuracion import OPTUNA_RESET_DB_ON_START, OPTUNA_CREATE_DATABASE
+    except ImportError:
+        OPTUNA_RESET_DB_ON_START = False
+        OPTUNA_CREATE_DATABASE = True
+
+    if bool(OPTUNA_CREATE_DATABASE) and bool(OPTUNA_RESET_DB_ON_START):
+        try:
+            removed = delete_strategy_database(strategy_id=getattr(strategy, "combinacion_id", None))
+            if removed > 0:
+                logger.info(f"🧹 Reset DB Optuna: eliminados {removed} archivo(s) de la estrategia.")
+        except Exception as _e:
+            logger.warning(f"No se pudo resetear la DB de estrategia: {_e}")
+
     runner = OptimizationRunner(
         config=cfg_updated, 
         n_trials=n_trials, 
@@ -1016,6 +1106,7 @@ def run_single_exit_type(
             DRIFT_STEP_VOLATILITY,
             RUIDO_MECHAS_PCT,
             RUIDO_VOLUMEN_PCT,
+            OPTUNA_CREATE_DATABASE,
         )
         if ENTRENAMIENTO_ROBUSTO_ACTIVAR:
             from modelox.perturbaciones import HighFrequencyOHLCVAugmenter
@@ -1031,7 +1122,7 @@ def run_single_exit_type(
     runner.optuna = OptunaConfig(
         seed=None, 
         n_jobs=1, 
-        storage=None,
+        create_database=bool(locals().get("OPTUNA_CREATE_DATABASE", True)),
         sampler=optuna_sampler,
     )
 
@@ -1042,16 +1133,16 @@ def run_single_exit_type(
         
         # Carga diferida de timeframes extra
         entry_tf = getattr(strategy, "timeframe_entry", None) or timeframe_base
-        exit_tf = getattr(strategy, "timeframe_exit", None) or timeframe_base
+        # FORZAR salidas SIEMPRE en 1m para máxima precisión
+        exit_tf = "1m"
         needed_tfs = [timeframe_base, entry_tf, exit_tf]
         
         # ================================================================
         # SIEMPRE CARGAR DATOS DE 1M PARA SALIDAS PRECISAS
         # ================================================================
-        # Si el timeframe base > 1m, necesitamos datos de 1m para evaluar
-        # las salidas (SL/TP/Trailing/Custom) con precisión tick-a-tick
-        base_tf_minutes = suffix_to_minutes(normalize_timeframe_to_suffix(timeframe_base))
-        if base_tf_minutes > 1 and "1m" not in needed_tfs:
+        # SIEMPRE necesitamos datos de 1m para evaluar las salidas (SL/TP/Trailing/Custom)
+        # con precisión tick-a-tick, incluso si el timeframe base es 1m.
+        if "1m" not in needed_tfs:
             needed_tfs.append("1m")
 
         for tf in needed_tfs:
@@ -1068,10 +1159,6 @@ def run_single_exit_type(
                     if fecha_inicio and fecha_fin:
                         df_tf = filter_by_date(df_tf, fecha_inicio, fecha_fin)
                     tf_cache[tf_suf] = df_tf
-                    
-                    # Log si cargamos datos de 1m para salidas
-                    if tf_suf == "1m" and base_tf_minutes > 1:
-                        logger.info(f"✓ Datos de 1m cargados para salidas precisas (TF entrada: {timeframe_base})")
                 except Exception as e:
                     if tf_suf == "1m":
                         logger.warning(f"⚠ No se pudieron cargar datos de 1m para salidas: {e}")
@@ -1107,7 +1194,7 @@ def run_single_exit_type(
                 if best_trial and mostrar_fin_func:
                     # Calcular métricas extra para el reporte final
                     try:
-                        valid_trials = [t for t in study.trials if t.state.name == "COMPLETE"]
+                        valid_trials = study.get_trials(deepcopy=False, states=[optuna.trial.TrialState.COMPLETE])
                         roi_vals = [t.user_attrs.get("metricas", {}).get("roi", 0) for t in valid_trials]
                         roi_medio = sum(roi_vals) / len(roi_vals) if roi_vals else 0.0
                         best_roi = best_trial.user_attrs.get("metricas", {}).get("roi", 0.0)
@@ -1123,7 +1210,7 @@ def run_single_exit_type(
                             break
 
                     mostrar_fin_func(
-                        total_trials=len(study.trials),
+                        total_trials=len(study.get_trials(deepcopy=False)),
                         best_score=best_val,
                         best_trial=best_trial.number,
                         estrategia=strategy_name,
@@ -1144,14 +1231,9 @@ def run_single_exit_type(
         del reporters
         nuclear_cleanup()
         
-        # Eliminar base de datos híbrida al acabar la optimización
+        # Base de datos Optuna Híbrida conservada para su uso en optuna-dashboard
         if optuna_sampler.upper() == "HYBRID":
-            import os
-            db_path = os.path.join(os.getcwd(), "optuna_hybrid.db")
+            db_path = get_database_file_path("optuna_hybrid.db", migrate_from_root=True)
             if os.path.exists(db_path):
-                try:
-                    os.remove(db_path)
-                    logger.info("✓ Base de datos Optuna Híbrida eliminada")
-                except Exception as e:
-                    logger.warning(f"⚠ No se pudo eliminar la base de datos Optuna Híbrida: {e}")
+                logger.info("✓ Base de datos Optuna Híbrida conservada en: " + db_path)
 

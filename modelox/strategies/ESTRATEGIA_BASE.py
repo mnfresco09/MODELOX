@@ -112,7 +112,7 @@ class EstrategiaBase:
     # =============================================================================
     # SALIDAS
     # =============================================================================
-    # False = SALIDAS CONTROLADAS POR ENGINE (GLOBAL EXITS)
+    # False = SALIDAS CONTROLADAS POR  (EXITS)
     # True  = SALIDAS CONTROLADAS POR LA ESTRATEGIA (decide_exit)
     SALIDAS_PERSONALIZADAS: bool = False
 

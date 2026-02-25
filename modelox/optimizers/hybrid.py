@@ -20,10 +20,11 @@ VENTAJAS:
 
 FILOSOFÍA DEL SCORING:
 ======================
-  - 40% Sharpe Ratio (Calidad)
-  - 40% Expectativa (Eficiencia / Esperanza por Trade)
-  - 20% ROI (Rentabilidad Bruta)
-
+  Implementa un motor de gradiente continuo (Gradient Mirroring) vectorizado:
+  - Esperanza (Retorno por trade)
+  - Riesgo (Racha perdedora amortiguada)
+  - Estabilidad (R-Cuadrado de la curva trade a trade)
+  - Frecuencia (Penalización progresiva por operaciones diarias)
 ═══════════════════════════════════════════════════════════════════════════════
 """
 
@@ -31,7 +32,6 @@ from __future__ import annotations
 
 import gc
 import math
-import os
 import re
 import time
 import warnings
@@ -43,6 +43,7 @@ import optuna
 import polars as pl
 from optuna.exceptions import ExperimentalWarning
 from optuna.samplers import TPESampler, QMCSampler
+from .storage import resolve_storage_for_strategy
 
 # =============================================================================
 # IMPORTS INTERNOS
@@ -72,29 +73,18 @@ optuna.logging.set_verbosity(optuna.logging.WARNING)
 @dataclass
 class HybridScoringConfig:
     """
-    Configuración del sistema de scoring híbrido.
-    Basado en los pesos solicitados: 40% Sharpe, 40% Expectativa, 20% ROI.
+    Configuración del sistema de scoring híbrido continuo.
+    
+    Fórmula:
+        Score = (Esperanza / (Max_Racha_Perdedora + 1)) × R² × P_lineal(x)
+    
+    Donde P_lineal(x) con x = trades/día:
+        Si x >= TARGET_TRADES_PER_DAY → 1.0
+        Si x <  TARGET_TRADES_PER_DAY → x / TARGET_TRADES_PER_DAY
     """
-    
-    # RANGO DE SALIDA DEL SCORE
-    SCORE_MIN: float = 1.0               
-    SCORE_MAX: float = 1000.0            
-    
-    # PESOS PARA CADA MÉTRICA (DEBEN SUMAR 1.0)
-    WEIGHT_SHARPE: float = 0.40          
-    WEIGHT_EXPECTATIVA: float = 0.40             
-    WEIGHT_ROI: float = 0.20             
-    
-    # ESCALADORES (para normalizar a [0, 1])
-    SHARPE_CENTER: float = 1.0           
-    SHARPE_SCALE: float = 1.5            
-    EXPECTATIVA_TARGET: float = 10.0  # Usaremos una escala lineal (o sigmoide suave)
-    ROI_TARGET: float = 100.0         # ROI objetivo (100% = Doblar)
-    
-    # UMBRALES MÍNIMOS (SOFT)
-    MIN_TRADES_FOR_VALID: int = 10       
-    MIN_TRADES_PER_DAY: float = 0.15     
-
+    # OBJETIVOS DEL MOTOR MATEMÁTICO
+    TARGET_TRADES_PER_DAY: float = 0.3    # Rampa de penalización progresiva
+    MIN_TRADES_FOR_RELIABLE: int = 10     # Debajo de esto, esperanza se amortigua linealmente
 
 # Instancia por defecto
 HYBRID_SCORING_CONFIG = HybridScoringConfig()
@@ -130,97 +120,116 @@ class HybridScorer:
         except Exception:
             return default
     
-    @staticmethod
-    def _sigmoid(x: float, center: float = 1.0, scale: float = 1.5) -> float:
-        try:
-            exponent = -scale * (x - center)
-            if exponent > 500:
-                return 0.0
-            elif exponent < -500:
-                return 1.0
-            return 1.0 / (1.0 + math.exp(exponent))
-        except (OverflowError, ValueError):
-            return 0.5
-    
-    def _normalize_sharpe(self, sharpe: float) -> float:
-        cfg = self.config
-        normalized = self._sigmoid(sharpe, cfg.SHARPE_CENTER, cfg.SHARPE_SCALE)
-        return float(np.clip(normalized, 0.01, 0.99))
-    
-    def _normalize_expectativa(self, expectativa: float) -> float:
-        """Normalizar la expectativa. Si es negativa, castigamos. Si es positiva, premiamos hacia 1.0"""
-        if expectativa <= 0:
-            return max(0.01, 0.5 + (expectativa / 50.0))  # penalización suave
-        else:
-            cfg = self.config
-            normalized = 0.5 + 0.5 * min(1.0, expectativa / cfg.EXPECTATIVA_TARGET)
-            return float(np.clip(normalized, 0.5, 0.99))
-            
-    def _normalize_roi(self, roi: float) -> float:
-        cfg = self.config
-        if roi <= 0:
-            normalized = max(0.0, 0.5 + (roi / 200.0))
-        else:
-            log_roi = math.log1p(roi)
-            log_target = math.log1p(cfg.ROI_TARGET)
-            normalized = 0.5 + 0.5 * min(1.0, log_roi / log_target)
-        return float(np.clip(normalized, 0.01, 0.99))
-    
     def compute_score(
         self,
         trial: Optional[optuna.Trial],
         metrics: Mapping[str, Any],
         returns: Optional[np.ndarray] = None,
         equity_curve: Optional[np.ndarray] = None,
+        trades_pnl: Optional[np.ndarray] = None,
+        total_days: Optional[float] = None,
     ) -> float:
-        cfg = self.config
+        """
+        SCORING HÍBRIDO — Fórmula única:
         
-        # Extracción de métricas
-        sharpe = self._safe_get(metrics, "sharpe", 0.0)
-        if sharpe == 0:
-            sharpe = self._safe_get(metrics, "sharpe_ratio", 0.0)
-            
-        expectativa = self._safe_get(metrics, "expectativa", 0.0)
-        roi = self._safe_get(metrics, "roi", 0.0)
+            Score = (Esperanza / (Max_Racha_Perdedora + 1)) × R² × P_lineal(x)
         
-        n_trades = int(self._safe_get(metrics, "n_trades", 0))
-        if n_trades == 0:
-            n_trades = int(self._safe_get(metrics, "total_trades", 0))
-        
-        # Filtros base
-        if n_trades < cfg.MIN_TRADES_FOR_VALID:
-            if trial is not None:
-                try: trial.set_user_attr('hybrid_score_reason', 'insufficient_trades')
-                except Exception: pass
-            return cfg.SCORE_MIN
-        
-        # Normalizaciones
-        norm_sharpe = self._normalize_sharpe(sharpe)
-        norm_exp = self._normalize_expectativa(expectativa)
-        norm_roi = self._normalize_roi(roi)
-        
-        # Score ponderado
-        weighted_sum = (
-            cfg.WEIGHT_SHARPE * norm_sharpe +
-            cfg.WEIGHT_EXPECTATIVA * norm_exp +
-            cfg.WEIGHT_ROI * norm_roi
-        )
-        
-        score_range = cfg.SCORE_MAX - cfg.SCORE_MIN
-        final_score = cfg.SCORE_MIN + score_range * weighted_sum
-        
-        final_score = float(max(cfg.SCORE_MIN, min(cfg.SCORE_MAX, final_score)))
-        
+        Donde:
+            Esperanza = Beneficio Neto Total / Número Total de Trades
+                        (amortiguado si n_trades < MIN_TRADES_FOR_RELIABLE)
+            R²        = Coef. determinación de capital acumulado vs nº trade
+            P_lineal  = min(1, trades_per_day / 0.5)
+        """
+        # ── 1. Extracción y validación de datos ────────────────────────
+        if trades_pnl is None:
+            raw = metrics.get("_trades_pnl_array", None)
+            if raw is not None:
+                trades_pnl = np.asarray(raw, dtype=np.float64)
+
+        if trades_pnl is None or trades_pnl.size == 0:
+            return 0.0
+
+        if total_days is None or total_days <= 0.0:
+            td = self._safe_get(metrics, "_total_days", 0.0)
+            if td <= 0.0:
+                tpd = self._safe_get(metrics, "trades_por_dia", 0.0)
+                n_t = int(self._safe_get(metrics, "n_trades", 0))
+                if n_t == 0:
+                    n_t = int(self._safe_get(metrics, "total_trades", 0))
+                td = float(n_t) / tpd if tpd > 0 else 1.0
+            total_days = td
+
+        n_trades = len(trades_pnl)
+        if n_trades == 0 or total_days <= 0.0:
+            return 0.0
+
+        # ── 2. Cálculos Matemáticos Core ───────────────────────────────
+
+        # A. Esperanza = Beneficio Neto Total / N trades
+        #    Con amortiguación para pocos trades: si n_trades < MIN,
+        #    escalamos linealmente para evitar que la esperanza se dispare.
+        esperanza_raw = float(np.sum(trades_pnl)) / n_trades
+        min_trades = getattr(self.config, 'MIN_TRADES_FOR_RELIABLE', 10)
+        if n_trades < min_trades and min_trades > 0:
+            # Rampa lineal: 1 trade → factor 0.1, 10 trades → factor 1.0
+            trade_factor = n_trades / min_trades
+            esperanza = esperanza_raw * trade_factor
+        else:
+            esperanza = esperanza_raw
+
+        # B. Racha Perdedora máxima (Vectorizada)
+        es_negativo = (trades_pnl < 0).astype(int)
+        padded = np.pad(es_negativo, (1, 1), 'constant', constant_values=0)
+        diffs = np.diff(padded)
+        starts = np.where(diffs == 1)[0]
+        ends = np.where(diffs == -1)[0]
+        max_racha = float(np.max(ends - starts)) if len(starts) > 0 else 0.0
+
+        # C. R² (Estabilidad de la curva de capital)
+        #    Eje X = Número de trade (1, 2, 3, ...)
+        #    Eje Y = Capital acumulado (cumsum de PnL por trade)
+        #    R² mide qué tan bien los puntos siguen una línea recta
+        if n_trades > 1:
+            x = np.arange(1, n_trades + 1)
+            y = np.cumsum(trades_pnl)
+            if np.std(y) == 0:
+                r_squared = 0.0
+            else:
+                correlacion = np.corrcoef(x, y)[0, 1]
+                r_squared = float(correlacion**2) if not np.isnan(correlacion) else 0.0
+        else:
+            r_squared = 0.0
+
+        # D. Penalización Lineal por frecuencia — P_lineal(x)
+        #    x = trades_per_day
+        #    Si x >= 0.5 → 1.0 (sin penalización)
+        #    Si x <  0.5 → x / 0.5 (rampa suave)
+        trades_per_day = n_trades / total_days
+        target_tpd = getattr(self.config, 'TARGET_TRADES_PER_DAY', 0.5)
+        p_lineal = min(1.0, trades_per_day / target_tpd) if target_tpd > 0 else 1.0
+
+        # ── 3. Fórmula Final ───────────────────────────────────────────
+        #    Score = (Esperanza / (Max_Racha_Perdedora + 1)) × R² × P_lineal × 100
+        final_score = (esperanza / (max_racha + 1.0)) * r_squared * p_lineal * 100.0
+
+        # ── SEGURO: proteger contra NaN / Inf por edge cases numéricos ──
+        if not math.isfinite(final_score):
+            final_score = 0.0
+
+        # ── 4. Auditoría en Optuna ─────────────────────────────────────
         if trial is not None:
             try:
-                trial.set_user_attr('norm_sharpe', float(norm_sharpe))
-                trial.set_user_attr('norm_expectativa', float(norm_exp))
-                trial.set_user_attr('norm_roi', float(norm_roi))
-                trial.set_user_attr('weighted_sum', float(weighted_sum))
+                trial.set_user_attr('final_score', float(final_score))
+                trial.set_user_attr('esperanza', float(esperanza))
+                trial.set_user_attr('esperanza_raw', float(esperanza_raw))
+                trial.set_user_attr('max_racha', float(max_racha))
+                trial.set_user_attr('r_squared', float(r_squared))
+                trial.set_user_attr('p_lineal', float(p_lineal))
+                trial.set_user_attr('n_trades', int(n_trades))
             except Exception:
                 pass
-                
-        return final_score
+
+        return float(final_score)
 
 
 # =============================================================================
@@ -232,7 +241,7 @@ class HybridOptimizerConfig:
     """Configuración del optimizador Híbrido."""
     SEED: Optional[int] = None           
     N_JOBS: int = 1                       
-    STORAGE: Optional[str] = None         # Base de datos. Si es None, creará en memoria
+    CREATE_DATABASE: bool = True          # True = crear SQLite por estrategia (IDx.db)
     STUDY_NAME_PREFIX: str = "MODELOX"    
     SCRAMBLE: bool = True
 
@@ -302,7 +311,8 @@ class HybridOptimizer:
         params_rt["exit_trail_dist_pct"] = exit_settings.trail_dist_pct
         
         entry_tf = normalize_timeframe_to_suffix(getattr(strategy, "timeframe_entry", None) or base_tf)
-        exit_tf = normalize_timeframe_to_suffix(getattr(strategy, "timeframe_exit", None) or base_tf)
+        # FORZAR salidas SIEMPRE en 1m para máxima precisión (SL/TP/Trailing)
+        exit_tf = "1m"
         
         params_rt["__timeframe_base"] = base_tf
         params_rt["__timeframe_entry"] = entry_tf
@@ -338,10 +348,31 @@ class HybridOptimizer:
             
             trial.set_user_attr("metricas", metrics)
             
+            # Extraer pnl_neto array y total_days
+            if isinstance(trades_df, pl.DataFrame):
+                _pnl_arr = trades_df["pnl_neto"].to_numpy().astype(np.float64)
+            else:
+                _pnl_arr = trades_df["pnl_neto"].to_numpy(dtype=np.float64)
+            
+            # total_days desde timestamps del DataFrame de entrada
+            _total_days = 0.0
+            if "timestamp" in df_entry.columns and len(df_entry) > 0:
+                try:
+                    _ts0 = df_entry["timestamp"][0]
+                    _ts1 = df_entry["timestamp"][-1]
+                    _delta = pl.DataFrame({"s": [_ts0], "e": [_ts1]}).select(
+                        ((pl.col("e") - pl.col("s")).dt.total_seconds() / 86400.0).alias("d")
+                    )
+                    _total_days = max(1.0, float(_delta["d"][0]))
+                except Exception:
+                    _total_days = 1.0
+            
             score = self._scorer.compute_score(
                 trial=trial,
                 metrics=metrics,
                 equity_curve=np.array(equity_curve) if equity_curve else None,
+                trades_pnl=_pnl_arr,
+                total_days=_total_days,
             )
             
             artifacts = TrialArtifacts(
@@ -378,12 +409,10 @@ class HybridOptimizer:
         df_base = df_map.get(base_tf, df)
         cfg = self.optimizer_config
         
-        # Asegurar que ambos compartan la misma base de datos (archivo SQLite)
-        if cfg.STORAGE is None:
-            db_path = os.path.join(os.getcwd(), "optuna_hybrid.db")
-            storage = f"sqlite:///{db_path}"
-        else:
-            storage = cfg.STORAGE
+        storage = resolve_storage_for_strategy(
+            create_database=bool(cfg.CREATE_DATABASE),
+            strategy_id=getattr(strategy, "combinacion_id", None),
+        )
             
         parts = [cfg.STUDY_NAME_PREFIX, str(strategy.name), "HYBRID"]
         if self.activo:
@@ -450,9 +479,11 @@ class HybridOptimizer:
 
 def create_hybrid_study(
     strategy_name: str,
+    strategy_id: Optional[int] = None,
     activo: Optional[str] = None,
     seed: Optional[int] = None,
     study_name_prefix: str = "MODELOX",
+    create_database: bool = True,
     storage: Optional[str] = None,
     phase: str = "QMC" # Opcional si se quiere forzar un sampler
 ) -> optuna.Study:
@@ -467,10 +498,11 @@ def create_hybrid_study(
     else:
         sampler = TPESampler(seed=seed, n_startup_trials=0, multivariate=True)
     
-    # Usar archivo SQLite por defecto si no se proporciona storage
     if storage is None:
-        db_path = os.path.join(os.getcwd(), "optuna_hybrid.db")
-        storage = f"sqlite:///{db_path}"
+        storage = resolve_storage_for_strategy(
+            create_database=create_database,
+            strategy_id=strategy_id,
+        )
         
     study = optuna.create_study(
         direction="maximize",
@@ -485,12 +517,16 @@ def score_hybrid(
     metrics: Mapping[str, Any],
     trial: Optional[optuna.Trial] = None,
     equity_curve: Optional[List[float]] = None,
+    trades_pnl: Optional[np.ndarray] = None,
+    total_days: Optional[float] = None,
 ) -> float:
     scorer = HybridScorer()
     return scorer.compute_score(
         trial=trial,
         metrics=metrics,
         equity_curve=np.array(equity_curve) if equity_curve else None,
+        trades_pnl=trades_pnl,
+        total_days=total_days,
     )
 
 __all__ = [

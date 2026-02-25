@@ -6,6 +6,12 @@ Encuentra vecindarios de parámetros estables mediante HDBSCAN.
 Entrada: Excel/CSV con doble encabezado (categorías + columnas).
 Salida: Excel _AGRUPADO con columna Clúster_ID, ordenado por clúster.
 
+http://127.0.0.1:8050
+
+
+ 
+optuna-dashboard sqlite:////Users/manuel/Desktop/MODELOX/DATABASE/ID2.db
+ 
 Ejecutar desde la raíz del proyecto:  python visual/cluster_optuna.py [archivo]
 ================================================================================
 """
@@ -208,8 +214,9 @@ def _prepare_params_matrix(
 # 4. FILTRO POST-CLUSTERING (eliminar clústeres con ROI<0 o trades_dia<0.17)
 # =============================================================================
 
-ROI_MIN = 0.17
-TRADES_DIA_MIN = 0.20
+APLICAR_FILTRO_METRICAS = True  # <--- NUEVA CONDICIÓN (True = filtra por métricas, False = solo agrupa por parámetros)
+ROI_MIN = 0.05
+TRADES_DIA_MIN = 0.05
 
 def _find_metric_columns(df: pd.DataFrame) -> Tuple[Optional[str], Optional[str], Optional[str]]:
     """Detecta columnas ROI, TRADES_DIA y SCORE por nombre."""
@@ -242,6 +249,10 @@ def _filter_clusters(
     - Sin Grupo: eliminar cada trial que falle individualmente.
     """
     keep = np.ones(len(df), dtype=bool)
+    
+    if not APLICAR_FILTRO_METRICAS:
+        return keep
+
     clusters_to_drop = set()
 
     for cluster_id in np.unique(labels):
@@ -486,6 +497,31 @@ def main() -> None:
         if not cols_params:
             console.print("[bold yellow]No se detectaron columnas de parámetros. Usando todas las numéricas.[/bold yellow]")
             cols_params = [c for c in df.columns if pd.api.types.is_numeric_dtype(df[c])]
+        
+        # Filtrar columnas de Trailing Stop si no se utiliza TRAILING
+        is_trailing = False
+        exit_col_name = next((c for c in df.columns if str(c).upper() in ["EXIT_TYPE", "PARAM_EXIT_TYPE"]), None)
+        if exit_col_name:
+            is_trailing = df[exit_col_name].astype(str).str.contains("TRAIL", case=False).any()
+        else:
+            for t_col in df.columns:
+                tc_upper = str(t_col).upper()
+                if tc_upper in ["ACT", "DIST", "TRAIL_ACT_PCT", "TRAIL_DIST_PCT"] or "TRAIL_ACT" in tc_upper or "TRAIL_DIST" in tc_upper:
+                    try:
+                        if (pd.to_numeric(df[t_col], errors='coerce').fillna(0) > 0).any():
+                            is_trailing = True; break
+                    except Exception:
+                        pass
+                        
+        if not is_trailing:
+            cols_to_drop_trail = [
+                c for c in df.columns 
+                if ("TRAIL_ACT" in str(c).upper() or "TRAIL_DIST" in str(c).upper() or str(c).upper() in ["ACT", "DIST"])
+            ]
+            if cols_to_drop_trail:
+                df.drop(columns=cols_to_drop_trail, inplace=True, errors='ignore')
+                cols_params = [c for c in cols_params if c not in cols_to_drop_trail]
+
         if not cols_params:
             console.print("[bold red]No hay columnas numéricas para clusterizar.[/bold red]")
             sys.exit(1)

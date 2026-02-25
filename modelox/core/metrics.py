@@ -329,8 +329,8 @@ if NUMBA_METRICS_AVAILABLE:
         avg_loss = sum_losses / n_losses if n_losses > 0 else 0.0
         payoff_ratio = avg_win / avg_loss if avg_loss > 0 else np.nan
 
-        p_win = n_wins / n
-        expectativa = p_win * avg_win + (1.0 - p_win) * (-avg_loss)
+        # Expectativa = Beneficio Neto Total / N trades (misma fórmula que scoring)
+        expectativa = mean_pnl
         retorno_promedio = mean_pnl
         saldo_mean = saldo_sum / n
 
@@ -545,15 +545,14 @@ def max_drawdown(equity_curve: List[float]) -> Tuple[float, float]:
 
 
 def expectativa(trades: TradesDF) -> float:
-    """ESPERANZA MATEMÁTICA POR TRADE ($): p_win * avg_win + p_loss * avg_loss."""
+    """ESPERANZA MATEMÁTICA POR TRADE ($): Beneficio Neto Total / Número Total de Trades."""
 
     if _empty(trades):
         return 0.0
     pnl = _to_numpy(trades, "pnl_neto")
-    p_win = float((pnl > 0).mean())
-    avg_win = float(pnl[pnl > 0].mean()) if (pnl > 0).any() else 0.0
-    avg_loss = float(pnl[pnl <= 0].mean()) if (pnl <= 0).any() else 0.0
-    return p_win * avg_win + (1.0 - p_win) * avg_loss
+    if len(pnl) == 0:
+        return 0.0
+    return float(np.mean(pnl))
 
 
 def retorno_promedio(trades: TradesDF) -> float:
@@ -674,6 +673,50 @@ def _extract_times_polars(trades: TradesDF) -> Tuple[pl.Series, pl.Series]:
         entry_times = pl.Series(trades["entry_time"].values).cast(pl.Datetime("us"))
         exit_times = pl.Series(trades["exit_time"].values).cast(pl.Datetime("us"))
     return entry_times, exit_times
+
+
+def _estimate_duration_mean_min(trades: TradesDF) -> float:
+    """Estima duración media en minutos usando timestamp de entrada/salida."""
+    if _empty(trades):
+        return 0.0
+
+    cols = trades.columns if isinstance(trades, pl.DataFrame) else list(trades.columns)
+
+    # Prioridad 1: columna precomputada
+    if "duracion_min" in cols:
+        vals = _to_numpy(trades, "duracion_min")
+        vals = vals[np.isfinite(vals)]
+        # Evitar 0MIN por granularidad de timestamp: mínimo 1 minuto por trade cerrado.
+        vals = np.where(vals < 1.0, 1.0, vals)
+        return float(np.mean(vals)) if vals.size > 0 else 0.0
+
+    # Prioridad 2: derivar de entry_time/exit_time
+    if "entry_time" in cols and "exit_time" in cols:
+        if isinstance(trades, pl.DataFrame):
+            try:
+                d = trades.select(
+                    ((pl.col("exit_time") - pl.col("entry_time")).dt.total_seconds() / 60.0)
+                    .alias("duracion_min")
+                )["duracion_min"].to_numpy()
+                d = d[np.isfinite(d)]
+                d = d[d >= 0]
+                d = np.where(d < 1.0, 1.0, d)
+                return float(np.mean(d)) if d.size > 0 else 0.0
+            except Exception:
+                return 0.0
+        else:
+            try:
+                entry = pd.to_datetime(trades["entry_time"], errors="coerce")
+                exit_ = pd.to_datetime(trades["exit_time"], errors="coerce")
+                d = (exit_ - entry).dt.total_seconds().to_numpy(dtype=np.float64) / 60.0
+                d = d[np.isfinite(d)]
+                d = d[d >= 0]
+                d = np.where(d < 1.0, 1.0, d)
+                return float(np.mean(d)) if d.size > 0 else 0.0
+            except Exception:
+                return 0.0
+
+    return 0.0
 
 
 # =============================================================================
@@ -1234,10 +1277,7 @@ def _resumen_metricas_numba_wrapper(
     metrics["calmar"] = calmar(trades, list(eq_arr))
 
     # Duración y comisiones (compatible Polars/Pandas)
-    if "duracion_min" in cols:
-        metrics["duration_mean_min"] = float(np.mean(_to_numpy(trades, "duracion_min")))
-    else:
-        metrics["duration_mean_min"] = 0.0
+    metrics["duration_mean_min"] = _estimate_duration_mean_min(trades)
 
     if "comision" in cols:
         metrics["comisiones_total"] = float(np.sum(_to_numpy(trades, "comision")))
@@ -1318,7 +1358,7 @@ def _resumen_metricas_python(
     saldo_mean = float(np.mean(saldo_despues))
 
     # Duración y comisiones
-    duracion_min = _to_numpy(trades, "duracion_min") if "duracion_min" in cols else np.array([0.0])
+    duration_mean_min = _estimate_duration_mean_min(trades)
     comision = _to_numpy(trades, "comision") if "comision" in cols else np.array([0.0])
 
     return {
@@ -1359,10 +1399,11 @@ def _resumen_metricas_python(
         "saldo_mean": saldo_mean,
         "max_ganancia": float(np.max(pnl_neto)),
         "max_perdida": float(np.min(pnl_neto)),
-        "duration_mean_min": float(np.mean(duracion_min)),
+        "duration_mean_min": duration_mean_min,
         "comisiones_total": float(np.sum(comision)),
         "saldo_sin_comisiones": saldo_sin_comisiones,
         # PnL aliases
         "pnl_neto": float(np.sum(pnl_neto)),
         "net_pnl": float(np.sum(pnl_neto)),
     }
+

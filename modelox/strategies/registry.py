@@ -24,6 +24,7 @@ from __future__ import annotations
 
 import importlib
 import importlib.util
+import importlib.machinery
 import ast
 import hashlib
 import inspect
@@ -180,7 +181,10 @@ def discover_strategies(*, package: str = "modelox.strategies") -> Dict[str, Typ
         files_seen.add(file_path)
 
         try:
-            spec = importlib.util.spec_from_file_location(mod_name, file_path)
+            # Forzar SourceFileLoader para soportar extensiones en mayúsculas (ej: .PY)
+            # ya que spec_from_file_location sin loader puede devolver None.
+            loader = importlib.machinery.SourceFileLoader(mod_name, file_path)
+            spec = importlib.util.spec_from_file_location(mod_name, file_path, loader=loader)
             if spec is None or spec.loader is None:
                 logger.warning(f"No se pudo crear spec para estrategia: {file_path}")
                 return None
@@ -370,7 +374,9 @@ def _load_strategy_class_by_id(*, package: str, combinacion_id: int) -> Type[Str
         files_seen.add(file_path)
 
         try:
-            spec = importlib.util.spec_from_file_location(mod_name, file_path)
+            # Forzar SourceFileLoader para soportar extensiones en mayúsculas (ej: .PY)
+            loader = importlib.machinery.SourceFileLoader(mod_name, file_path)
+            spec = importlib.util.spec_from_file_location(mod_name, file_path, loader=loader)
             if spec is None or spec.loader is None:
                 return None
             module = importlib.util.module_from_spec(spec)

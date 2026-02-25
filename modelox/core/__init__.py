@@ -16,7 +16,7 @@ ARQUITECTURA:
     - runner.py:  Orquestador de optimización
 
 SCORING (módulo independiente):
-    from modelox.optimizers import CMAScorer, TPEScorer, score_cma, score_tpe
+    from modelox.optimizers import TPEScorer, QMCScorer, HybridScorer, score_tpe, score_qmc, score_hybrid
 
 ================================================================================
 """

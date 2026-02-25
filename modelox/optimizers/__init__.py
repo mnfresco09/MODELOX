@@ -151,22 +151,9 @@ RECOMENDACIÓN:
 """
 
 # =============================================================================
-# IMPORTS CMA-ES
-# =============================================================================
-from .cma import (
-    CMAOptimizer,
-    CMAOptimizerConfig,
-    CMAScorer,
-    CMAScoringConfig,
-    CMA_SCORING_CONFIG,
-    CMA_OPTIMIZER_CONFIG,
-    create_cma_study,
-    score_cma,
-)
-
-# =============================================================================
 # IMPORTS TPE
 # =============================================================================
+
 from .tpe import (
     TPEOptimizer,
     TPEOptimizerConfig,
@@ -176,34 +163,6 @@ from .tpe import (
     TPE_OPTIMIZER_CONFIG,
     create_tpe_study,
     score_tpe,
-)
-
-# =============================================================================
-# IMPORTS GT (GT-SCORE + INTERCEPTOR IA TOPOLÓGICO)
-# =============================================================================
-from .gt import (
-    GTOptimizer,
-    GTOptimizerConfig,
-    GTScorer,
-    GTScoringConfig,
-    GT_SCORING_CONFIG,
-    GT_OPTIMIZER_CONFIG,
-    create_gt_study,
-    score_gt,
-)
-
-# =============================================================================
-# IMPORTS ML-FOREST (MACHINE LEARNING CON RANDOM FOREST)
-# =============================================================================
-from .ml import (
-    MLForestOptimizer,
-    MLForestOptimizerConfig,
-    MLForestScorer,
-    MLForestScoringConfig,
-    ML_SCORING_CONFIG,
-    ML_OPTIMIZER_CONFIG,
-    create_ml_study,
-    score_ml,
 )
 
 # =============================================================================
@@ -239,6 +198,7 @@ from .hybrid import (
 # =============================================================================
 from typing import Optional
 import optuna
+from .storage import resolve_storage_for_strategy
 
 
 # =============================================================================
@@ -248,10 +208,11 @@ import optuna
 def create_study(
     sampler: str,
     strategy_name: str,
+    strategy_id: Optional[int] = None,
     activo: Optional[str] = None,
     seed: Optional[int] = None,
     study_name_prefix: str = "MODELOX",
-    storage: Optional[str] = None,
+    create_database: bool = True,
 ) -> optuna.Study:
     """
     Factory que crea un estudio Optuna con el sampler indicado.
@@ -262,60 +223,56 @@ def create_study(
         activo: Nombre del activo (opcional)
         seed: Semilla aleatoria
         study_name_prefix: Prefijo para el nombre del estudio
-        storage: URI de almacenamiento (None = RAM)
+        create_database: True para usar SQLite por estrategia (IDx.db)
     
     Returns:
         optuna.Study configurado con el sampler elegido
     """
-    sampler_type = sampler.upper() if sampler else "CMA"
+    sampler_type = sampler.upper() if sampler else "HYBRID"
+    storage = resolve_storage_for_strategy(
+        create_database=create_database,
+        strategy_id=strategy_id,
+    )
     
     if sampler_type == "TPE":
         return create_tpe_study(
             strategy_name=strategy_name,
+            strategy_id=strategy_id,
             activo=activo,
             seed=seed,
             study_name_prefix=study_name_prefix,
-            storage=storage,
-        )
-    elif sampler_type == "GT":
-        return create_gt_study(
-            strategy_name=strategy_name,
-            activo=activo,
-            seed=seed,
-            study_name_prefix=study_name_prefix,
-            storage=storage,
-        )
-    elif sampler_type in ("ML", "MLFOREST", "ML_FOREST"):
-        return create_ml_study(
-            strategy_name=strategy_name,
-            activo=activo,
-            seed=seed,
-            study_name_prefix=study_name_prefix,
+            create_database=create_database,
             storage=storage,
         )
     elif sampler_type == "QMC":
         return create_qmc_study(
             strategy_name=strategy_name,
+            strategy_id=strategy_id,
             activo=activo,
             seed=seed,
             study_name_prefix=study_name_prefix,
+            create_database=create_database,
             storage=storage,
         )
     elif sampler_type == "HYBRID":
         return create_hybrid_study(
             strategy_name=strategy_name,
+            strategy_id=strategy_id,
             activo=activo,
             seed=seed,
             study_name_prefix=study_name_prefix,
+            create_database=create_database,
             storage=storage,
         )
     else:
-        # Default: CMA-ES
-        return create_cma_study(
+        # Default: HYBRID
+        return create_hybrid_study(
             strategy_name=strategy_name,
+            strategy_id=strategy_id,
             activo=activo,
             seed=seed,
             study_name_prefix=study_name_prefix,
+            create_database=create_database,
             storage=storage,
         )
 
@@ -330,18 +287,6 @@ __all__ = [
     "create_study",           # FACTORY PARA CREAR ESTUDIO SEGÚN SAMPLER
     
     # =========================================================================
-    # CMA-ES (COVARIANCE MATRIX ADAPTATION EVOLUTION STRATEGY)
-    # =========================================================================
-    "CMAOptimizer",           # CLASE OPTIMIZADOR CMA-ES
-    "CMAOptimizerConfig",     # CONFIGURACIÓN DEL OPTIMIZADOR
-    "CMAScorer",              # CLASE SCORER INSTITUCIONAL
-    "CMAScoringConfig",       # CONFIGURACIÓN DEL SCORING
-    "CMA_SCORING_CONFIG",     # INSTANCIA DEFAULT DE SCORING
-    "CMA_OPTIMIZER_CONFIG",   # INSTANCIA DEFAULT DE OPTIMIZADOR
-    "create_cma_study",       # CREAR ESTUDIO CMA-ES
-    "score_cma",              # FUNCIÓN STANDALONE DE SCORING
-    
-    # =========================================================================
     # TPE (TREE-STRUCTURED PARZEN ESTIMATOR)
     # =========================================================================
     "TPEOptimizer",           # CLASE OPTIMIZADOR TPE
@@ -354,30 +299,6 @@ __all__ = [
     "score_tpe",              # FUNCIÓN STANDALONE DE SCORING
     
     # =========================================================================
-    # GT (GT-SCORE + INTERCEPTOR IA TOPOLÓGICO)
-    # =========================================================================
-    "GTOptimizer",            # CLASE OPTIMIZADOR GT
-    "GTOptimizerConfig",      # CONFIGURACIÓN DEL OPTIMIZADOR
-    "GTScorer",               # CLASE SCORER GT-SCORE
-    "GTScoringConfig",        # CONFIGURACIÓN DEL SCORING
-    "GT_SCORING_CONFIG",      # INSTANCIA DEFAULT DE SCORING
-    "GT_OPTIMIZER_CONFIG",    # INSTANCIA DEFAULT DE OPTIMIZADOR
-    "create_gt_study",        # CREAR ESTUDIO GT
-    "score_gt",               # FUNCIÓN STANDALONE DE SCORING
-    
-    # =========================================================================
-    # ML-FOREST (MACHINE LEARNING CON RANDOM FOREST)
-    # =========================================================================
-    "MLForestOptimizer",      # CLASE OPTIMIZADOR ML-FOREST
-    "MLForestOptimizerConfig",# CONFIGURACIÓN DEL OPTIMIZADOR
-    "MLForestScorer",         # CLASE SCORER ML-FOREST
-    "MLForestScoringConfig",  # CONFIGURACIÓN DEL SCORING
-    "ML_SCORING_CONFIG",      # INSTANCIA DEFAULT DE SCORING
-    "ML_OPTIMIZER_CONFIG",    # INSTANCIA DEFAULT DE OPTIMIZADOR
-    "create_ml_study",        # CREAR ESTUDIO ML-FOREST
-    "score_ml",               # FUNCIÓN STANDALONE DE SCORING
-    
-    # =========================================================================
     # QMC (QUASI-MONTE CARLO — SECUENCIAS SOBOL)
     # =========================================================================
     "QMCOptimizer",           # CLASE OPTIMIZADOR QMC
@@ -388,6 +309,7 @@ __all__ = [
     "QMC_OPTIMIZER_CONFIG",   # INSTANCIA DEFAULT DE OPTIMIZADOR
     "create_qmc_study",       # CREAR ESTUDIO QMC
     "score_qmc",              # FUNCIÓN STANDALONE DE SCORING
+    
     # =========================================================================
     # HYBRID (QMC -> TPE)
     # =========================================================================

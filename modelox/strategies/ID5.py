@@ -1,198 +1,440 @@
 from __future__ import annotations
-from typing import Any, Dict
+"""
+================================================================================
+MODELOX/STRATEGIES/ID5.PY
+================================================================================
+ID        : 5
+NOMBRE    : MAMA — MESA Adaptive Moving Average + Confirmación Z-score Diferencial
+MERCADO   : Crypto (BTC, ETH, etc.)
+TIMEFRAME : 1H
+--------------------------------------------------------------------------------
+LÓGICA DE ENTRADA:
+  CAPA 1 — CRUCE MAMA / FAMA (Ehlers):
+    - MAMA via Transformada de Hilbert discreta (Ehlers, Cybernetic Analysis 2004)
+    - FAMA = Following Adaptive Moving Average (señal interna de MAMA)
+    - Cruce alcista : MAMA cruza FAMA hacia arriba → candidato Long
+    - Cruce bajista : MAMA cruza FAMA hacia abajo → candidato Short
+
+  CAPA 2 — CONFIRMACIÓN Z-score del diferencial:
+    - diff = MAMA - FAMA
+    - z = (diff - mean(diff, z_window)) / std(diff, z_window)
+    - Long confirmado  : cruce alcista AND z >= +z_threshold
+    - Short confirmado : cruce bajista AND z <= -z_threshold
+    - Filtra cruces débiles sin momentum estadístico real
+
+  SEÑAL LONG  : cruce MAMA↑FAMA AND z >= +z_threshold
+                Solo en FLANCO. Mutuamente excluyente con SHORT.
+
+  SEÑAL SHORT : cruce MAMA↓FAMA AND z <= -z_threshold
+                Solo en FLANCO. Mutuamente excluyente con LONG.
+
+SALIDAS:
+  SALIDAS_PERSONALIZADAS = False
+  → SL / TP controlados 100% por exits.py (engine global)
+
+RANGOS OPTUNA (3 parámetros — balance entre expresividad y anti-overfitting):
+  fast_limit  : float [0.2, 0.8]  step=0.1   (7 valores — adaptabilidad MAMA)
+  z_threshold : float [1.0, 2.0]  step=0.25  (5 valores — exigencia confirmación)
+  z_window    : int   [20, 100]   step=10    (9 valores — ventana Z-score)
+
+PARÁMETROS FIJOS:
+  slow_limit  : 0.05  (Ehlers clásico — suelo mínimo de adaptación)
+
+IMPLEMENTACIÓN:
+  - MAMA/FAMA via map_batches + numpy (algoritmo Ehlers iterativo completo)
+  - Z-score del diferencial 100% Polars vectorial (rolling_mean + rolling_std)
+  - 1 solo .collect() al final en finalize_signals()
+================================================================================
+"""
+
+from typing import Any, Dict, List
 import polars as pl
 import numpy as np
-from .ESTRATEGIA_BASE import EstrategiaBase
 
-class StrategyZRsiAdx(EstrategiaBase):
+try:
+    from numba import njit as _njit
+except ImportError:
+    def _njit(*args, **kwargs):          # type: ignore[misc]
+        def _deco(fn): return fn
+        return _deco if (args and callable(args[0])) else _deco
+
+from modelox.strategies.ESTRATEGIA_BASE import EstrategiaBase
+
+@_njit(cache=True)
+def _mama_fama_numba(
+    price: np.ndarray,
+    fl: float,
+    sl: float,
+    mama_out: np.ndarray,
+    fama_out: np.ndarray,
+) -> None:
+    n = len(price)
+    smooth    = np.zeros(n)
+    detrender = np.zeros(n)
+    q1        = np.zeros(n)
+    i1        = np.zeros(n)
+    q2        = np.zeros(n)
+    i2        = np.zeros(n)
+    re_v      = np.zeros(n)
+    im_v      = np.zeros(n)
+    per       = np.zeros(n)
+    sper      = np.zeros(n)
+    phase     = np.zeros(n)
+    mama_v    = price[0]
+    fama_v    = price[0]
+
+    for i in range(6, n):
+        smooth[i] = (4*price[i] + 3*price[i-1] + 2*price[i-2] + price[i-3]) / 10.0
+        c = 0.075 * per[i-1] + 0.54
+        detrender[i] = (0.0962*smooth[i] + 0.5769*smooth[i-2] - 0.5769*smooth[i-4] - 0.0962*smooth[i-6]) * c
+        q1[i] = (0.0962*detrender[i] + 0.5769*detrender[i-2] - 0.5769*detrender[i-4] - 0.0962*detrender[i-6]) * c
+        i1[i] = detrender[i-3]
+        ji = (0.0962*i1[i] + 0.5769*i1[i-2] - 0.5769*i1[i-4] - 0.0962*i1[i-6]) * c
+        jq = (0.0962*q1[i] + 0.5769*q1[i-2] - 0.5769*q1[i-4] - 0.0962*q1[i-6]) * c
+        i2_raw = i1[i] - jq
+        q2_raw = q1[i] + ji
+        i2[i] = 0.2*i2_raw + 0.8*i2[i-1]
+        q2[i] = 0.2*q2_raw + 0.8*q2[i-1]
+        re_v[i] = 0.2*(i2[i]*i2[i-1] + q2[i]*q2[i-1]) + 0.8*re_v[i-1]
+        im_v[i] = 0.2*(i2[i]*q2[i-1] - q2[i]*i2[i-1]) + 0.8*im_v[i-1]
+        if im_v[i] != 0.0 and re_v[i] != 0.0:
+            per[i] = 360.0 / (57.29578 * (im_v[i] / re_v[i]))
+        else:
+            per[i] = per[i-1]
+        if per[i] > 1.5*per[i-1]: per[i] = 1.5*per[i-1]
+        if per[i] < 0.67*per[i-1]: per[i] = 0.67*per[i-1]
+        if per[i] < 6.0: per[i] = 6.0
+        if per[i] > 50.0: per[i] = 50.0
+        sper[i] = 0.33*per[i] + 0.67*sper[i-1]
+        if i1[i] != 0.0:
+            phase[i] = 57.29578 * (q1[i] / i1[i])
+        else:
+            phase[i] = phase[i-1]
+        delta_phase = phase[i-1] - phase[i]
+        if delta_phase < 1.0: delta_phase = 1.0
+        alpha = fl / delta_phase
+        if alpha < sl: alpha = sl
+        if alpha > fl: alpha = fl
+        mama_v = alpha*price[i] + (1.0-alpha)*mama_v
+        fama_v = 0.5*alpha*mama_v + (1.0-0.5*alpha)*fama_v
+        mama_out[i] = mama_v
+        fama_out[i] = fama_v
+
+
+
+class EstrategiaID5MAMA(EstrategiaBase):
     """
-    ESTRATEGIA RSI × VOLATILIDAD × ADX
-    LONG : RSI cruza al alza sobreventa + Vol alta + ADX bajo (rango)
-    SHORT: RSI cruza a la baja sobrecompra + Vol alta + ADX bajo (rango)
+    MAMA — MESA Adaptive Moving Average (Ehlers) cruzando FAMA,
+    confirmado por Z-score del diferencial para filtrar cruces por ruido.
     """
 
-    combinacion_id = 5
-    name           = "id5"
-    SALIDAS_PERSONALIZADAS = False
+    # ── Identidad ──────────────────────────────────────────────────────────────
+    combinacion_id: int = 5
+    name: str           = "MAMA"
 
-    # ─── Parámetros fijos (prioridad baja → no se optimizan) ──────────────────
-    ADX_SMOOTHING_FIJO = 14
-    DI_LENGTH_FIJO     = 14
+    # ── Salidas: engine global vía exits.py ────────────────────────────────────
+    SALIDAS_PERSONALIZADAS: bool = False
 
-    # ══════════════════════════════════════════════════════════════════════════
-    # ESPACIO DE BÚSQUEDA
-    # ══════════════════════════════════════════════════════════════════════════
+    # ── Timeframe ──────────────────────────────────────────────────────────────
+
+    # ==========================================================================
+    # ESPACIO DE BÚSQUEDA OPTUNA — 3 parámetros
+    # ==========================================================================
     def suggest_params(self, trial: Any) -> Dict[str, Any]:
         """
-        Nombres claros y agrupados por indicador.
-        ADX smoothing y DI length son fijos (prioridad baja).
-        RSI es simétrico: sobreventa = 100 - sobrecompra.
+        3 parámetros Optuna.
+        Fijo: slow_limit=0.05 (Ehlers clásico, suelo mínimo de adaptación)
+        Total combinaciones aprox: 7 x 5 x 9 = 315 — manejable sin overfitting grave
+        """
+        return {
+            "fast_limit":  trial.suggest_float("fast_limit",  0.2,  0.8, step=0.1),
+            "z_threshold": trial.suggest_float("z_threshold", 1.0,  2.0, step=0.25),
+            "z_window":    trial.suggest_int  ("z_window",    20,   100, step=10),
+        }
+
+    # ==========================================================================
+    # TIMEFRAMES EXTRA (MTF) — no requeridos
+    # ==========================================================================
+    def get_required_timeframes(self, params: Dict[str, Any]) -> List[str]:
+        return []
+
+    # ==========================================================================
+    # GENERATE SIGNALS — POLARS VECTORIAL, 1 COLLECT
+    # ==========================================================================
+    def generate_signals(self, df: pl.DataFrame, params: Dict[str, Any]) -> pl.DataFrame:
+        """
+        FASES:
+          A) MAMA + FAMA via map_batches + numpy (Ehlers Hilbert Transform)
+          B) Diferencial MAMA - FAMA
+          C) Z-score rolling del diferencial (Polars vectorial)
+          D) Cruce MAMA/FAMA: cambio de signo del diferencial
+          E) Confirmación: cruce AND z con signo correcto >= z_threshold
+          F) Condiciones base Long/Short mutuamente excluyentes
+          G) Flancos: señal solo en cambio False→True
+          H) finalize_signals (1 collect)
         """
 
-        # ── RSI ───────────────────────────────────────────────────────────────
-        rsi_periodo      = trial.suggest_int("RSI_Periodo",     5, 50, step=1)
-        rsi_sobrecompra  = trial.suggest_int("RSI_Sobrecompra", 60, 85, step=1)
-        rsi_sobreventa   = 100 - rsi_sobrecompra   # Simétrico automático
-
-        # ── VOLATILIDAD ───────────────────────────────────────────────────────
-        vol_periodo      = trial.suggest_int(  "Vol_Periodo",   5, 30,  step=1)
-        vol_lookback     = trial.suggest_int(  "Vol_Lookback",  50, 200, step=10)
-        vol_clamp        = trial.suggest_float("Vol_Clamp",     1.5, 4.0, step=0.5)
-        vol_umbral       = trial.suggest_float("Vol_Umbral",    0.5, 2.0, step=0.1)
-
-        # ── ADX ───────────────────────────────────────────────────────────────
-        adx_umbral       = trial.suggest_float("ADX_Umbral",    15.0, 35.0, step=1.0)
-
-        return {
-            # RSI
-            "rsi_periodo"    : rsi_periodo,
-            "rsi_sobrecompra": rsi_sobrecompra,
-            "rsi_sobreventa" : rsi_sobreventa,
-            # Volatilidad
-            "vol_periodo"    : vol_periodo,
-            "vol_lookback"   : vol_lookback,
-            "vol_clamp"      : vol_clamp,
-            "vol_umbral"     : vol_umbral,
-            # ADX
-            "adx_umbral"     : adx_umbral,
-            # Fijos (no en Optuna pero sí en params para generate_signals)
-            "adx_smoothing"  : self.ADX_SMOOTHING_FIJO,
-            "di_length"      : self.DI_LENGTH_FIJO,
-        }
-
-    # ══════════════════════════════════════════════════════════════════════════
-    # GENERADOR DE SEÑALES
-    # ══════════════════════════════════════════════════════════════════════════
-    def generate_signals(self, df: pl.DataFrame, params: Dict[str, Any]) -> pl.DataFrame:
-
+        # ── Init ───────────────────────────────────────────────────────────────
         self._init_params_metadata(params)
-        self._require_columns(df, ["timestamp", "open", "high", "low", "close"])
+        self._require_columns(df, ["timestamp", "close"])
 
-        # ── Extraer parámetros con nombres claros ─────────────────────────────
-        rsi_len    = params["rsi_periodo"]
-        rsi_ob     = params["rsi_sobrecompra"]
-        rsi_os     = params["rsi_sobreventa"]
+        # ── Parámetros con defaults defensivos ────────────────────────────────
+        fast_limit  = float(params.get("fast_limit",  0.5))
+        z_threshold = float(params.get("z_threshold", 1.5))
+        z_window    = int  (params.get("z_window",    30))
+        slow_limit  = 0.05  # FIJO: Ehlers clásico
 
-        vol_len    = params["vol_periodo"]
-        z_lookback = params["vol_lookback"]
-        z_range    = params["vol_clamp"]
-        vol_thresh = params["vol_umbral"]
-
-        adx_smooth = params["adx_smoothing"]
-        di_len     = params["di_length"]
-        adx_thresh = params["adx_umbral"]
-
-        # ── Metadata ──────────────────────────────────────────────────────────
-        warmup = max(rsi_len, z_lookback, adx_smooth, di_len) + 50
-        params["__warmup_bars"]       = warmup
-        params["__indicators_used"]   = ["rsi", "z_score", "adx"]
-        params["__indicator_bounds"]  = {
-            "rsi": {"low": rsi_os, "high": rsi_ob, "mid": 50},
-            "adx": {"low": 0, "high": 100, "mid": adx_thresh}
-        }
+        # ── Metadata para reporter / plots ────────────────────────────────────
+        params["__warmup_bars"]     = z_window + 32 + 2  # 32 warmup Hilbert mínimo
+        params["__indicators_used"] = ["mama", "fama", "diff_mf", "z_diff"]
         params["__indicator_specs"] = {
-            "rsi"    : {"color": "#00FFFF", "type": "line", "panel": "rsi"},
-            "z_score": {"color": "#FF00FF", "type": "line", "panel": "vol"},
-            "adx"    : {"color": "#FFFF00", "type": "line", "panel": "adx"}
+            "mama":    {"panel": "main", "color": "#00E676", "tipo": "line"},
+            "fama":    {"panel": "main", "color": "#FF1744", "tipo": "line"},
+            "diff_mf": {"panel": "sub1", "color": "#FF9800", "tipo": "histogram"},
+            "z_diff":  {"panel": "sub2", "color": "#AB47BC", "tipo": "line"},
+        }
+        params["__indicator_bounds"] = {
+            "diff_mf": {"lo": None,         "hi": None,        "mid": 0.0},
+            "z_diff":  {"lo": -z_threshold,  "hi": z_threshold, "mid": 0.0},
         }
 
-        q = df.lazy()
+        # ══════════════════════════════════════════════════════════════════════
+        # FASE A — MAMA + FAMA via map_batches + numpy
+        # Algoritmo de John Ehlers (Cybernetic Analysis for Stocks and Futures, 2004)
+        # Transformada de Hilbert discreta de 4 componentes para estimar el
+        # periodo dominante del ciclo y adaptar alpha en cada barra.
+        # ══════════════════════════════════════════════════════════════════════
+        fl = fast_limit
+        sl = slow_limit
+
+        def _mama_fama_batch(s: pl.Series) -> pl.Series:
+            price = s.to_numpy(allow_copy=True).astype(np.float64)
+            n     = len(price)
+
+            mama_out = np.full(n, np.nan)
+            fama_out = np.full(n, np.nan)
+
+            # Buffers de estado (Ehlers usa los últimos valores, no arrays completos)
+            smooth     = np.zeros(n)
+            detrender  = np.zeros(n)
+            q1         = np.zeros(n)
+            i1         = np.zeros(n)
+            q2         = np.zeros(n)
+            i2         = np.zeros(n)
+            re_v       = np.zeros(n)
+            im_v       = np.zeros(n)
+            per        = np.zeros(n)
+            sper       = np.zeros(n)
+            phase      = np.zeros(n)
+
+            mama_v = price[0]
+            fama_v = price[0]
+
+            for i in range(6, n):
+                # ── Paso 1: Suavizado WMA de 4 velas ──────────────────────
+                smooth[i] = (
+                    4 * price[i] +
+                    3 * price[i-1] +
+                    2 * price[i-2] +
+                        price[i-3]
+                ) / 10.0
+
+                # ── Paso 2: Detrender (Hilbert 4-tap) ─────────────────────
+                detrender[i] = (
+                    0.0962 * smooth[i] +
+                    0.5769 * smooth[i-2] -
+                    0.5769 * smooth[i-4] -
+                    0.0962 * smooth[i-6] if i >= 6 else 0.0
+                ) * (0.075 * per[i-1] + 0.54)
+
+                # ── Paso 3: Componentes en cuadratura ─────────────────────
+                q1[i] = (
+                    0.0962 * detrender[i] +
+                    0.5769 * detrender[i-2] -
+                    0.5769 * detrender[i-4] -
+                    0.0962 * detrender[i-6] if i >= 6 else 0.0
+                ) * (0.075 * per[i-1] + 0.54)
+
+                i1[i] = detrender[i-3] if i >= 3 else 0.0
+
+                # ── Paso 4: Avance de fase 90° ────────────────────────────
+                ji = (
+                    0.0962 * i1[i] +
+                    0.5769 * i1[i-2] -
+                    0.5769 * i1[i-4] -
+                    0.0962 * i1[i-6] if i >= 6 else 0.0
+                ) * (0.075 * per[i-1] + 0.54)
+
+                jq = (
+                    0.0962 * q1[i] +
+                    0.5769 * q1[i-2] -
+                    0.5769 * q1[i-4] -
+                    0.0962 * q1[i-6] if i >= 6 else 0.0
+                ) * (0.075 * per[i-1] + 0.54)
+
+                # ── Paso 5: Rotar 45° ─────────────────────────────────────
+                i2_raw = i1[i] - jq
+                q2_raw = q1[i] + ji
+
+                # ── Paso 6: Suavizado con EMA 0.2 ────────────────────────
+                i2[i] = 0.2 * i2_raw + 0.8 * i2[i-1]
+                q2[i] = 0.2 * q2_raw + 0.8 * q2[i-1]
+
+                # ── Paso 7: Discriminador de fase ────────────────────────
+                re_v[i] = 0.2 * (i2[i] * i2[i-1] + q2[i] * q2[i-1]) + 0.8 * re_v[i-1]
+                im_v[i] = 0.2 * (i2[i] * q2[i-1] - q2[i] * i2[i-1]) + 0.8 * im_v[i-1]
+
+                # ── Paso 8: Periodo dominante ─────────────────────────────
+                if im_v[i] != 0.0 and re_v[i] != 0.0:
+                    per[i] = 360.0 / np.degrees(np.arctan(im_v[i] / re_v[i]))
+                else:
+                    per[i] = per[i-1]
+
+                per[i] = np.clip(per[i], 0.67 * per[i-1], 1.5 * per[i-1])
+                per[i] = np.clip(per[i], 6.0, 50.0)
+                sper[i] = 0.33 * per[i] + 0.67 * sper[i-1]
+
+                # ── Paso 9: Fase y delta de fase ─────────────────────────
+                if i1[i] != 0.0:
+                    phase[i] = np.degrees(np.arctan(q1[i] / i1[i]))
+                else:
+                    phase[i] = phase[i-1]
+
+                delta_phase = phase[i-1] - phase[i]
+                delta_phase = max(delta_phase, 1.0)
+
+                # ── Paso 10: Alpha adaptativo ─────────────────────────────
+                alpha = fl / delta_phase
+                alpha = np.clip(alpha, sl, fl)
+
+                # ── Paso 11: MAMA y FAMA ──────────────────────────────────
+                mama_v = alpha * price[i] + (1.0 - alpha) * mama_v
+                fama_v = 0.5 * alpha * mama_v + (1.0 - 0.5 * alpha) * fama_v
+
+                mama_out[i] = mama_v
+                fama_out[i] = fama_v
+
+            return pl.Series(
+                name   = "_mf",
+                values = [
+                    {"mama": float(mama_out[i]), "fama": float(fama_out[i])}
+                    for i in range(n)
+                ],
+            )
+
+        q = df.lazy().with_columns([
+            pl.col("close")
+            .map_batches(
+                _mama_fama_batch,
+                return_dtype=pl.Struct({
+                    "mama": pl.Float64,
+                    "fama": pl.Float64,
+                }),
+            )
+            .alias("_mf")
+        ])
+
+        # Desempaquetar struct
+        q = q.with_columns([
+            pl.col("_mf").struct.field("mama").alias("mama"),
+            pl.col("_mf").struct.field("fama").alias("fama"),
+        ]).drop("_mf")
 
         # ══════════════════════════════════════════════════════════════════════
-        # 1. RSI
+        # FASE B — Diferencial MAMA - FAMA
+        # Positivo: MAMA encima de FAMA (tendencia alcista)
+        # Negativo: MAMA debajo de FAMA (tendencia bajista)
         # ══════════════════════════════════════════════════════════════════════
         q = q.with_columns([
-            self.rsi_expr(close=pl.col("close"), length=rsi_len).alias("rsi")
+            (pl.col("mama") - pl.col("fama")).alias("diff_mf")
         ])
 
         # ══════════════════════════════════════════════════════════════════════
-        # 2. ADX (Wilder's smoothing via EWM com = n-1)
+        # FASE C — Z-score rolling del diferencial (100% Polars vectorial)
+        # z = (diff - mean(diff, z_window)) / std(diff, z_window)
         # ══════════════════════════════════════════════════════════════════════
-        tr = pl.max_horizontal(
-            pl.col("high") - pl.col("low"),
-            (pl.col("high") - pl.col("close").shift(1)).abs(),
-            (pl.col("low")  - pl.col("close").shift(1)).abs()
-        )
-        up_move   = pl.col("high") - pl.col("high").shift(1)
-        down_move = pl.col("low").shift(1) - pl.col("low")
-
-        plus_dm  = pl.when((up_move > down_move)   & (up_move   > 0)).then(up_move).otherwise(0.0)
-        minus_dm = pl.when((down_move > up_move)   & (down_move > 0)).then(down_move).otherwise(0.0)
-
         q = q.with_columns([
-            tr.alias("tr"),
-            plus_dm.alias("plus_dm"),
-            minus_dm.alias("minus_dm")
-        ])
-
-        com_di = di_len - 1
-        q = q.with_columns([
-            pl.col("tr")      .ewm_mean(com=com_di, min_periods=di_len, ignore_nulls=True).alias("atr"),
-            pl.col("plus_dm") .ewm_mean(com=com_di, min_periods=di_len, ignore_nulls=True).alias("plus_dm_s"),
-            pl.col("minus_dm").ewm_mean(com=com_di, min_periods=di_len, ignore_nulls=True).alias("minus_dm_s"),
+            pl.col("diff_mf").rolling_mean(window_size=z_window).alias("_diff_mean"),
+            pl.col("diff_mf").rolling_std (window_size=z_window).alias("_diff_std"),
         ])
 
         q = q.with_columns([
-            (100.0 * pl.col("plus_dm_s")  / pl.col("atr")).fill_null(0).alias("plus_di"),
-            (100.0 * pl.col("minus_dm_s") / pl.col("atr")).fill_null(0).alias("minus_di"),
+            pl.when(pl.col("_diff_std").abs() > 1e-12)
+            .then((pl.col("diff_mf") - pl.col("_diff_mean")) / pl.col("_diff_std"))
+            .otherwise(0.0)
+            .alias("z_diff")
         ])
 
-        di_sum  = pl.col("plus_di") + pl.col("minus_di")
-        di_diff = (pl.col("plus_di") - pl.col("minus_di")).abs()
-        dx      = pl.when(di_sum != 0).then(100.0 * di_diff / di_sum).otherwise(0.0)
-
-        q = q.with_columns([dx.alias("dx")])
-
-        com_adx = adx_smooth - 1
+        # ══════════════════════════════════════════════════════════════════════
+        # FASE D — Cruce MAMA/FAMA: cambio de signo del diferencial
+        # Cruce alcista: diff anterior <= 0 AND diff actual > 0
+        # Cruce bajista: diff anterior >= 0 AND diff actual < 0
+        # ══════════════════════════════════════════════════════════════════════
         q = q.with_columns([
-            pl.col("dx").ewm_mean(com=com_adx, min_periods=adx_smooth, ignore_nulls=True)
-              .fill_null(0).alias("adx")
+            pl.col("diff_mf").shift(1).fill_null(0.0).alias("_diff_prev")
         ])
-
-        # ══════════════════════════════════════════════════════════════════════
-        # 3. Z-SCORE VOLATILIDAD (Garman-Klass)
-        # ══════════════════════════════════════════════════════════════════════
-        ln_hl = (pl.col("high") / pl.col("low")).log()
-        ln_co = (pl.col("close") / pl.col("open")).log()
-
-        gk = (0.5 * ln_hl.pow(2) - (2 * np.log(2) - 1) * ln_co.pow(2)) \
-               .rolling_mean(window_size=vol_len).sqrt()
-
-        q = q.with_columns([gk.alias("gk_vol")])
-
-        mean_vol = pl.col("gk_vol").rolling_mean(window_size=z_lookback)
-        std_vol  = pl.col("gk_vol").rolling_std(window_size=z_lookback)
-
-        z_raw      = pl.when(std_vol != 0).then((pl.col("gk_vol") - mean_vol) / std_vol).otherwise(0.0)
-        z_clamped  = z_raw.clip(-z_range, z_range)
-        z_norm     = (z_clamped + z_range) / (2.0 * z_range) * 2.0
 
         q = q.with_columns([
-            z_raw .alias("z_score_raw"),
-            z_norm.alias("z_score"),
+            (
+                (pl.col("_diff_prev") <= 0.0) &
+                (pl.col("diff_mf")    >  0.0)
+            ).fill_null(False).alias("_cruce_alcista"),
+
+            (
+                (pl.col("_diff_prev") >= 0.0) &
+                (pl.col("diff_mf")    <  0.0)
+            ).fill_null(False).alias("_cruce_bajista"),
         ])
 
         # ══════════════════════════════════════════════════════════════════════
-        # 4. SEÑALES
+        # FASE E — Confirmación: cruce AND z con signo correcto >= z_threshold
+        # Long:  cruce alcista AND z_diff >= +z_threshold
+        # Short: cruce bajista AND z_diff <= -z_threshold
+        # El signo del z_diff coincide siempre con el del diferencial
+        # → exclusividad garantizada por diseño
         # ══════════════════════════════════════════════════════════════════════
-        alta_vol    = pl.col("z_score") > vol_thresh
-        rango_adx   = pl.col("adx")    < adx_thresh
-
-        rsi_sube    = (pl.col("rsi") > rsi_os) & (pl.col("rsi").shift(1) <= rsi_os)
-        rsi_baja    = (pl.col("rsi") < rsi_ob) & (pl.col("rsi").shift(1) >= rsi_ob)
-
-        raw_long    = alta_vol & rango_adx & rsi_sube
-        raw_short   = alta_vol & rango_adx & rsi_baja
-
         q = q.with_columns([
-            self._as_bool(raw_long) .alias("signal_long"),
-            self._as_bool(raw_short).alias("signal_short"),
+            (
+                pl.col("_cruce_alcista") &
+                (pl.col("z_diff") >= z_threshold)
+            ).fill_null(False).alias("_cond_long"),
+
+            (
+                pl.col("_cruce_bajista") &
+                (pl.col("z_diff") <= -z_threshold)
+            ).fill_null(False).alias("_cond_short"),
         ])
 
         # ══════════════════════════════════════════════════════════════════════
-        # 5. RETORNO
+        # FASE F — Flancos: señal solo en cambio False→True
+        # El cruce ya es por definición un evento puntual (1 vela),
+        # pero aplicamos el patrón estándar de flanco para consistencia
+        # con el resto de estrategias del sistema.
+        # ══════════════════════════════════════════════════════════════════════
+        q = q.with_columns([
+            self._as_bool(
+                pl.col("_cond_long") &
+                ~pl.col("_cond_long").shift(1).fill_null(False)
+            ).alias("signal_long"),
+
+            self._as_bool(
+                pl.col("_cond_short") &
+                ~pl.col("_cond_short").shift(1).fill_null(False) &
+                ~pl.col("_cond_long")  # guardia explícita de exclusividad
+            ).alias("signal_short"),
+        ])
+
+        # ══════════════════════════════════════════════════════════════════════
+        # FASE G — finalize_signals (1 collect + validación contrato)
+        # Columnas internas (_diff_mean, _diff_std, _diff_prev,
+        # _cruce_*, _cond_*) excluidas via keep_cols explícito
         # ══════════════════════════════════════════════════════════════════════
         return self.finalize_signals(
             q,
-            keep_cols=["rsi", "z_score", "adx", "plus_di", "minus_di"]
+            keep_cols=[
+                "mama",
+                "fama",
+                "diff_mf",
+                "z_diff",
+            ],
         )

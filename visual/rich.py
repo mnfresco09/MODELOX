@@ -88,6 +88,7 @@ class M:
         "sqn": ("sqn", "SQN"),
         "expectativa": ("expectativa", "expectancy", "exp"),
         "saldo_mean": ("saldo_mean", "avg_balance"),
+        "duration_mean_min": ("duration_mean_min", "duracion_media_min", "avg_duration_min"),
     }
 
     @classmethod
@@ -164,6 +165,15 @@ def _format_score(score: float) -> str:
         return f"{score:.2f}"
 
 
+def _format_duration_min(duration_min: float) -> str:
+    """Formatea duración media: <60 => XMIN, >=60 => XH:YMIN."""
+    mins = max(0, int(round(float(duration_min))))
+    if mins < 60:
+        return f"{mins}MIN"
+    h, m = divmod(mins, 60)
+    return f"{h}H:{m:02d}MIN"
+
+
 # ============================================================================
 # MAIN TRIAL DISPLAY - Box Layout
 # ============================================================================
@@ -202,6 +212,7 @@ def mostrar_panel_elegante(
     dd = M.get(metrics, "drawdown")
     trades = M.get_int(metrics, "total_trades")
     tpd = M.get(metrics, "trades_por_dia")
+    duration_mean_min = M.get(metrics, "duration_mean_min")
     longs = M.get_int(metrics, "count_longs")
     shorts = M.get_int(metrics, "count_shorts")
     
@@ -278,6 +289,7 @@ def mostrar_panel_elegante(
     perf_grid.add_row("PROFIT F", f"{pf:.2f}")
     perf_grid.add_row("MAX DD", f"{dd:.1f}%")
     perf_grid.add_row("TRADES/DAY", f"{tpd:.3f}")
+    perf_grid.add_row("DUR. MEDIA", _format_duration_min(duration_mean_min))
     perf_grid.add_row("L / S", f"{longs} / {shorts}")
     
     perf_box = Panel(
@@ -551,13 +563,13 @@ def mostrar_top_trials(study, n: int = 5) -> None:
         collapse_padding=True
     )
     
-    table.add_column("#", style=THEME.MUTED, justify="center", width=4)
+    table.add_column("#", style=THEME.MUTED, justify="center")
     table.add_column("SCORE", style=THEME.TEXT, justify="right", width=8)
     table.add_column("ROI", style=THEME.TEXT, justify="right", width=8)
     table.add_column("WIN", style=THEME.TEXT, justify="right", width=6)
     table.add_column("DD", style=THEME.TEXT, justify="right", width=6)
     table.add_column("BALANCE", style=THEME.TEXT, justify="right", width=12)
-    table.add_column("T", style=THEME.MUTED, justify="center", width=4)
+    table.add_column("T", style=THEME.MUTED, justify="center")
     
     for i, t in enumerate(top):
         score = t.value or 0.0
@@ -593,8 +605,10 @@ def mostrar_cabecera_inicio(
     combo_nombre: str,
     indicadores: List[str],
     n_trials: int,
+    strategy_id: Optional[int] = None,
     archivo_data: str = "",
     timeframe: str = "",
+    timeframe_exit: str = "",
     periodo: str = "",
     exit_type: str = "FIXED",
     strategy_exit_enabled: bool = False,
@@ -615,20 +629,39 @@ def mostrar_cabecera_inicio(
     # Main info grid - centered alignment
     info_grid = Table.grid(padding=(0, 3))
     info_grid.add_column(style=THEME.MUTED, width=14, justify="right")
-    info_grid.add_column(style=THEME.WHITE, width=28, justify="left")
+    info_grid.add_column(style=THEME.WHITE, width=32, justify="left")
     
     info_grid.add_row("ASSET", f"[bold]{icon} {activo.upper()}[/]")
-    info_grid.add_row("STRATEGY", f"{combo_nombre.upper()[:28]}")
-    if timeframe:
-        info_grid.add_row("TIMEFRAME", f"{timeframe.upper()}")
+
+    # Mostrar nombre de estrategia + ID (si existe)
+    sid = strategy_id
+    if sid is None:
+        try:
+            import re as _re
+            _m = _re.search(r"ID(\d+)", str(combo_nombre).upper())
+            sid = int(_m.group(1)) if _m else None
+        except Exception:
+            sid = None
+
+    strategy_display = combo_nombre.upper()
+    if sid is not None:
+        strategy_display = f"{strategy_display} [ID{sid}]"
+    info_grid.add_row("STRATEGY", f"{strategy_display[:32]}")
+    # Mostrar Timeframe: ENTRY X | EXIT X
+    tf_entry_str = timeframe.upper() if timeframe else "1M"
+    tf_exit_str = timeframe_exit.upper() if timeframe_exit else tf_entry_str
+    tf_str = f"ENTRY {tf_entry_str} | EXIT {tf_exit_str}"
+    info_grid.add_row("TIMEFRAME", tf_str)
+        
     if periodo:
-        p = periodo.replace(" UTC", "").strip().upper()[:28]
+        p = periodo.replace(" UTC", "").strip().upper()[:32]
         info_grid.add_row("PERIOD", f"{p}")
     info_grid.add_row("", "")
     info_grid.add_row("EXIT MODE", f"{exit_d}")
     info_grid.add_row("TRIALS", f"[bold]{n_trials}[/]")
     
-    pert_status = f"[bold {THEME.GREEN}]ON[/]" if perturbacion else f"[{THEME.MUTED}]OFF[/]"
+    # Sin color para ON/OFF de perturbación (solicitado)
+    pert_status = "ON" if perturbacion else "OFF"
     info_grid.add_row("PERTURBACION", pert_status)
 
     
@@ -644,7 +677,7 @@ def mostrar_cabecera_inicio(
         futuro_label = f"[bold {THEME.WHITE}]FUTURO/{activo.upper()}_{tf_upper}[/]"
         info_grid.add_row("DATA", futuro_label)
     elif archivo_data:
-        info_grid.add_row("DATA", f"{archivo_data[-28:].upper()}")
+        info_grid.add_row("DATA", f"{archivo_data[-32:].upper()}")
     
     # Main panel - white title with sampler type, centered
     sampler_label = sampler_type.upper() if sampler_type else "CMA"
@@ -655,7 +688,7 @@ def mostrar_cabecera_inicio(
         border_style=THEME.BORDER,
         box=box.DOUBLE,
         padding=(1, 2),
-        width=52
+        width=56
     )
     
     console.print()

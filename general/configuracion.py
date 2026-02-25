@@ -46,7 +46,7 @@ from modelox.core.types import normalize_timeframe_to_suffix
 # 1.0 ESTRATEGIAS A EJECUTAR
 # ----------------------------------------------------------------------------
 # Los IDs corresponden a los archivos en  modelox/strategies/
-COMBINACION_A_EJECUTAR = [7]
+COMBINACION_A_EJECUTAR = [2]
 # ----------------------------------------------------------------------------
 # 1.1 SELECCIÓN DE ACTIVOS Y DATOS
 # ----------------------------------------------------------------------------
@@ -88,16 +88,18 @@ FORMATO_DATOS = "feather"
 #   - 3-10     → prueba rápida (minutos)
 #   - 50-100   → exploración decente (horas)
 #   - 500-1000 → búsqueda exhaustiva (muchas horas)
-N_TRIALS = 25
+#   - # QMC E HYBRID (16,32,64,128,256,512,1024,2048,4096,8192,16384,32768)
 
+N_TRIALS = 256
 # OPTUNA_N_JOBS = cuántos cores de CPU usar en paralelo.
 #   -1 = todos los disponibles (recomendado)
 #    1 = secuencial (más lento, menos RAM)
-OPTUNA_N_JOBS = -1
+OPTUNA_N_JOBS = 1
 
 OPTUNA_SEED = None      # None = resultados diferentes cada vez
                         # 42 (o cualquier int) = reproducible
-OPTUNA_STORAGE = None   # None = todo en RAM (más rápido)
+OPTUNA_CREATE_DATABASE = True  # True = crear SQLite por estrategia (IDx.db)
+OPTUNA_RESET_DB_ON_START = True  # True = borra IDx.db + -wal/-shm al arrancar cada ejecución
 
 # ALGORITMO DE BÚSQUEDA (SAMPLER)
 #   "CMA"  → CMA-ES: Bueno para parámetros continuos (precios, %).
@@ -112,7 +114,7 @@ OPTUNA_STORAGE = None   # None = todo en RAM (más rápido)
 #            Cobertura EQUIDISTANTE del espacio de parámetros.
 #            NO usa el score para guiar — pura matemática.
 #            Ideal para exploración exhaustiva sin sesgo ni overfitting.
-OPTUNA_SAMPLER = "hybrid"
+OPTUNA_SAMPLER = "HYBRID"
 
 # ----------------------------------------------------------------------------
 # 1.3 GESTIÓN DE CAPITAL Y COSTES
@@ -127,7 +129,7 @@ SALDO_MINIMO_OPERATIVO = 300.0  # Si el saldo baja de aquí, deja de operar
 #   Binance Spot:  0.001  (0.1%)
 #   Binance Futuros Taker: 0.0005 (0.05%)
 #   Bybit Taker:   0.0006 (0.06%)
-COMISION_PCT = 0.0003
+COMISION_PCT = 0.00035
 
 # ¿Cobra comisión al abrir, al cerrar, o ambas?
 #   1 = solo al abrir la posición
@@ -148,10 +150,10 @@ COMISION_SIDES = 2
 #   → qty = 6.000 / 100.000 = 0.06 BTC
 #
 # Si BTC baja a 50.000$:
-#   → qty = 6.000 / 50.000 = 0.12 BTC (más unidades, mismo volumen)
+#   → TF5: 2600, TF15 1500, TF30: 1100, TF45 900, TF1H 750 TF4H 400
 #
-SALDO_USADO = 60.0           # Colateral fijo por operación ($)
-APALANCAMIENTO_MAX = 35      # Apalancamiento máximo permitido
+SALDO_USADO = 100         # Colateral fijo por operación ($)
+APALANCAMIENTO_MAX = 20      # Apalancamiento máximo permitido
 
 # ----------------------------------------------------------------------------
 # 2.1 TIMEFRAME BASE (RESOLUCIÓN DE OPERACIÓN)
@@ -174,7 +176,7 @@ APALANCAMIENTO_MAX = 35      # Apalancamiento máximo permitido
 #    con el rango COMPLETO de datos (ej: 2017 → 2025).
 #
 # También acepta enteros (minutos): 1, 5, 15, 30, 60, 120, 240, 720, 1440
-TIMEFRAME_BASE = "5"
+TIMEFRAME_BASE = "30"
 TIMEFRAMES = [TIMEFRAME_BASE]  # No tocar — se deriva de TIMEFRAME_BASE
 
 # ----------------------------------------------------------------------------
@@ -194,8 +196,8 @@ TIMEFRAMES = [TIMEFRAME_BASE]  # No tocar — se deriva de TIMEFRAME_BASE
 #   NASDAQ   : 2010-11-14 → 2025-12-31
 #   BIST100  : 2024-02-12 → 2026-02-09 (solo 1h)
 #
-FECHA_INICIO = "2024-04-01"
-FECHA_FIN    = "2025-08-01"
+FECHA_INICIO = "2022-01-01"
+FECHA_FIN    = "2025-06-01"
 
 # ── MODO DE USO DEL RANGO ──
 #
@@ -215,7 +217,7 @@ FECHA_FIN    = "2025-08-01"
 #       Mar-2021 a Sep-2021, el trial 2 puede probar Nov-2023 a May-2024, etc.
 #
 USAR_RANGOS_POR_TRIAL = False
-MESES_POR_TRIAL = 6  # Solo aplica si USAR_RANGOS_POR_TRIAL = True
+MESES_POR_TRIAL =9  # Solo aplica si USAR_RANGOS_POR_TRIAL = True
 
 # ── Rango del gráfico detallado (zoom visual) ──
 # Esto NO afecta al backtest, solo al gráfico HTML que se genera.
@@ -225,7 +227,7 @@ MESES_POR_TRIAL = 6  # Solo aplica si USAR_RANGOS_POR_TRIAL = True
 #           Si el trial tiene menos de 2 meses, muestra todo.
 #   True  = Manual: usa GRAFICA_FECHA_INICIO / GRAFICA_FECHA_FIN.
 GRAFICA_RANGO_PERSONALIZADO = False
-GRAFICA_FECHA_INICIO = "2025-01-01"
+GRAFICA_FECHA_INICIO = "2024-11-01"
 GRAFICA_FECHA_FIN = "2025-02-10"
 
 
@@ -241,10 +243,10 @@ GRAFICA_FECHA_FIN = "2025-02-10"
 #   Fase 2: Expande mechas con ruido uniforme positivo. Volumen log-normal.
 #
 ENTRENAMIENTO_ROBUSTO_ACTIVAR = True          # True = activar augmentation por trial
-MAX_DRIFT_PCT = 0.10                          # Máx desviación del precio real (±10%)
-DRIFT_STEP_VOLATILITY = 0.001                 # Volatilidad del paso browniano por vela
-RUIDO_MECHAS_PCT = 0.05                       # Escala de ruido uniforme para mechas
-RUIDO_VOLUMEN_PCT = 0.1                       # Escala de ruido log-normal para volumen
+MAX_DRIFT_PCT = 0.08                         # Máx desviación del precio real (±6.7%)
+DRIFT_STEP_VOLATILITY = 0.0020              # Volatilidad del paso browniano por vela
+RUIDO_MECHAS_PCT = 0.050                     # Escala de ruido uniforme para mechas
+RUIDO_VOLUMEN_PCT = 0.08                     # Escala de ruido log-normal para volumen
 
 # ----------------------------------------------------------------------------
 # 2.5 SALIDAS Y RESULTADOS
@@ -378,7 +380,8 @@ CONFIG = {
     "N_TRIALS": N_TRIALS,
     "OPTUNA_N_JOBS": OPTUNA_N_JOBS,
     "OPTUNA_SEED": OPTUNA_SEED,
-    "OPTUNA_STORAGE": OPTUNA_STORAGE,
+    "OPTUNA_CREATE_DATABASE": OPTUNA_CREATE_DATABASE,
+    "OPTUNA_RESET_DB_ON_START": OPTUNA_RESET_DB_ON_START,
     "OPTUNA_SAMPLER": OPTUNA_SAMPLER,
     "COMBINACION_A_EJECUTAR": COMBINACION_A_EJECUTAR,
     # Exits (valores de modelox/core/exits.py)

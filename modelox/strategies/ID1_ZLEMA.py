@@ -30,8 +30,8 @@ class StrategyKineticMomentumValidator(EstrategiaBase):
 
         # 1. DEFINICIÓN DE RANGOS INDEPENDIENTES
         # "Mandamelo normal entre rangos todos"
-        raw_fast = trial.suggest_int("zlema_fast_len", 50, 400, step=1)
-        raw_slow = trial.suggest_int("zlema_slow_len", 400, 1440, step=10)
+        raw_fast = trial.suggest_int("zlema_fast_len", 14, 70, step=2)
+        raw_slow = trial.suggest_int("zlema_slow_len", 100, 250, step=5)
 
         # 2. VALIDACIÓN LÓGICA (SWAP)
         # Aunque los rangos son libres, para que la lógica de cruce funcione
@@ -46,28 +46,28 @@ class StrategyKineticMomentumValidator(EstrategiaBase):
 
         # Caso borde: si son iguales (muy raro), separamos la lenta un poco
         if fast_len == slow_len:
-            slow_len += 150
+            slow_len += 5
 
         return {
             "zlema_fast_len": fast_len,
             "zlema_slow_len": slow_len,
 
             # --- FILTRO DE MOMENTUM ---
-            "lookbar": trial.suggest_int("lookbar", 20, 300, step=5),
-            "req_dist_pct": trial.suggest_float("req_dist_pct", 0.05, 2.00, step=0.05),
+            "lookbar": trial.suggest_int("lookbar", 4, 24, step=1),
+            "req_dist_abs": trial.suggest_int("req_dist_abs", 0.05, 1.25, step=0.05),
         }
 
     def generate_signals(self, df: pl.DataFrame, params: Dict[str, Any]) -> pl.DataFrame:
 
         # 1. INICIALIZACIÓN
         self._init_params_metadata(params)
-        self._require_columns(df, ["timestamp", "close"])
+        self._require_columns(df, ["timestamp", "close", "high", "low"])
 
         # Extracción directa de parámetros
         f_len = params["zlema_fast_len"]
         s_len = params["zlema_slow_len"]
         lookbar = params["lookbar"]
-        req_dist_pct = params["req_dist_pct"]
+        req_dist_abs = params["req_dist_abs"]
 
         # Configuración de Metadata
         params["__warmup_bars"] = s_len + 120
@@ -82,9 +82,10 @@ class StrategyKineticMomentumValidator(EstrategiaBase):
 
         # 2. CÁLCULOS DE INDICADORES (ZLEMA PURA)
         # ----------------------------------------------------------------------
-        q = q.with_columns(pl.col("close").log().alias("log_close"))
+        # Usamos precio medio (high + low)/2 en lugar de close
+        q = q.with_columns(((pl.col("high") + pl.col("low")) / 2).alias("hl2"))
 
-        # Función auxiliar interna para ZLEMA Logarítmica
+        # Función auxiliar interna para ZLEMA Normal
         def _calc_zlema_expr(col_name: str, length: int) -> pl.Expr:
             # Protección contra longitud 1 o menor
             length = max(2, length)
@@ -94,15 +95,15 @@ class StrategyKineticMomentumValidator(EstrategiaBase):
             return de_lagged.ewm_mean(span=length, adjust=False)
 
         q = q.with_columns([
-            _calc_zlema_expr("log_close", f_len).alias("fast_log"),
-            _calc_zlema_expr("log_close", s_len).alias("slow_log")
+            _calc_zlema_expr("hl2", f_len).alias("fast_ma"),
+            _calc_zlema_expr("hl2", s_len).alias("slow_ma")
         ])
 
         # 3. LÓGICA DE CICLOS Y DISTANCIAS
         # ----------------------------------------------------------------------
         q = q.with_columns([
-            (pl.col("fast_log") > pl.col("slow_log")).alias("is_bullish"),
-            (pl.col("fast_log") - pl.col("slow_log")).alias("raw_diff")
+            (pl.col("fast_ma") > pl.col("slow_ma")).alias("is_bullish"),
+            (pl.col("fast_ma") - pl.col("slow_ma")).alias("raw_diff")
         ])
 
         # ID de ciclo
@@ -112,7 +113,6 @@ class StrategyKineticMomentumValidator(EstrategiaBase):
         ])
 
         # Métricas intra-ciclo
-        log_req = np.log(1 + req_dist_pct / 100.0)
 
         q = q.with_columns([
             (pl.cum_count("cycle_id").over("cycle_id") - 1).alias("bars_in_cycle"),
@@ -121,7 +121,7 @@ class StrategyKineticMomentumValidator(EstrategiaBase):
 
         # Evaluación de Meta
         q = q.with_columns([
-            (pl.col("init_dist") + log_req).alias("target_dist"),
+            (pl.col("init_dist") + req_dist_abs).alias("target_dist"),
             pl.col("raw_diff").abs().alias("curr_dist")
         ])
 
@@ -143,9 +143,45 @@ class StrategyKineticMomentumValidator(EstrategiaBase):
         # ----------------------------------------------------------------------
         q = q.with_columns([
             self._as_bool(sig_long).alias("signal_long"),
-            self._as_bool(sig_short).alias("signal_short"),
-            pl.col("fast_log").exp().alias("fast_ma"),
-            pl.col("slow_log").exp().alias("slow_ma")
+            self._as_bool(sig_short).alias("signal_short")
         ])
 
         return self.finalize_signals(q, keep_cols=["fast_ma", "slow_ma", "cycle_id"])
+
+    def decide_exit(
+        self,
+        df: pl.DataFrame,
+        params: Dict[str, Any],
+        entry_idx: int,
+        entry_price: float,
+        side: int,
+        **kwargs: Any,
+    ):
+        """Salida personalizada: Cruce inverso de ZLEMA."""
+        try:
+            fast_ma = df["fast_ma"].to_numpy()
+            slow_ma = df["slow_ma"].to_numpy()
+            close = df["close"].to_numpy()
+        except BaseException:
+            return None
+
+        is_long = side == 1 or str(side).upper() == "LONG"
+        is_short = side == -1 or str(side).upper() == "SHORT"
+
+        for i in range(entry_idx + 1, len(close)):
+            if is_long:
+                if fast_ma[i] < slow_ma[i]:
+                    return {
+                        "exit_idx": i,
+                        "exit_price": close[i],
+                        "reason": "CRUCE_BAJISTA_ZLEMA"
+                    }
+            elif is_short:
+                if fast_ma[i] > slow_ma[i]:
+                    return {
+                        "exit_idx": i,
+                        "exit_price": close[i],
+                        "reason": "CRUCE_ALCISTA_ZLEMA"
+                    }
+        
+        return None

@@ -170,8 +170,8 @@ from typing import Any, Dict
 DEFAULT_EXIT_TYPE = "pnl_trailing" # pnl_fixed, pnl_trailing
 
 # ─── PARÁMETROS DE SL/TP (% SOBRE STAKE) ────────────────────────────────────
-DEFAULT_EXIT_SL_PCT = 8.0                    # Stop Loss
-DEFAULT_EXIT_TP_PCT = 14.0                   # Take Profit
+DEFAULT_EXIT_SL_PCT = 17.0                    # Stop Loss
+DEFAULT_EXIT_TP_PCT = 17.0                   # Take Profit
 
 # ─── PARÁMETROS DE TRAILING (% SOBRE STAKE) ─────────────────────────────────
 DEFAULT_EXIT_TRAIL_ACT_PCT = 15.0            # Activación del trailing
@@ -184,10 +184,10 @@ DEFAULT_EXIT_TRAIL_DIST_PCT = 3.0            # Distancia del trailing
 
 DEFAULT_OPTIMIZE_EXITS = True
 
-DEFAULT_EXIT_SL_PCT_RANGE = (10.0, 36.0, 2.0)
-DEFAULT_EXIT_TP_PCT_RANGE = (10.0, 40.0, 2.0)
-DEFAULT_EXIT_TRAIL_ACT_PCT_RANGE = (10.0, 28.0, 1.0)
-DEFAULT_EXIT_TRAIL_DIST_PCT_RANGE = (2.0, 8.0, 0.5)
+DEFAULT_EXIT_SL_PCT_RANGE = (20.0, 50.0, 1.0)
+DEFAULT_EXIT_TP_PCT_RANGE = (55.0, 55.0, 1.0)
+DEFAULT_EXIT_TRAIL_ACT_PCT_RANGE = (15.0, 50.0, 1.0)
+DEFAULT_EXIT_TRAIL_DIST_PCT_RANGE = (5.0, 15.0, 1.0)
 
 
 # =============================================================================
@@ -260,10 +260,16 @@ def _normalize_exit_values(
     trail_act_pct = abs(trail_act_pct) if trail_act_pct != 0 else 0.5
     trail_dist_pct = abs(trail_dist_pct) if trail_dist_pct != 0 else 0.25
 
-    # LIMITAR DISTANCIA DEL TRAILING
-    max_dist = max(0.0, trail_act_pct / 2.0)
-    if max_dist > 0:
-        trail_dist_pct = min(trail_dist_pct, max_dist)
+    # LÓGICA DE SWAP ROBUSTA (Mismo concepto que ZLEMA Fast/Slow)
+    # Si el optimizador saca una distancia mayor que la activación, se intercambian
+    if trail_dist_pct >= trail_act_pct:
+        temp = trail_act_pct
+        trail_act_pct = trail_dist_pct
+        trail_dist_pct = temp
+
+    # Caso borde: si por algún motivo bizarro son idénticos, subimos un poco la activación
+    if trail_act_pct == trail_dist_pct:
+        trail_act_pct += 0.5
 
     return float(sl_pct), float(tp_pct), float(trail_act_pct), float(trail_dist_pct)
 

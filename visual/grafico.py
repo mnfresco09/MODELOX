@@ -2154,7 +2154,7 @@ def plot_trades(
             
     # Clean filename
     clean_combo = "".join(c for c in str(combo) if c.isalnum() or c in ('_','-'))
-    filename = f"TRIAL {trial_number}.html"
+    filename = f"TRIAL {trial_number} - {int(score)}.html"
     filepath = os.path.join(plot_base, filename)
     
     # Try using metric get helper or safe get

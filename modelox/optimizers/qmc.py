@@ -66,6 +66,7 @@ import optuna
 import polars as pl
 from optuna.exceptions import ExperimentalWarning
 from optuna.samplers import QMCSampler
+from .storage import resolve_storage_for_strategy
 
 if TYPE_CHECKING:
     pass
@@ -253,111 +254,108 @@ class QMCScorer:
         metrics: Mapping[str, Any],
         returns: Optional[np.ndarray] = None,
         equity_curve: Optional[np.ndarray] = None,
+        trades_pnl: Optional[np.ndarray] = None,
+        total_days: Optional[float] = None,
     ) -> float:
         """
-        CALCULA UN SCORE INFORMATIVO PARA REGISTRO.
+        SCORING QMC — Fórmula única (misma que Hybrid).
+        INFORMATIVO — no guía la búsqueda QMC.
         
-        ⚠ IMPORTANTE: Este score NO influye en el muestreo QMC.
-        La secuencia Sobol determina los puntos a priori.
-        El score solo sirve para IDENTIFICAR las mejores combinaciones
-        después de que termina la exploración.
+        Fórmula:
+            Score = (Esperanza / (Max_Racha_Perdedora + 1)) × R² × P_lineal(x)
         
-        ARGS:
-            trial: Objeto optuna.Trial (para guardar atributos de debug)
-            metrics: Diccionario con métricas del backtest
-            returns: Array de retornos (no usado en QMC, presente por interfaz)
-            equity_curve: Curva de equity (no usado en QMC, presente por interfaz)
-        
-        RETURNS:
-            Score informativo en rango [SCORE_MIN, SCORE_MAX]
+        Donde:
+            Esperanza = Beneficio Neto Total / N trades
+                        (amortiguado si n_trades < 10)
+            R²        = Coef. determinación de capital acumulado vs nº trade
+            P_lineal  = min(1, trades_per_day / 0.5)
         """
-        cfg = self.config
-        
-        # =================================================================
-        # EXTRAER MÉTRICAS
-        # =================================================================
-        sharpe = self._safe_get(metrics, "sharpe", 0.0)
-        if sharpe == 0:
-            sharpe = self._safe_get(metrics, "sharpe_ratio", 0.0)
-        
-        sqn = self._safe_get(metrics, "sqn", 0.0)
-        roi = self._safe_get(metrics, "roi", 0.0)
-        
-        drawdown = self._safe_get(metrics, "drawdown", 50.0)
-        if drawdown == 0:
-            drawdown = self._safe_get(metrics, "max_drawdown", 50.0)
-        
-        n_trades = int(self._safe_get(metrics, "n_trades", 0))
-        if n_trades == 0:
-            n_trades = int(self._safe_get(metrics, "total_trades", 0))
-        
-        # =================================================================
-        # VERIFICACIÓN MÍNIMA (MUY PERMISIVA)
-        # =================================================================
-        if n_trades < cfg.MIN_TRADES_FOR_VALID:
-            if trial is not None:
-                try:
-                    trial.set_user_attr('score_reason', 'insufficient_trades')
-                    trial.set_user_attr('qmc_mode', 'coverage')
-                except Exception:
-                    pass
-            return cfg.SCORE_MIN
-        
-        # FILTRO: trades/día mínimo — estrategias que apenas operan = score 0
-        trades_per_day = self._safe_get(metrics, "trades_por_dia", 0.0)
-        if trades_per_day < cfg.MIN_TRADES_PER_DAY:
-            if trial is not None:
-                try:
-                    trial.set_user_attr('score_reason', f'low_trades_per_day_{trades_per_day:.3f}')
-                    trial.set_user_attr('qmc_mode', 'coverage')
-                except Exception:
-                    pass
+        # ── 1. Extracción y validación de datos ────────────────────────
+        if trades_pnl is None:
+            raw = metrics.get("_trades_pnl_array", None)
+            if raw is not None:
+                trades_pnl = np.asarray(raw, dtype=np.float64)
+
+        if trades_pnl is None or trades_pnl.size == 0:
             return 0.0
-        
-        # =================================================================
-        # NORMALIZAR MÉTRICAS
-        # =================================================================
-        norm_sharpe = self._normalize_sharpe(sharpe)
-        norm_sqn = self._normalize_sqn(sqn)
-        norm_roi = self._normalize_roi(roi)
-        norm_dd = self._penalize_drawdown(drawdown)
-        norm_trades = self._normalize_trades(n_trades)
-        
-        # =================================================================
-        # CALCULAR SCORE PONDERADO (INFORMATIVO)
-        # =================================================================
-        weighted_sum = (
-            cfg.WEIGHT_SHARPE * norm_sharpe +
-            cfg.WEIGHT_SQN * norm_sqn +
-            cfg.WEIGHT_ROI * norm_roi +
-            cfg.WEIGHT_DRAWDOWN * norm_dd +
-            cfg.WEIGHT_TRADES * norm_trades
-        )
-        
-        # =================================================================
-        # ESCALAR A RANGO FINAL
-        # =================================================================
-        score_range = cfg.SCORE_MAX - cfg.SCORE_MIN
-        final_score = cfg.SCORE_MIN + score_range * weighted_sum
-        
-        # =================================================================
-        # GUARDAR ATRIBUTOS PARA AUDITORÍA
-        # =================================================================
+
+        if total_days is None or total_days <= 0.0:
+            td = self._safe_get(metrics, "_total_days", 0.0)
+            if td <= 0.0:
+                tpd = self._safe_get(metrics, "trades_por_dia", 0.0)
+                n_t = int(self._safe_get(metrics, "n_trades", 0))
+                if n_t == 0:
+                    n_t = int(self._safe_get(metrics, "total_trades", 0))
+                td = float(n_t) / tpd if tpd > 0 else 1.0
+            total_days = td
+
+        n_trades = len(trades_pnl)
+        if n_trades == 0 or total_days <= 0.0:
+            return 0.0
+
+        # ── 2. Cálculos Matemáticos Core ───────────────────────────────
+
+        # A. Esperanza = Beneficio Neto Total / N trades
+        #    Con amortiguación para pocos trades (< 10)
+        MIN_TRADES_FOR_RELIABLE = 10
+        esperanza_raw = float(np.sum(trades_pnl)) / n_trades
+        if n_trades < MIN_TRADES_FOR_RELIABLE:
+            trade_factor = n_trades / MIN_TRADES_FOR_RELIABLE
+            esperanza = esperanza_raw * trade_factor
+        else:
+            esperanza = esperanza_raw
+
+        # B. Racha Perdedora máxima (Vectorizada)
+        es_negativo = (trades_pnl < 0).astype(int)
+        padded = np.pad(es_negativo, (1, 1), 'constant', constant_values=0)
+        diffs = np.diff(padded)
+        starts = np.where(diffs == 1)[0]
+        ends = np.where(diffs == -1)[0]
+        max_racha = float(np.max(ends - starts)) if len(starts) > 0 else 0.0
+
+        # C. R² (Estabilidad de la curva de capital)
+        #    Eje X = Número de trade (1, 2, 3, ...)
+        #    Eje Y = Capital acumulado (cumsum de PnL por trade)
+        if n_trades > 1:
+            x = np.arange(1, n_trades + 1)
+            y = np.cumsum(trades_pnl)
+            if np.std(y) == 0:
+                r_squared = 0.0
+            else:
+                correlacion = np.corrcoef(x, y)[0, 1]
+                r_squared = float(correlacion**2) if not np.isnan(correlacion) else 0.0
+        else:
+            r_squared = 0.0
+
+        # D. Penalización Lineal — P_lineal(x)
+        #    Si x >= 0.5 → 1.0; Si x < 0.5 → x / 0.5
+        trades_per_day = n_trades / total_days
+        target_tpd = 0.5
+        p_lineal = min(1.0, trades_per_day / target_tpd) if target_tpd > 0 else 1.0
+
+        # ── 3. Fórmula Final ───────────────────────────────────────────
+        #    Score = (Esperanza / (Max_Racha_Perdedora + 1)) × R² × P_lineal × 100
+        final_score = (esperanza / (max_racha + 1.0)) * r_squared * p_lineal * 100.0
+
+        # ── SEGURO: proteger contra NaN / Inf por edge cases numéricos ──
+        if not math.isfinite(final_score):
+            final_score = 0.0
+
+        # ── 4. Auditoría en Optuna ─────────────────────────────────────
         if trial is not None:
             try:
                 trial.set_user_attr('qmc_mode', 'coverage')
-                trial.set_user_attr('norm_sharpe', float(norm_sharpe))
-                trial.set_user_attr('norm_sqn', float(norm_sqn))
-                trial.set_user_attr('norm_roi', float(norm_roi))
-                trial.set_user_attr('norm_dd', float(norm_dd))
-                trial.set_user_attr('norm_trades', float(norm_trades))
-                trial.set_user_attr('weighted_sum', float(weighted_sum))
-                trial.set_user_attr('sr_nominal', float(sharpe))
+                trial.set_user_attr('final_score', float(final_score))
+                trial.set_user_attr('esperanza', float(esperanza))
+                trial.set_user_attr('esperanza_raw', float(esperanza_raw))
+                trial.set_user_attr('max_racha', float(max_racha))
+                trial.set_user_attr('r_squared', float(r_squared))
+                trial.set_user_attr('p_lineal', float(p_lineal))
+                trial.set_user_attr('n_trades', int(n_trades))
             except Exception:
                 pass
-        
-        # GARANTIZAR RANGO
-        return float(max(cfg.SCORE_MIN, min(cfg.SCORE_MAX, final_score)))
+
+        return float(final_score)
 
 
 # =============================================================================
@@ -394,7 +392,7 @@ class QMCOptimizerConfig:
     SEED: Optional[int] = None           # SEMILLA PARA REPRODUCIBILIDAD
                                           # (None = secuencia diferente cada vez)
     N_JOBS: int = 1                       # WORKERS PARALELOS
-    STORAGE: Optional[str] = None         # NONE = EJECUCIÓN EN RAM
+    CREATE_DATABASE: bool = True          # True = crear SQLite por estrategia (IDx.db)
     STUDY_NAME_PREFIX: str = "MODELOX"    # PREFIJO PARA NOMBRES DE ESTUDIO
     
     # =========================================================================
@@ -480,7 +478,7 @@ class QMCOptimizer:
     # [4.1] CREAR ESTUDIO OPTUNA
     # =========================================================================
     
-    def _create_study(self, strategy_name: str) -> optuna.Study:
+    def _create_study(self, strategy_name: str, strategy_id: Optional[int] = None) -> optuna.Study:
         """
         CREA UN ESTUDIO OPTUNA CON SAMPLER QMC (SOBOL).
         
@@ -507,12 +505,17 @@ class QMCOptimizer:
             warn_asynchronous_seeding=cfg.WARN_ASYNCHRONOUS_SEEDING,
         )
         
+        storage = resolve_storage_for_strategy(
+            create_database=bool(cfg.CREATE_DATABASE),
+            strategy_id=strategy_id,
+        )
+
         # CREAR ESTUDIO
         study = optuna.create_study(
             direction="maximize",
             sampler=sampler,
             study_name=study_name,
-            storage=cfg.STORAGE,
+            storage=storage,
             load_if_exists=False,
         )
         
@@ -571,7 +574,8 @@ class QMCOptimizer:
         
         # TIMEFRAMES
         entry_tf = normalize_timeframe_to_suffix(getattr(strategy, "timeframe_entry", None) or base_tf)
-        exit_tf = normalize_timeframe_to_suffix(getattr(strategy, "timeframe_exit", None) or base_tf)
+        # FORZAR salidas SIEMPRE en 1m para máxima precisión (SL/TP/Trailing)
+        exit_tf = "1m"
         
         params_rt["__timeframe_base"] = base_tf
         params_rt["__timeframe_entry"] = entry_tf
@@ -623,11 +627,31 @@ class QMCOptimizer:
             
             trial.set_user_attr("metricas", metrics)
             
+            # Extraer pnl_neto array y total_days para score_universal
+            if isinstance(trades_df, pl.DataFrame):
+                _pnl_arr = trades_df["pnl_neto"].to_numpy().astype(np.float64)
+            else:
+                _pnl_arr = trades_df["pnl_neto"].to_numpy(dtype=np.float64)
+            
+            _total_days = 0.0
+            if "timestamp" in df_entry.columns and len(df_entry) > 0:
+                try:
+                    _ts0 = df_entry["timestamp"][0]
+                    _ts1 = df_entry["timestamp"][-1]
+                    _delta = pl.DataFrame({"s": [_ts0], "e": [_ts1]}).select(
+                        ((pl.col("e") - pl.col("s")).dt.total_seconds() / 86400.0).alias("d")
+                    )
+                    _total_days = max(1.0, float(_delta["d"][0]))
+                except Exception:
+                    _total_days = 1.0
+            
             # CALCULAR SCORE (INFORMATIVO — NO GUÍA LA BÚSQUEDA)
             score = self._scorer.compute_score(
                 trial=trial,
                 metrics=metrics,
                 equity_curve=np.array(equity_curve) if equity_curve else None,
+                trades_pnl=_pnl_arr,
+                total_days=_total_days,
             )
             
             # CREAR ARTIFACTS
@@ -686,7 +710,10 @@ class QMCOptimizer:
         df_base = df_map.get(base_tf, df)
         
         # CREAR ESTUDIO CON SAMPLER QMC
-        study = self._create_study(strategy.name)
+        study = self._create_study(
+            strategy.name,
+            strategy_id=getattr(strategy, "combinacion_id", None),
+        )
         
         # CREAR OBJETIVO
         objective = self._create_objective(df_base, df_map, strategy, base_tf)
@@ -732,9 +759,11 @@ def _slug(s: str) -> str:
 
 def create_qmc_study(
     strategy_name: str,
+    strategy_id: Optional[int] = None,
     activo: Optional[str] = None,
     seed: Optional[int] = None,
     study_name_prefix: str = "MODELOX",
+    create_database: bool = True,
     storage: Optional[str] = None,
     scramble: bool = True,
 ) -> optuna.Study:
@@ -752,7 +781,8 @@ def create_qmc_study(
         activo: Nombre del activo (opcional)
         seed: Semilla aleatoria (None = diferente cada vez)
         study_name_prefix: Prefijo para el nombre del estudio
-        storage: URI de almacenamiento (None = RAM)
+        create_database: True para usar SQLite por estrategia (IDx.db)
+        storage: URI de almacenamiento (si se pasa, tiene prioridad)
         scramble: Scramble de secuencia Sobol (recomendado True)
     
     Returns:
@@ -772,6 +802,12 @@ def create_qmc_study(
         warn_asynchronous_seeding=False,
     )
     
+    if storage is None:
+        storage = resolve_storage_for_strategy(
+            create_database=create_database,
+            strategy_id=strategy_id,
+        )
+
     # Crear estudio
     study = optuna.create_study(
         direction="maximize",
@@ -788,6 +824,8 @@ def score_qmc(
     metrics: Mapping[str, Any],
     trial: Optional[optuna.Trial] = None,
     equity_curve: Optional[List[float]] = None,
+    trades_pnl: Optional[np.ndarray] = None,
+    total_days: Optional[float] = None,
 ) -> float:
     """
     FUNCIÓN DE SCORING QMC STANDALONE (INFORMATIVO).
@@ -803,6 +841,8 @@ def score_qmc(
         trial=trial,
         metrics=metrics,
         equity_curve=np.array(equity_curve) if equity_curve else None,
+        trades_pnl=trades_pnl,
+        total_days=total_days,
     )
 
 

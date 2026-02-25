@@ -63,6 +63,35 @@ METRICS_ORDER = [
     "PROFIT_FACTOR", "ROI_PCT", "WINRATE_PCT", "MAX_DD_PCT",
     "SHARPE", "SQN", "EXPECTATIVA"
 ]
+
+# Alias y métricas extra para detectar correctamente columnas de métricas
+# que llegan con variantes de nombre desde metrics.py/reporting.
+METRIC_ALIASES_TO_CANONICAL = {
+    "ROI": "ROI_PCT",
+    "ROI%": "ROI_PCT",
+    "RETURN": "ROI_PCT",
+    "RETURN%": "ROI_PCT",
+    "RETURN_PCT": "ROI_PCT",
+    "WINRATE": "WINRATE_PCT",
+    "WIN_RATE": "WINRATE_PCT",
+    "WIN_RATE_PCT": "WINRATE_PCT",
+    "MAX_DRAWDOWN": "MAX_DD_PCT",
+    "MAX_DRAWDOWN_PCT": "MAX_DD_PCT",
+    "DD": "MAX_DD_PCT",
+    "DD_PCT": "MAX_DD_PCT",
+    "DRAWDOWN": "MAX_DD_PCT",
+    "N_TRADES": "TOTAL_TRADES",
+    "NUM_TRADES": "TOTAL_TRADES",
+    "COUNT_TRADES": "TOTAL_TRADES",
+    "TRADES_POR_DIA": "TRADES_DIA",
+}
+
+EXTRA_METRICS_ORDER = [
+    "SORTINO", "CALMAR", "PAYOFF_RATIO", "NET_PNL", "PNL_NETO",
+    "SALDO_ACTUAL", "SALDO_MAX", "SALDO_MIN", "COMISIONES_TOTAL",
+]
+
+ALL_METRICS_ORDER = METRICS_ORDER + [m for m in EXTRA_METRICS_ORDER if m not in METRICS_ORDER]
 ID_COLS = ["TRIAL", "ESTRATEGIA", "SCORE"]
 
 EXCLUDED_PARAMS = {
@@ -269,7 +298,7 @@ class ExcelReporter:
         apal  = candidate['params'].get('__apalancamiento_max') or 0
         vol   = saldo * apal
 
-        filename = f"TRIAL {candidate['trial_number']}.xlsx"
+        filename = f"TRIAL {candidate['trial_number']} - {int(candidate['score'])}.xlsx"
         filepath = os.path.join(trades_dir, filename)
 
         try:
@@ -300,7 +329,7 @@ def _preparar_df_trades(df_trades: pd.DataFrame, exit_type: str = "") -> pd.Data
     cols_to_drop = [
         "ENTRY_IDX", "EXIT_IDX", "SIDE_INT", "entry_idx", "exit_idx", "side_int",
         "BALANCE_PRE", "TRAIL_ACT_IDX", "trail_act_idx",
-        "ROI", "SALDO", "VOLUMEN", "APALANCAMIENTO", "CANTIDAD"
+        "ROI", "SALDO", "VOLUMEN", "APALANCAMIENTO"
     ]
     df.drop(columns=[c for c in cols_to_drop if c in df.columns], inplace=True)
 
@@ -316,7 +345,7 @@ def _preparar_df_trades(df_trades: pd.DataFrame, exit_type: str = "") -> pd.Data
 
     order = [
         "ENTRY_TIME", "ENTRY_PRICE", "TRAIL_ACT_PRICE", "TRAIL_ACT_TIME",
-        "EXIT_TIME", "EXIT_PRICE", "POSICIÓN", "EXIT_REASON",
+        "EXIT_TIME", "EXIT_PRICE", "POSICIÓN", "EXIT_REASON", "CANTIDAD",
         "PNL BRUTO", "COMISIONES", "PNL NETO", "BALANCE"
     ]
     
@@ -748,8 +777,8 @@ def convertir_resumen_csv_a_excel(
     timeframe = timeframe or "UNKNOWN"
 
     df = pd.read_csv(csv_path)
-    df = _normalizar_nombres(df, strategy_name)
-    df_final, cols_metrics, cols_params = _organizar_y_filtrar_columnas(df)
+    df, known_param_names = _normalizar_nombres(df, strategy_name)
+    df_final, cols_metrics, cols_params = _organizar_y_filtrar_columnas(df, known_param_names)
     df_final = _ordenar_filas(df_final)
 
     final_excel_path = _generar_nombre_archivo(csv_path, output_dir, str(activo), strategy_name, str(timeframe))
@@ -783,9 +812,40 @@ def convertir_resumen_csv_a_excel(
 # LÓGICA DE PROCESAMIENTO
 # ==============================================================================
 
-def _normalizar_nombres(df: pd.DataFrame, strategy_name: str) -> pd.DataFrame:
+def _normalizar_nombres(df: pd.DataFrame, strategy_name: str) -> tuple:
+    """
+    Normaliza nombres de columnas y detecta cuáles son parámetros de estrategia.
+
+    DETECCIÓN ROBUSTA DE PARÁMETROS:
+    ================================
+    En el CSV intermedio, los parámetros de la estrategia se guardan con el
+    prefijo 'PARAM_' (ej: PARAM_OLS_WINDOW, PARAM_EXIT_SL_PCT). Usamos
+    este prefijo como FUENTE DE VERDAD para saber qué es un parámetro,
+    en lugar de depender de heurísticas de keywords que fallan con nuevas
+    estrategias.
+
+    Returns:
+        tuple: (df_normalizado, known_param_names) donde known_param_names
+               es un set con los nombres limpios de las columnas que
+               originalmente tenían prefijo PARAM_.
+    """
     df.columns = [str(c).upper().strip() for c in df.columns]
 
+    # ── FASE 1: Registrar columnas que vienen con prefijo PARAM_ ──────────
+    # Estas son DEFINITIVAMENTE parámetros de la estrategia.
+    # Guardamos el nombre limpio (sin prefijo) para usarlo después.
+    _PARAM_PREFIXES = ("PARAM_", "PARAMS_", "ESTRATEGIA_PARAMS_", "STRATEGY_PARAMS_")
+    known_param_names: set = set()
+    for col in df.columns:
+        for pfx in _PARAM_PREFIXES:
+            if col.startswith(pfx):
+                clean_name = col[len(pfx):]
+                # Excluir params internos (__activo, __saldo, etc.)
+                if not clean_name.startswith("_"):
+                    known_param_names.add(clean_name)
+                break
+
+    # ── FASE 2: Renombrado estándar de métricas y columnas conocidas ──────
     rename_map = {
         "STRATEGY": "ESTRATEGIA", "SHARPE_RATIO": "SHARPE", "TRADES_POR_DIA": "TRADES_DIA",
         "N_TRADES": "TOTAL_TRADES", "NUM_TRADES": "TOTAL_TRADES", "COUNT_TRADES": "TOTAL_TRADES",
@@ -818,26 +878,86 @@ def _normalizar_nombres(df: pd.DataFrame, strategy_name: str) -> pd.DataFrame:
     if "TRIAL" not in df.columns and df.index.name != "TRIAL":
         df.insert(0, "TRIAL", range(len(df)))
 
+    # ── FASE 3: Limpiar prefijos y normalizar nombres ─────────────────────
+    # Mantenemos un mapeo old_name → clean_name para actualizar known_param_names
+    def _canon_metric(col_name: str) -> str:
+        return METRIC_ALIASES_TO_CANONICAL.get(col_name, col_name)
+
     new_cols = []
+    updated_param_names: set = set()
     for col in df.columns:
         if col in METRICS_ORDER or col in ID_COLS or col in {"SL", "TP", "ACT", "DIST"}:
+            # SL/TP/ACT/DIST son parámetros de salida conocidos, marcarlos
+            if col in {"SL", "TP", "ACT", "DIST"}:
+                updated_param_names.add(col)
             new_cols.append(col)
             continue
+
         clean = col
+        was_param = False
         for p in PREFIXES_TO_CLEAN:
             if clean.startswith(p):
+                # Si tenía prefijo de parámetro, marcarlo
+                if p in ("PARAM_", "PARAMS_", "ESTRATEGIA_PARAMS_", "STRATEGY_PARAMS_"):
+                    was_param = True
                 clean = clean[len(p):]
-        new_cols.append(clean.replace("_PCT", "%").replace("PERCENTAGE", "%"))
+
+        # Excluir params internos del sistema (__, doble guión bajo)
+        if clean.startswith("_"):
+            # Son params internos (__activo, __saldo, etc.), no mostrar
+            new_cols.append(clean)
+            continue
+
+        # Aplicar rename_map DESPUÉS de limpiar prefijos para atrapar
+        # casos como PARAM_EXIT_SL_PCT → (strip PARAM_) → EXIT_SL_PCT → SL
+        if clean in rename_map:
+            clean = rename_map[clean]
+        clean = clean.replace("_PCT", "%").replace("PERCENTAGE", "%")
+        clean = _canon_metric(clean)
+
+        # Si el nombre original (sin limpiar prefijo) estaba en known_param_names,
+        # o si fue detectado por tener prefijo PARAM_, marcar el nombre limpio
+        original_without_prefix = col
+        for pfx in _PARAM_PREFIXES:
+            if original_without_prefix.startswith(pfx):
+                original_without_prefix = original_without_prefix[len(pfx):]
+                break
+        if was_param or original_without_prefix in known_param_names:
+            updated_param_names.add(clean)
+
+        new_cols.append(clean)
+
     df.columns = new_cols
-    return df
+
+    if df.columns.duplicated().any():
+        df = df.loc[:, ~df.columns.duplicated()]
+
+    return df, updated_param_names
 
 
-def _organizar_y_filtrar_columnas(df: pd.DataFrame):
+def _organizar_y_filtrar_columnas(df: pd.DataFrame, known_param_names: set = None):
+    """
+    Organiza columnas en: ID | MÉTRICAS | PARÁMETROS.
+
+    DETECCIÓN ROBUSTA:
+    ==================
+    1. PRIORIDAD 1 — known_param_names: Columnas que vinieron con prefijo PARAM_
+       en el CSV original. Estas son DEFINITIVAMENTE parámetros, sin importar
+       su nombre. Esto garantiza que cualquier parámetro de cualquier estrategia
+       nueva sea detectado correctamente.
+
+    2. PRIORIDAD 2 — Fallback heurístico: Para columnas que no están en
+       known_param_names (ej: datos legacy sin prefijo), se usa la heurística
+       de keywords existente como respaldo.
+    """
+    if known_param_names is None:
+        known_param_names = set()
+
     cols = list(df.columns)
     current_ids = [c for c in ID_COLS if c in cols]
 
     current_metrics = []
-    for m in METRICS_ORDER:
+    for m in ALL_METRICS_ORDER:
         for t in [m, m.replace("_PCT", "%")]:
             if t in cols:
                 current_metrics.append(t)
@@ -848,15 +968,22 @@ def _organizar_y_filtrar_columnas(df: pd.DataFrame):
     candidates = [c for c in cols if c not in excluded]
 
     exit_cols = {"SL", "TP", "ACT", "DIST"}
-    has_trailing_data = False
-    for t_col in ["ACT", "DIST"]:
-        if t_col in df.columns:
-            try:
-                if (pd.to_numeric(df[t_col], errors='coerce').fillna(0) > 0).any():
-                    has_trailing_data = True; break
-            except Exception:
-                pass
 
+    # Determinar si es TRAILING o FIXED
+    is_trailing = False
+    exit_col_name = next((c for c in df.columns if str(c).upper() in ["EXIT_TYPE", "PARAM_EXIT_TYPE", "PARAM_EXIT_TYPE"]), None)
+    if exit_col_name:
+        is_trailing = df[exit_col_name].astype(str).str.contains("TRAIL", case=False).any()
+    else:
+        for t_col in ["ACT", "DIST"]:
+            if t_col in df.columns:
+                try:
+                    if (pd.to_numeric(df[t_col], errors='coerce').fillna(0) > 0).any():
+                        is_trailing = True; break
+                except Exception:
+                    pass
+
+    # ── Clasificación de parámetros con doble vía ─────────────────────────
     very_bad = {"PROFIT", "WIN", "SALDO", "BALANCE", "DRAWDOWN", "DD",
                 "ROI", "RETORNO", "NUM_", "COUNT", "TRADES", "RESULT", "METRIC"}
     exceptions = {"STOP", "SL", "TP", "TRAIL", "TIME", "PERIOD", "LEN", "FAST",
@@ -864,14 +991,28 @@ def _organizar_y_filtrar_columnas(df: pd.DataFrame):
 
     current_params = []
     for c in candidates:
-        if df[c].astype(str).str.strip().eq("").all() or c.startswith("__"):
+        # Saltar columnas vacías o internas del sistema
+        if df[c].astype(str).str.strip().eq("").all() or c.startswith("_"):
             continue
         if c in EXCLUDED_PARAMS or c.replace("%", "_PCT") in EXCLUDED_PARAMS:
             continue
-        if c in exit_cols:
-            if c in {"ACT", "DIST"} and not has_trailing_data:
+
+        # ── VÍA 1: ¿Está en known_param_names? → ES PARÁMETRO (definitivo) ──
+        if c in known_param_names:
+            # Respetar lógica de trailing para ACT/DIST
+            if c in {"ACT", "DIST"} and not is_trailing:
                 continue
-            current_params.append(c); continue
+            current_params.append(c)
+            continue
+
+        # ── VÍA 2: Exit cols conocidas ───────────────────────────────────────
+        if c in exit_cols:
+            if c in {"ACT", "DIST"} and not is_trailing:
+                continue
+            current_params.append(c)
+            continue
+
+        # ── VÍA 3: Fallback heurístico (para datos legacy sin prefijo) ──────
         c_upper = c.upper()
         is_garbage = False
         for kw in METRIC_KEYWORDS_TO_DROP:

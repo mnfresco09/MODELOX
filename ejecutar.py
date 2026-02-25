@@ -115,6 +115,7 @@ from modelox.core.runner import (
     OptimizationRunner, OptunaConfig,
     run_single_exit_type,
 )
+from modelox.optimizers.storage import organize_root_database_files
 from modelox.core.types import (
     BacktestConfig,
     filter_by_date,
@@ -144,6 +145,17 @@ def main() -> None:
     4. Ejecutar optimización por tipo de salida
     5. Limpiar recursos
     """
+    # -------------------------------------------------------------------------
+    # 5.0 ORGANIZAR BASES DE DATOS EN CARPETA CENTRAL DATABASE
+    # -------------------------------------------------------------------------
+    try:
+        moved = organize_root_database_files(base_dir=str(_PROJECT_ROOT))
+        if moved > 0:
+            print(f"📁 DATABASE: se movieron {moved} archivo(s) .db a la carpeta DATABASE/")
+    except Exception:
+        # Nunca bloquear la ejecución principal por esta organización.
+        pass
+
     # -------------------------------------------------------------------------
     # 5.1 CONFIGURAR LIMPIEZA AL CIERRE
     # -------------------------------------------------------------------------
@@ -336,14 +348,23 @@ def main() -> None:
                 # -------------------------------------------------------------
                 # ITERAR POR ESTRATEGIAS
                 # -------------------------------------------------------------
-                loop_ids = strategy_ids if strategy_ids else [None]
-                
-                for sid in loop_ids:
-                    strategies = instantiate_strategies(only_id=sid if sid else None)
-                    if not strategies:
-                        continue
+                # Si strategy_ids es None (COMBINACION_A_EJECUTAR="all"), instantiate_strategies(None)
+                # ya devuelve TODAS las estrategias. No hace falta iterar con [None].
+                if strategy_ids:
+                    # Caso: IDs específicos o un solo ID
+                    all_strategies = []
+                    for sid in strategy_ids:
+                        found = instantiate_strategies(only_id=sid)
+                        if found:
+                            all_strategies.extend(found)
+                else:
+                    # Caso: todas las estrategias ("all" o None)
+                    all_strategies = instantiate_strategies(only_id=None)
 
-                    for strat in strategies:
+                if not all_strategies:
+                    continue
+
+                for strat in all_strategies:
                         s_name = getattr(strat, 'name', "STRAT")
                         s_safe = re.sub(r"[^A-Z0-9_]+", "_", s_name.upper())
 

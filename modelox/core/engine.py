@@ -510,8 +510,11 @@ def _simulate_trades_with_1m_exits(
     for i in range(n_entries):
         entry_idx_tf = entry_indices[i]  # Índice en el TF de entrada
         
-        # Convertir a índice en 1m (inicio de la vela del TF)
-        entry_idx_1m = entry_idx_tf * tf_ratio
+        # Convertir a índice en 1m (inicio de la vela del TF) usando timestamps para evitar desfases
+        entry_ts = entry_timestamps[entry_idx_tf]
+        entry_idx_1m = int(np.searchsorted(timestamps_1m, entry_ts))
+        if entry_idx_1m >= n_bars_1m:
+            entry_idx_1m = n_bars_1m - 1
         
         # Skip si la entrada está antes de la salida del trade anterior
         if entry_idx_1m <= last_exit_idx_1m:
@@ -555,8 +558,14 @@ def _simulate_trades_with_1m_exits(
         # Calcular límite de búsqueda en 1m
         # time_stop_bars está en barras del TF de entrada
         search_limit_1m = n_bars_1m
+        limit_1m = n_bars_1m
         if time_stop_bars > 0:
-            limit_1m = entry_idx_1m + (time_stop_bars * tf_ratio) + 1
+            limit_tf = entry_idx_tf + time_stop_bars
+            if limit_tf < len(entry_timestamps):
+                limit_ts = entry_timestamps[limit_tf]
+                limit_1m_idx = int(np.searchsorted(timestamps_1m, limit_ts))
+                limit_1m = limit_1m_idx + 1
+                
             if limit_1m < search_limit_1m:
                 search_limit_1m = limit_1m
         
@@ -662,7 +671,7 @@ def _simulate_trades_with_1m_exits(
         
         # Time stop fallback
         if exit_idx_1m == -1 and time_stop_bars > 0:
-            final_idx_1m = entry_idx_1m + (time_stop_bars * tf_ratio)
+            final_idx_1m = limit_1m - 1
             if final_idx_1m >= n_bars_1m:
                 final_idx_1m = n_bars_1m - 1
             if final_idx_1m > entry_idx_1m:
@@ -1083,15 +1092,18 @@ def calculate_performance_vectorized_numba(
     # =========================================================================
     # 3) Decidir si usar salidas en 1m
     # =========================================================================
-    use_1m_exits = (df_1m is not None and timeframe_minutes > 1)
+    # SIEMPRE usar salidas en 1m si los datos están disponibles, incluso si el TF de entrada es 1m.
+    # Esto asegura consistencia y permite usar el kernel _simulate_trades_with_1m_exits
+    # que soporta el flujo unificado.
+    use_1m_exits = (df_1m is not None)
     
     if use_1m_exits:
         # Usar kernel con salidas en 1m
         c_1m = df_1m["close"].to_numpy()
         h_1m = df_1m["high"].to_numpy() if "high" in df_1m.columns else c_1m
         l_1m = df_1m["low"].to_numpy() if "low" in df_1m.columns else c_1m
-        ts_1m = df_1m["timestamp"].to_numpy()
-        ts_entry = df["timestamp"].to_numpy()
+        ts_1m = df_1m["timestamp"].to_numpy().view(np.int64)
+        ts_entry = df["timestamp"].to_numpy().view(np.int64)
         
         tf_ratio = timeframe_minutes  # Ratio de velas 1m por vela TF
         
