@@ -67,14 +67,14 @@ FIXED_TP_PCT_RANGE      = (35.0, 55.0, 5.0)
 TRAILING_SL_PCT         = 17.0
 TRAILING_TP_ACT_PCT     = 15.0
 TRAILING_DISTANCE_PCT   = 3.0
-TRAILING_SL_PCT_RANGE   = (30.0,  40.0, 5.0)
-TRAILING_TP_ACT_PCT_RANGE = (30.0, 50.0, 5.0)
-TRAILING_DISTANCE_PCT_RANGE = (5.0, 15.0, 5.0)
+TRAILING_SL_PCT_RANGE   = (20.0,  45.0, 5.0)
+TRAILING_TP_ACT_PCT_RANGE = (25.0, 45.0, 5.0)
+TRAILING_DISTANCE_PCT_RANGE = (2.5, 10.0, 2.5)
 
 
 # ══════════════════════════════════════════════════════════════════
 #  UTILIDADES BÁSICAS
-# ══════════════════════════════════════════════════════════════════
+# ════════════════════════════
 
 def _safe_float(x) -> float:
     try:
@@ -434,6 +434,66 @@ class CollectorReporter:
             self.rows.append(self.best_row)
 
 
+class _ArtifactsWithCombo:
+    """Proxy de artifacts que inyecta saldo_usado/apalancamiento en params.
+
+    Se inyecta en params (no en metrics) para que el CSV los escriba con
+    prefijo 'param_' → el Excel los detecta como known_param_names (VIA 1)
+    y los muestra en la seccion PARAMETROS sin ser filtrados por 'very_bad'.
+    """
+
+    def __init__(self, base, saldo: float, apal: float):
+        self._base = base
+
+        # ── params ────────────────────────────────────────────────────
+        # Nombres elegidos para que NO queden bloqueados por EXCLUDED_PARAMS
+        # de visual/excel.py: "SALDO_USADO" pasa (no es "SALDO"), "APAL" pasa.
+        p = dict(getattr(base, "params", {}) or {})
+        p["saldo_usado"] = saldo
+        p["apal"]        = apal
+        self._params = p
+
+        # ── params_reporting (si existe, inyectar tambien) ────────────
+        pr = getattr(base, "params_reporting", None)
+        if pr is not None:
+            pr = dict(pr)
+            pr["saldo_usado"] = saldo
+            pr["apal"]        = apal
+        self._params_reporting = pr
+
+    def __getattr__(self, name: str):
+        return getattr(self._base, name)
+
+    @property
+    def params(self):
+        return self._params
+
+    @property
+    def params_reporting(self):
+        return self._params_reporting
+
+
+class SweepExcelReporter:
+    """Wrapper sobre ExcelReporter que acumula artifacts de TODOS los combos
+    del barrido y genera los Excel resumen/trial una sola vez al finalizar."""
+
+    def __init__(self, excel_reporter, activo: str):
+        self._reporter = excel_reporter
+        self._activo_override = activo
+
+    def on_trial_end(self, artifacts) -> None:
+        self._reporter.on_trial_end(artifacts)
+
+    def on_strategy_end(self, strategy_name: str, study) -> None:
+        # Suprimir la generación parcial por combo — se hará en finalize()
+        pass
+
+    def finalize(self, strategy_name: str) -> None:
+        """Llamar una sola vez al terminar el barrido completo."""
+        self._reporter._activo = self._activo_override
+        self._reporter.on_strategy_end(strategy_name, None)
+
+
 def _strategy_id_from_config() -> int:
     if isinstance(COMBINACION_A_EJECUTAR, (list, tuple)) and COMBINACION_A_EJECUTAR:
         return int(COMBINACION_A_EJECUTAR[0])
@@ -456,7 +516,8 @@ def _load_base_data():
 
 
 def _run_combo(*, strategy_id, activo, base_tf, df_1m, df_base,
-               saldo_usado, apalancamiento, exit_params) -> Dict[str, Any]:
+               saldo_usado, apalancamiento, exit_params,
+               extra_reporters=None) -> Dict[str, Any]:
     strategy = instantiate_strategies(only_id=strategy_id)[0]
     cfg = BacktestConfig(
         saldo_inicial          = float(CONFIG["SALDO_INICIAL"]),
@@ -479,8 +540,26 @@ def _run_combo(*, strategy_id, activo, base_tf, df_1m, df_base,
     )
     rows: List[Dict[str, Any]] = []
     reporter = CollectorReporter(saldo_usado=float(saldo_usado), apalancamiento=float(apalancamiento), rows=rows)
+
+    # Envolver SweepExcelReporter para inyectar saldo/apal en cada artifacts
+    def _wrap_for_combo(r):
+        if not isinstance(r, SweepExcelReporter):
+            return r
+        _saldo = float(saldo_usado)
+        _apal  = float(apalancamiento)
+
+        class _Proxy:
+            def on_trial_end(self_, arts):
+                r.on_trial_end(_ArtifactsWithCombo(arts, _saldo, _apal))
+
+            def on_strategy_end(self_, name, study):
+                r.on_strategy_end(name, study)
+
+        return _Proxy()
+
+    reporters = [reporter] + [_wrap_for_combo(r) for r in (extra_reporters or [])]
     runner = OptimizationRunner(
-        config=cfg, n_trials=1, reporters=[reporter],
+        config=cfg, n_trials=1, reporters=reporters,
         optuna=OptunaConfig(seed=OPTUNA_SEED, n_jobs=1, create_database=False, sampler=OPTUNA_SAMPLER),
         activo=activo,
     )
@@ -2109,6 +2188,42 @@ def main() -> None:
     rows: List[Dict[str, Any]] = []
     best_rich_score = -float("inf")
 
+    # ── Crear DATABASE/ incondicionalmente al arrancar ───────────────
+    try:
+        from modelox.optimizers.storage import get_database_dir as _gdd
+        _gdd()          # crea DATABASE/ si no existe
+    except Exception:
+        Path("DATABASE").mkdir(parents=True, exist_ok=True)
+
+    # ── Preparar directorios y timestamp antes del loop ──────────────
+    out_dir = Path("resultados") / "BARRIDO_SALDO_APALANCAMIENTO"
+    out_dir.mkdir(parents=True, exist_ok=True)
+    ts = datetime.now().strftime("%Y%m%d_%H%M%S")
+
+    # ── ExcelReporter para resumen/trial (acumula todos los combos) ──
+    _sweep_excel = None
+    try:
+        from visual.excel import ExcelReporter as _ExcelReporter
+
+        class _SweepInnerReporter(_ExcelReporter):
+            """Solicita trades en cada trial para poder generar archivos TRIAL."""
+            def needs_dataframe(self, score: float) -> bool:
+                return True
+
+        _excel_out = out_dir / "excel"
+        _excel_out.mkdir(parents=True, exist_ok=True)
+        _inner_excel = _SweepInnerReporter(
+            resumen_path=str(_excel_out / f"RESUMEN_BARRIDO_{ts}.xlsx"),
+            trades_base_dir=str(_excel_out),
+            max_archivos=5,
+        )
+        _sweep_excel = SweepExcelReporter(_inner_excel, activo=activo)
+    except Exception as _e:
+        print(f"  ⚠ Excel resumen/trial no disponible: {_e}")
+        _sweep_excel = None
+
+    _extra = [_sweep_excel] if _sweep_excel is not None else []
+
     if _RICH_OK:
         resetear_estadisticas()
         mostrar_cabecera_inicio(
@@ -2137,6 +2252,7 @@ def main() -> None:
                                 base_tf=base_tf, df_1m=df_1m, df_base=df_base,
                                 saldo_usado=float(saldo), apalancamiento=float(apal),
                                 exit_params=exit_params,
+                                extra_reporters=_extra,
                             )
                         except Exception as e:
                             row = {
@@ -2206,6 +2322,7 @@ def main() -> None:
                                     base_tf=base_tf, df_1m=df_1m, df_base=df_base,
                                     saldo_usado=float(saldo), apalancamiento=float(apal),
                                     exit_params=exit_params,
+                                    extra_reporters=_extra,
                                 )
                             except Exception as e:
                                 row = {
@@ -2248,6 +2365,7 @@ def main() -> None:
                             base_tf=base_tf, df_1m=df_1m, df_base=df_base,
                             saldo_usado=float(saldo), apalancamiento=float(apal),
                             exit_params=exit_params,
+                            extra_reporters=_extra,
                         )
                     except Exception as e:
                         row = {
@@ -2268,10 +2386,6 @@ def main() -> None:
         "EXIT_TRAIL_ACT_PCT","EXIT_TRAIL_DIST_PCT",
     ])
 
-    out_dir = Path("resultados") / "BARRIDO_SALDO_APALANCAMIENTO"
-    out_dir.mkdir(parents=True, exist_ok=True)
-    ts = datetime.now().strftime("%Y%m%d_%H%M%S")
-
     xlsx_path = out_dir / f"BARRIDO_{ts}.xlsx"
     html_path = out_dir / f"BARRIDO_{ts}.html"
 
@@ -2281,6 +2395,91 @@ def main() -> None:
     _write_html(df, html_path)
     print(f"\n  Excel → {xlsx_path}")
     print(f"  HTML  → {html_path}")
+
+    if _sweep_excel is not None:
+        try:
+            print(f"  Generando Excel resumen/trial...")
+            _sweep_excel.finalize(f"BARRIDO_ID{strategy_id}")
+            print(f"  Excel resumen/trial → {out_dir / 'excel'}")
+        except Exception as _e:
+            print(f"  ⚠ Error generando Excel resumen/trial: {_e}")
+
+    # ── Guardar DB Optuna en DATABASE/ (igual que ejecutar.py) ──────
+    try:
+        import optuna as _optuna
+        import traceback as _tb
+        from optuna.trial import create_trial as _create_trial, TrialState as _TrialState
+        from optuna.distributions import FloatDistribution as _FloatDist
+        from modelox.optimizers.storage import get_database_dir as _get_db_dir
+        import os as _os
+
+        _optuna.logging.set_verbosity(_optuna.logging.WARNING)
+
+        def _nan_to(v, fallback=0.0):
+            f = _safe_float(v)
+            return float(f) if math.isfinite(f) else fallback
+
+        def _fdist(lo, hi):
+            """FloatDistribution segura: evita low >= high."""
+            lo, hi = float(lo), float(hi)
+            return _FloatDist(lo, hi if hi > lo else lo + 1.0)
+
+        # Asegurar DATABASE/ existe (segunda garantía)
+        _db_dir  = _get_db_dir()
+        _db_name = f"BARRIDO_ID{strategy_id}.db"
+        _db_path = _os.path.join(_db_dir, _db_name)
+
+        _study = _optuna.create_study(
+            direction="maximize",
+            study_name=f"BARRIDO_ID{strategy_id}_{ts}",
+            storage=f"sqlite:///{_db_path}",
+            load_if_exists=True,
+        )
+
+        # Distribuciones — toleran listas de un solo valor
+        _dists = {
+            "saldo_usado":         _fdist(min(saldos),         max(saldos)),
+            "apalancamiento":      _fdist(min(apalancamientos), max(apalancamientos)),
+            "exit_sl_pct":         _FloatDist(0.0, 100.0),
+            "exit_tp_pct":         _FloatDist(0.0, 100.0),
+            "exit_trail_act_pct":  _FloatDist(0.0, 100.0),
+            "exit_trail_dist_pct": _FloatDist(0.0, 100.0),
+        }
+
+        _n_ok = 0
+        for _row in rows:
+            try:
+                _score  = _safe_float(_row.get("__score", _row.get("ROI", float("nan"))))
+                _metrics = {k: v for k, v in (_row.get("__metrics", {}) or {}).items()
+                            if isinstance(v, (int, float, str, bool)) or v is None}
+                _is_ok  = math.isfinite(_score)
+
+                _params = {
+                    "saldo_usado":         _nan_to(_row.get("SALDO USADO")),
+                    "apalancamiento":      _nan_to(_row.get("APALANCAMIENTO")),
+                    "exit_sl_pct":         _nan_to(_row.get("EXIT_SL_PCT")),
+                    "exit_tp_pct":         _nan_to(_row.get("EXIT_TP_PCT")),
+                    "exit_trail_act_pct":  _nan_to(_row.get("EXIT_TRAIL_ACT_PCT")),
+                    "exit_trail_dist_pct": _nan_to(_row.get("EXIT_TRAIL_DIST_PCT")),
+                }
+
+                _trial = _create_trial(
+                    params=_params,
+                    distributions=_dists,
+                    value=float(_score) if _is_ok else None,
+                    state=_TrialState.COMPLETE if _is_ok else _TrialState.FAIL,
+                    user_attrs={"metricas": _metrics},
+                )
+                _study.add_trial(_trial)
+                _n_ok += int(_is_ok)
+            except Exception as _re:
+                print(f"  ⚠ Trial omitido: {_re}")
+
+        print(f"  DB  → DATABASE/{_db_name}  ({_n_ok}/{len(rows)} trials OK)")
+    except Exception as _e:
+        print(f"  ⚠ Error DB Optuna: {_e}")
+        _tb.print_exc()
+
     print(f"{'═'*60}\n")
 
 

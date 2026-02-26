@@ -174,7 +174,7 @@ DEFAULT_EXIT_SL_PCT = 30.0                    # Stop Loss
 DEFAULT_EXIT_TP_PCT = 17.0                   # Take Profit
 
 # ─── PARÁMETROS DE TRAILING (% SOBRE STAKE) ─────────────────────────────────
-DEFAULT_EXIT_TRAIL_ACT_PCT = 45.0            # Activación del trailing
+DEFAULT_EXIT_TRAIL_ACT_PCT = 35.0            # Activación del trailing
 DEFAULT_EXIT_TRAIL_DIST_PCT = 5.0            # Distancia del trailing
 
 
@@ -187,7 +187,7 @@ DEFAULT_OPTIMIZE_EXITS = False
 DEFAULT_EXIT_SL_PCT_RANGE = (30.0, 30.0, 1.0)
 DEFAULT_EXIT_TP_PCT_RANGE = (55.0, 55.0, 1.0)
 DEFAULT_EXIT_TRAIL_ACT_PCT_RANGE = (35.0, 60.0, 5.0)
-DEFAULT_EXIT_TRAIL_DIST_PCT_RANGE = (5.0, 10.0, 5.0)
+DEFAULT_EXIT_TRAIL_DIST_PCT_RANGE = (2.0, 10.0, 5.0)
 
 
 # =============================================================================

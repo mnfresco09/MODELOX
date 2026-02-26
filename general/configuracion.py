@@ -46,7 +46,7 @@ from modelox.core.types import normalize_timeframe_to_suffix
 # 1.0 ESTRATEGIAS A EJECUTAR
 # ----------------------------------------------------------------------------
 # Los IDs corresponden a los archivos en  modelox/strategies/
-COMBINACION_A_EJECUTAR = [2]
+COMBINACION_A_EJECUTAR = [19]
 # ----------------------------------------------------------------------------
 # 1.1 SELECCIÓN DE ACTIVOS Y DATOS
 # ----------------------------------------------------------------------------
@@ -90,7 +90,7 @@ FORMATO_DATOS = "feather"
 #   - 500-1000 → búsqueda exhaustiva (muchas horas)
 #   - # QMC E HYBRID (16,32,64,128,256,512,1024,2048,4096,8192,16384,32768)
 
-N_TRIALS = 20
+N_TRIALS = 2
 # OPTUNA_N_JOBS = cuántos cores de CPU usar en paralelo.
 #   -1 = todos los disponibles (recomendado)
 #    1 = secuencial (más lento, menos RAM)
@@ -197,8 +197,8 @@ TIMEFRAMES = [TIMEFRAME_BASE]  # No tocar — se deriva de TIMEFRAME_BASE
 #   NASDAQ   : 2010-11-14 → 2025-12-31
 #   BIST100  : 2024-02-12 → 2026-02-09 (solo 1h)
 #
-FECHA_INICIO = "2018-06-01"
-FECHA_FIN    = "2026-02-01"
+FECHA_INICIO = "2022-01-01"
+FECHA_FIN    = "2025-07-01"
 
 # ── MODO DE USO DEL RANGO ──
 #
@@ -243,7 +243,7 @@ GRAFICA_FECHA_FIN = "2025-02-10"
 #           acumulativo (clipped ±MAX_DRIFT_PCT). Preserva continuidad O/C.
 #   Fase 2: Expande mechas con ruido uniforme positivo. Volumen log-normal.
 #
-ENTRENAMIENTO_ROBUSTO_ACTIVAR = True          # True = activar augmentation por trial
+ENTRENAMIENTO_ROBUSTO_ACTIVAR = False          # True = activar augmentation por trial
 MAX_DRIFT_PCT = 0.15                         # Máx desviación del precio real (±6.7%)
 DRIFT_STEP_VOLATILITY = 0.0050              # Volatilidad del paso browniano por vela
 RUIDO_MECHAS_PCT = 0.10                     # Escala de ruido uniforme para mechas

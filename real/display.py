@@ -570,35 +570,40 @@ def create_live_trading_panel(
             expand=True,
             padding=(0, 1),
         )
-        
-        positions_table.add_column("LADO", justify="left", width=10)
+
+        positions_table.add_column("ACTIVO", justify="left", width=8)
+        positions_table.add_column("LADO", justify="left", width=7)
         positions_table.add_column("VOLUMEN", justify="right")
         positions_table.add_column("ENTRADA", justify="right")
         positions_table.add_column("ACTUAL", justify="right")
         positions_table.add_column("PNL", justify="right")
-        
+
         for trade in active_trades:
-            # OBTENER PnL REAL del exchange (unrealized_pnl)
+            # PnL REAL del exchange (unrealized_pnl)
             pnl_usd = getattr(trade, 'unrealized_pnl', None) or 0
-            
-            # Usar precio de entrada REAL del trade (actualizado desde exchange)
+
             entry_price = trade.entry_price
             quantity = trade.quantity
-            
+
+            # Precio de mercado: usar mark_price del exchange si está disponible
+            mark = getattr(trade, 'mark_price', None) or 0
+            display_price = mark if mark > 0 else current_price
+
             # Colores según PnL
             pnl_style = "bold green" if pnl_usd > 5 else ("green" if pnl_usd >= 0 else ("bold red" if pnl_usd < -5 else "red"))
-            
-            # Iconos de dirección
+
             side_icon = "LONG" if trade.side == "LONG" else "SHORT"
-            
+            asset_name = display_sym if len(active_trades) <= 1 else DISPLAY_NAMES.get(trade.symbol, trade.symbol)
+
             positions_table.add_row(
+                asset_name,
                 side_icon,
                 f"{quantity:.4f}",
                 f"${entry_price:,.2f}",
-                f"${current_price:,.2f}",
+                f"${display_price:,.2f}",
                 f"[{pnl_style}]${pnl_usd:+.2f}[/]",
             )
-        
+
         positions_content = positions_table
     else:
         positions_content = Text("Sin posiciones abiertas", style="dim italic", justify="center")

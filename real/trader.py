@@ -66,6 +66,8 @@ class TradeRecord:
     open_timestamp_ms: Optional[int] = None
     # Order ID de cierre (para consultar datos reales)
     close_order_id: Optional[str] = None
+    # Precio de mercado actual (mark price del exchange)
+    mark_price: Optional[float] = None
 
 
 class RealTrader:
@@ -400,6 +402,7 @@ class RealTrader:
                 
                 # Actualizar PnL no realizado REAL
                 trade.unrealized_pnl = pos_data["unrealized_pnl"]
+                trade.mark_price = pos_data.get("mark_price", 0) or 0
                 trade.position_id = pos_data["position_id"]
                 
                 # ACTUALIZAR precio de entrada con el REAL del exchange si difiere
