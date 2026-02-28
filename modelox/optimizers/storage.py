@@ -7,12 +7,13 @@ from typing import Optional
 
 
 DATABASE_DIR_NAME = "DATABASE"
+RESULTS_DIR_NAME = "resultados"
 
 
 def get_database_dir(*, base_dir: Optional[str] = None, create: bool = True) -> str:
     """Devuelve la carpeta central de DB y la crea si no existe."""
     root = os.path.abspath(base_dir or os.getcwd())
-    db_dir = os.path.join(root, DATABASE_DIR_NAME)
+    db_dir = os.path.join(root, RESULTS_DIR_NAME, DATABASE_DIR_NAME)
     if create:
         os.makedirs(db_dir, exist_ok=True)
     return db_dir
@@ -155,8 +156,13 @@ def resolve_storage_for_strategy(
     *,
     create_database: bool,
     strategy_id: Optional[int] = None,
+    reset_existing: bool = True,
 ) -> Optional[str]:
-    """Resuelve el storage SQLite por estrategia (IDx.db) o RAM."""
+    """Resuelve el storage SQLite por estrategia (IDx.db) o RAM.
+
+    Si ``reset_existing=True`` (default), elimina automáticamente la DB previa
+    de esa estrategia antes de iniciar una nueva ejecución.
+    """
     if not create_database:
         return None
 
@@ -166,5 +172,13 @@ def resolve_storage_for_strategy(
         sid = None
 
     db_name = f"ID{sid}.db" if sid and sid > 0 else "optuna.db"
+
+    if reset_existing:
+        try:
+            delete_database_file(db_name, delete_root_legacy=True)
+        except Exception:
+            # Nunca bloquear el arranque por problemas de borrado (locks/permisos).
+            pass
+
     db_path = get_database_file_path(db_name)
     return f"sqlite:///{db_path}"

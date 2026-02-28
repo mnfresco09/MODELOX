@@ -29,8 +29,11 @@ ARQUITECTURA:
     └──────────────────────────────────────────────────────────────────────┘
 
 TIPOS DE SALIDA:
-    - "pnl_fixed":    SL/TP fijos por % sobre stake.
-    - "pnl_trailing": SL inicial + trailing activado por % sobre stake.
+    - "FIXED":    SL/TP fijos por % sobre stake.
+    - "TRAILING": SL inicial + trailing activado por % sobre stake.
+    - "BARS":     Salida forzada tras X velas del timeframe de entrada.
+    - "ATR":      SL/TP adaptativos según volatilidad ATR(14). El % del stake
+                  escala linealmente entre 20% (baja vol) y 40% (alta vol).
 
 DEFINICIONES:
     - STAKE = SALDO_USADO = margen/colateral por trade.
@@ -107,6 +110,18 @@ IMPLEMENTACIÓN ACTUAL:
        - Si la estrategia define generate_exit_signals_1m(), se generan señales en 1m
        - Las señales exit_long/exit_short se evalúan en resolución de 1 minuto
        - Prioridad: Custom Exit > SL > TP > Trailing
+
+       REGLA UNIVERSAL — SL DE EMERGENCIA CON SALIDAS_PERSONALIZADAS=True:
+       ┌──────────────────────────────────────────────────────────────────────┐
+       │ Cuando SALIDAS_PERSONALIZADAS = True:                                │
+       │   - exit_long / exit_short (estrategia) → salida principal          │
+       │   - SL fijo de exits.py                 → backstop de emergencia    │
+       │   - TP y Trailing                        → desactivados (999%)       │
+       │                                                                      │
+       │ exit_type se fuerza a "FIXED" con sl_pct real del config.           │
+       │ Esto garantiza que ante movimientos extremos (crash, gap, etc.)      │
+       │ el SL actúe aunque la señal custom no haya podido salir antes.       │
+       └──────────────────────────────────────────────────────────────────────┘
     
     6. SLIPPAGE Y REALISMO:
        - Los precios calculados (sl_price, tp_price, trailing_level) son TEÓRICOS
@@ -167,27 +182,37 @@ from typing import Any, Dict
 # =============================================================================
 
 # ─── TIPO DE SALIDA ──────────────────────────────────────────────────────────
-DEFAULT_EXIT_TYPE = "pnl_trailing" # pnl_fixed, pnl_trailing
+DEFAULT_EXIT_TYPE = "ATR"  # FIXED | TRAILING | BARS | ATR
 
 # ─── PARÁMETROS DE SL/TP (% SOBRE STAKE) ────────────────────────────────────
-DEFAULT_EXIT_SL_PCT = 30.0                    # Stop Loss
-DEFAULT_EXIT_TP_PCT = 17.0                   # Take Profit
+DEFAULT_EXIT_SL_PCT = 25.0                    # Stop Loss
+DEFAULT_EXIT_TP_PCT = 25.0                   # Take Profit
 
 # ─── PARÁMETROS DE TRAILING (% SOBRE STAKE) ─────────────────────────────────
-DEFAULT_EXIT_TRAIL_ACT_PCT = 35.0            # Activación del trailing
-DEFAULT_EXIT_TRAIL_DIST_PCT = 5.0            # Distancia del trailing
+DEFAULT_EXIT_TRAIL_ACT_PCT = 25.0            # Activación del trailing
+DEFAULT_EXIT_TRAIL_DIST_PCT = 5.0    
+
+DEFAULT_EXIT_TIME_BARS = 0                   # 0 = desactivado
+
+# ─── PARÁMETROS ATR ADAPTATIVO ───────────────────────────────────────────────
+DEFAULT_EXIT_ATR_PERIOD   = 14    # Periodo Wilder ATR
+DEFAULT_EXIT_ATR_MIN_PCT  = 20.0  # % stake mínimo (volatilidad baja)  — mismo formato que sl_pct
+DEFAULT_EXIT_ATR_MAX_PCT  = 40.0  # % stake máximo (volatilidad alta)  — mismo formato que sl_pct
+DEFAULT_EXIT_ATR_LOOKBACK = 100   # Ventana (barras) para normalizar volatilidad relativa
 
 
 # =============================================================================
 # 2. RANGOS DE OPTIMIZACIÓN (MIN, MAX, STEP)
 # =============================================================================
 
-DEFAULT_OPTIMIZE_EXITS = False
+DEFAULT_OPTIMIZE_EXITS = True
 
 DEFAULT_EXIT_SL_PCT_RANGE = (30.0, 30.0, 1.0)
 DEFAULT_EXIT_TP_PCT_RANGE = (55.0, 55.0, 1.0)
 DEFAULT_EXIT_TRAIL_ACT_PCT_RANGE = (35.0, 60.0, 5.0)
-DEFAULT_EXIT_TRAIL_DIST_PCT_RANGE = (2.0, 10.0, 5.0)
+DEFAULT_EXIT_TRAIL_DIST_PCT_RANGE = (8.0, 16.0, 2.0)
+
+DEFAULT_EXIT_TIME_BARS_RANGE = (2, 10, 2)
 
 
 # =============================================================================
@@ -207,7 +232,12 @@ class ExitSettings:
     tp_pct: float = DEFAULT_EXIT_TP_PCT
     trail_act_pct: float = DEFAULT_EXIT_TRAIL_ACT_PCT
     trail_dist_pct: float = DEFAULT_EXIT_TRAIL_DIST_PCT
-    time_stop_bars: int = 0                  # 0 = desactivado
+    time_stop_bars: int = DEFAULT_EXIT_TIME_BARS  # 0 = desactivado
+    # ── ATR adaptive — mismo formato % que sl_pct/tp_pct ──
+    atr_period:   int   = DEFAULT_EXIT_ATR_PERIOD
+    atr_min_pct:  float = DEFAULT_EXIT_ATR_MIN_PCT   # % stake mínimo (ej. 20.0)
+    atr_max_pct:  float = DEFAULT_EXIT_ATR_MAX_PCT   # % stake máximo (ej. 40.0)
+    atr_lookback: int   = DEFAULT_EXIT_ATR_LOOKBACK
 
 
 @dataclass(frozen=True)
@@ -252,7 +282,7 @@ def _normalize_exit_values(
     """
     sl_pct = abs(sl_pct) if sl_pct != 0 else 1.0
 
-    if exit_type == "pnl_trailing":
+    if exit_type == "TRAILING":
         tp_pct = abs(tp_pct) if tp_pct != 0 else 0.0
     else:
         tp_pct = abs(tp_pct) if tp_pct != 0 else 1.0
@@ -295,17 +325,21 @@ def resolve_exit_settings_for_trial(*, trial: Any, config: Any) -> ExitSettings:
         ExitSettings con valores resueltos (fijos u optimizados).
     """
     optimize = bool(getattr(config, "optimize_exits", DEFAULT_OPTIMIZE_EXITS))
-    exit_type = str(getattr(config, "exit_type", DEFAULT_EXIT_TYPE)).strip().lower()
+    exit_type = str(getattr(config, "exit_type", DEFAULT_EXIT_TYPE)).strip().upper()
 
     # ─── VALORES BASE ────────────────────────────────────────────────────
     sl_pct = float(getattr(config, "exit_sl_pct", DEFAULT_EXIT_SL_PCT))
     tp_pct = float(getattr(config, "exit_tp_pct", DEFAULT_EXIT_TP_PCT))
     trail_act = float(getattr(config, "exit_trail_act_pct", DEFAULT_EXIT_TRAIL_ACT_PCT))
     trail_dist = float(getattr(config, "exit_trail_dist_pct", DEFAULT_EXIT_TRAIL_DIST_PCT))
+    time_stop_bars = int(getattr(config, "exit_time_bars", DEFAULT_EXIT_TIME_BARS))
 
     # EN TRAILING, TP NO APLICA
-    if exit_type == "pnl_trailing":
+    if exit_type == "TRAILING":
         tp_pct = 0.0
+
+    # ─── OPTIMIZACIÓN TIME BARS ─────────────────────────────────────────
+    time_bars_rng = tuple(getattr(config, "exit_time_bars_range", DEFAULT_EXIT_TIME_BARS_RANGE))
 
     # ─── OPTIMIZACIÓN CON OPTUNA ─────────────────────────────────────────
     if optimize:
@@ -321,7 +355,7 @@ def resolve_exit_settings_for_trial(*, trial: Any, config: Any) -> ExitSettings:
         )
 
         # TP SOLO EN FIXED
-        if exit_type in {"pnl_fixed", "all"}:
+        if exit_type in {"FIXED", "all"}:
             tp_pct = trial.suggest_float(
                 "exit_tp_pct", tp_rng[0], tp_rng[1],
                 step=tp_rng[2] if len(tp_rng) > 2 else 0.1,
@@ -330,7 +364,7 @@ def resolve_exit_settings_for_trial(*, trial: Any, config: Any) -> ExitSettings:
             tp_pct = 0.0
 
         # TRAILING PARAMS SOLO EN TRAILING
-        if exit_type in {"pnl_trailing", "all"}:
+        if exit_type in {"TRAILING", "all"}:
             trail_act = trial.suggest_float(
                 "exit_trail_act_pct", act_rng[0], act_rng[1],
                 step=act_rng[2] if len(act_rng) > 2 else 0.1,
@@ -339,6 +373,18 @@ def resolve_exit_settings_for_trial(*, trial: Any, config: Any) -> ExitSettings:
                 "exit_trail_dist_pct", dist_rng[0], dist_rng[1],
                 step=dist_rng[2] if len(dist_rng) > 2 else 0.1,
             )
+
+        if exit_type == "BARS":
+            time_stop_bars = trial.suggest_int(
+                "exit_time_bars", int(time_bars_rng[0]), int(time_bars_rng[1]),
+                step=int(time_bars_rng[2]) if len(time_bars_rng) > 2 else 1,
+            )
+
+    # ─── ATR ADAPTIVE (parámetros fijos, sin optimización por defecto) ───
+    atr_period   = int(getattr(config, "exit_atr_period",   DEFAULT_EXIT_ATR_PERIOD))
+    atr_min_pct  = float(getattr(config, "exit_atr_min_pct", DEFAULT_EXIT_ATR_MIN_PCT))
+    atr_max_pct  = float(getattr(config, "exit_atr_max_pct", DEFAULT_EXIT_ATR_MAX_PCT))
+    atr_lookback = int(getattr(config, "exit_atr_lookback", DEFAULT_EXIT_ATR_LOOKBACK))
 
     # ─── NORMALIZAR ──────────────────────────────────────────────────────
     sl_pct, tp_pct, trail_act, trail_dist = _normalize_exit_values(
@@ -351,6 +397,11 @@ def resolve_exit_settings_for_trial(*, trial: Any, config: Any) -> ExitSettings:
         tp_pct=tp_pct,
         trail_act_pct=trail_act,
         trail_dist_pct=trail_dist,
+        time_stop_bars=time_stop_bars,
+        atr_period=atr_period,
+        atr_min_pct=atr_min_pct,
+        atr_max_pct=atr_max_pct,
+        atr_lookback=atr_lookback,
     )
 
 
@@ -368,7 +419,7 @@ def exit_settings_from_params(params: Dict[str, Any]) -> ExitSettings:
     """
     exit_type = str(
         params.get("__exit_type", params.get("exit_type", DEFAULT_EXIT_TYPE))
-    ).strip().lower()
+    ).strip().upper()
     sl_pct = float(
         params.get("__exit_sl_pct", params.get("exit_sl_pct", DEFAULT_EXIT_SL_PCT))
     )
@@ -381,6 +432,21 @@ def exit_settings_from_params(params: Dict[str, Any]) -> ExitSettings:
     trail_dist = float(
         params.get("__exit_trail_dist_pct", params.get("exit_trail_dist_pct", DEFAULT_EXIT_TRAIL_DIST_PCT))
     )
+    time_stop_bars = int(
+        params.get("__exit_time_bars", params.get("exit_time_bars", DEFAULT_EXIT_TIME_BARS))
+    )
+    atr_period = int(
+        params.get("__exit_atr_period", params.get("exit_atr_period", DEFAULT_EXIT_ATR_PERIOD))
+    )
+    atr_min_pct = float(
+        params.get("__exit_atr_min_pct", params.get("exit_atr_min_pct", DEFAULT_EXIT_ATR_MIN_PCT))
+    )
+    atr_max_pct = float(
+        params.get("__exit_atr_max_pct", params.get("exit_atr_max_pct", DEFAULT_EXIT_ATR_MAX_PCT))
+    )
+    atr_lookback = int(
+        params.get("__exit_atr_lookback", params.get("exit_atr_lookback", DEFAULT_EXIT_ATR_LOOKBACK))
+    )
 
     sl_pct, tp_pct, trail_act, trail_dist = _normalize_exit_values(
         exit_type, sl_pct, tp_pct, trail_act, trail_dist
@@ -392,11 +458,16 @@ def exit_settings_from_params(params: Dict[str, Any]) -> ExitSettings:
         tp_pct=tp_pct,
         trail_act_pct=trail_act,
         trail_dist_pct=trail_dist,
+        time_stop_bars=time_stop_bars,
+        atr_period=atr_period,
+        atr_min_pct=atr_min_pct,
+        atr_max_pct=atr_max_pct,
+        atr_lookback=atr_lookback,
     )
 
 
 # =============================================================================
-# 6. EXPORTACIONES
+ # 6. EXPORTACIONES
 # =============================================================================
 
 __all__ = [
@@ -406,11 +477,17 @@ __all__ = [
     "DEFAULT_EXIT_TP_PCT",
     "DEFAULT_EXIT_TRAIL_ACT_PCT",
     "DEFAULT_EXIT_TRAIL_DIST_PCT",
+    "DEFAULT_EXIT_TIME_BARS",
     "DEFAULT_OPTIMIZE_EXITS",
     "DEFAULT_EXIT_SL_PCT_RANGE",
     "DEFAULT_EXIT_TP_PCT_RANGE",
     "DEFAULT_EXIT_TRAIL_ACT_PCT_RANGE",
     "DEFAULT_EXIT_TRAIL_DIST_PCT_RANGE",
+    "DEFAULT_EXIT_TIME_BARS_RANGE",
+    "DEFAULT_EXIT_ATR_PERIOD",
+    "DEFAULT_EXIT_ATR_MIN_PCT",
+    "DEFAULT_EXIT_ATR_MAX_PCT",
+    "DEFAULT_EXIT_ATR_LOOKBACK",
     # ─── DATACLASSES ─────────────────────────────────────────────────────
     "ExitSettings",
     "ExitResult",

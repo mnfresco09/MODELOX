@@ -139,16 +139,18 @@ class RealTrader:
             "active_trades": len(self.active_trades),
         }
     
-    def fetch_market_data(self, limit: int = 200) -> pl.DataFrame:
+    def fetch_market_data(self, limit: int = 200, timeframe: Optional[str] = None) -> pl.DataFrame:
         """
         Obtiene datos de mercado actuales para generar señales.
         
         Returns:
             DataFrame de Polars con columnas OHLCV
         """
+        tf = timeframe or self.config.timeframe
+
         klines = self.client.get_klines(
             symbol=self.symbol,
-            interval=self.config.timeframe,
+            interval=tf,
             limit=limit,
             market_type=self.config.market_type,
         )
@@ -365,6 +367,119 @@ class RealTrader:
             return trade
         
         return None
+
+    def execute_manual_order(
+        self,
+        side: str,
+        current_price: float,
+        quantity: float,
+        order_type: str = "MARKET",
+    ) -> Optional[TradeRecord]:
+        """
+        Ejecuta una orden manual (Order Entry del dashboard).
+
+        Actualmente soporta MARKET. Mantiene el flujo de validación y
+        construcción de TradeRecord idéntico a execute_signal, pero con
+        cantidad explícita enviada por usuario.
+        """
+        from real.display import show_error, show_info
+
+        side = str(side).upper().strip()
+        order_type = str(order_type).upper().strip()
+        if side not in {"LONG", "SHORT"}:
+            show_error("Side inválido. Usa LONG o SHORT.")
+            return None
+        if order_type != "MARKET":
+            show_error("Solo se soporta order_type MARKET en esta versión.")
+            return None
+        if quantity <= 0:
+            show_error("Cantidad inválida. Debe ser mayor que 0.")
+            return None
+
+        # Normalizar precisión por activo
+        if current_price > 10000:
+            quantity = round(quantity, 4)
+        elif current_price > 100:
+            quantity = round(quantity, 3)
+        else:
+            quantity = round(quantity, 2)
+
+        order_side = "BUY" if side == "LONG" else "SELL"
+        is_valid, error_msg = self.validate_order(quantity, current_price)
+        if not is_valid:
+            show_error(error_msg)
+            return None
+
+        leverage = self.config.leverage if self.config.market_type == "perpetual" else 1
+        notional = quantity * current_price
+        margin = notional / leverage
+        show_info(f"Manual {side}: {quantity} @ ${current_price:,.2f} (Margen: ${margin:,.2f})")
+
+        result = self.client.place_order_with_sl_tp(
+            symbol=self.symbol,
+            side=order_side,
+            quantity=quantity,
+            entry_price=current_price,
+            sl_pct=self.config.stop_loss_pct,
+            tp_pct=self.config.take_profit_pct,
+            leverage=self.config.leverage,
+        )
+
+        main_order: OrderResult = result["main_order"]
+        if not main_order.success:
+            show_error(f"Orden manual rechazada: {main_order.error_message or 'Error desconocido'}")
+            return None
+
+        now = datetime.now()
+        time.sleep(0.8)
+
+        order_id = main_order.order_id or ""
+        real_entry_price = current_price
+        real_quantity = quantity
+        opening_fee = 0.0
+
+        if order_id:
+            fill_details = self.client.get_order_fill_details(self.symbol, order_id)
+            if fill_details and fill_details.get("avgPrice", 0) > 0:
+                real_entry_price = fill_details["avgPrice"]
+                real_quantity = fill_details.get("filledQty", quantity)
+                opening_fee = fill_details.get("commission", 0)
+            else:
+                order_details = self.client.get_order_details(self.symbol, order_id)
+                if order_details:
+                    avg_price = float(order_details.get("avgPrice", 0) or 0)
+                    if avg_price > 0:
+                        real_entry_price = avg_price
+                    opening_fee = float(order_details.get("commission", 0) or 0)
+                    filled_qty = float(order_details.get("executedQty", 0) or 0)
+                    if filled_qty > 0:
+                        real_quantity = filled_qty
+
+        sl_price_pct = self.config.stop_loss_pct / self.config.leverage
+        tp_price_pct = self.config.take_profit_pct / self.config.leverage
+
+        if side == "LONG":
+            sl_price = real_entry_price * (1 - sl_price_pct / 100)
+            tp_price = real_entry_price * (1 + tp_price_pct / 100)
+        else:
+            sl_price = real_entry_price * (1 + sl_price_pct / 100)
+            tp_price = real_entry_price * (1 - tp_price_pct / 100)
+
+        trade = TradeRecord(
+            timestamp=now,
+            symbol=self.symbol,
+            side=side,
+            entry_price=real_entry_price,
+            quantity=real_quantity,
+            sl_price=sl_price,
+            tp_price=tp_price,
+            leverage=self.config.leverage,
+            order_id=order_id,
+            opening_fee=opening_fee,
+            open_timestamp_ms=int(now.timestamp() * 1000),
+        )
+        self.active_trades.append(trade)
+        return trade
     
     def update_positions_pnl_from_exchange(self) -> None:
         """

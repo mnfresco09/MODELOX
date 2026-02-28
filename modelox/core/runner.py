@@ -212,7 +212,7 @@ class DataLoader:
         elif file_path.endswith(".csv"):
             df = pl.read_csv(file_path)
         elif file_path.endswith(".feather") or file_path.endswith(".arrow"):
-            df = pl.read_ipc(file_path)
+            df = pl.read_ipc(file_path, memory_map=False)
         else:
             raise ValueError(f"Formato no soportado: {file_path}")
         
@@ -557,17 +557,25 @@ class OptimizationRunner:
         
         # Resolver configuración de salida
         if salidas_personalizadas:
-            params_rt["__exit_type"] = "custom"
-            params_rt["__exit_sl_pct"] = 999.0
-            params_rt["__exit_tp_pct"] = 999.0
-            params_rt["__exit_trail_act_pct"] = 999.0
+            # REGLA: con SALIDAS_PERSONALIZADAS=True, el SL fijo de exits.py
+            # se conserva como backstop de emergencia. TP/Trailing se desactivan
+            # (999) porque la estrategia gestiona sus propias salidas mediante
+            # las columnas exit_long/exit_short. El SL actúa de último recurso
+            # ante movimientos extremos que la salida custom no alcanzara a cubrir.
+            exit_settings = resolve_exit_settings_for_trial(trial=trial, config=self.config)
+            params_rt["__exit_type"] = "FIXED"               # SL fijo, sin trailing
+            params_rt["__exit_sl_pct"] = exit_settings.sl_pct  # SL real = emergencia
+            params_rt["__exit_tp_pct"] = 999.0              # TP desactivado (custom)
+            params_rt["__exit_trail_act_pct"] = 999.0       # Trailing desactivado
             params_rt["__exit_trail_dist_pct"] = 999.0
-            
-            params_rt["exit_type"] = "custom"
-            params_rt["exit_sl_pct"] = 999.0
+
+            params_rt["exit_type"] = "FIXED"
+            params_rt["exit_sl_pct"] = exit_settings.sl_pct
             params_rt["exit_tp_pct"] = 999.0
             params_rt["exit_trail_act_pct"] = 999.0
             params_rt["exit_trail_dist_pct"] = 999.0
+            params_rt["__exit_time_bars"] = 0
+            params_rt["exit_time_bars"] = 0
         else:
             exit_settings = resolve_exit_settings_for_trial(trial=trial, config=self.config)
             params_rt["__exit_type"] = exit_settings.exit_type
@@ -575,6 +583,7 @@ class OptimizationRunner:
             params_rt["__exit_tp_pct"] = exit_settings.tp_pct
             params_rt["__exit_trail_act_pct"] = exit_settings.trail_act_pct
             params_rt["__exit_trail_dist_pct"] = exit_settings.trail_dist_pct
+            params_rt["__exit_time_bars"] = exit_settings.time_stop_bars
             
             # Aliases para compatibilidad
             params_rt["exit_type"] = exit_settings.exit_type
@@ -582,11 +591,13 @@ class OptimizationRunner:
             params_rt["exit_tp_pct"] = exit_settings.tp_pct
             params_rt["exit_trail_act_pct"] = exit_settings.trail_act_pct
             params_rt["exit_trail_dist_pct"] = exit_settings.trail_dist_pct
+            params_rt["exit_time_bars"] = exit_settings.time_stop_bars
         
         # Timeframes
         entry_tf = normalize_timeframe_to_suffix(getattr(strategy, "timeframe_entry", None) or base_tf)
-        # FORZAR salidas SIEMPRE en 1m para máxima precisión (SL/TP/Trailing)
-        exit_tf = "1m"
+        # time_bars: usa el mismo TF de entrada para contar barras (no 1m)
+        exit_type_rt = str(params_rt.get("__exit_type", "FIXED")).upper()
+        exit_tf = entry_tf if exit_type_rt == "BARS" else "1m"
         
         params_rt["__timeframe_base"] = base_tf
         params_rt["__timeframe_entry"] = entry_tf
@@ -780,12 +791,13 @@ class OptimizationRunner:
                         except Exception:
                             pass
                     
-                    # Extraer pnl_neto array y total_days para score_universal
+                    # Extraer pnl_neto array
                     if isinstance(trades_df, pl.DataFrame):
                         _pnl_arr = trades_df["pnl_neto"].to_numpy().astype(np.float64)
                     else:
                         _pnl_arr = trades_df["pnl_neto"].to_numpy(dtype=np.float64)
-                    
+
+                    # total_days desde timestamps del DataFrame de entrada
                     _total_days = 0.0
                     if "timestamp" in df_trial.columns and len(df_trial) > 0:
                         try:
@@ -797,12 +809,13 @@ class OptimizationRunner:
                             _total_days = max(1.0, float(_delta["d"][0]))
                         except Exception:
                             _total_days = 1.0
-                    
+
                     # Usar scoring correspondiente al sampler elegido
                     score_func = self._get_score_func()
                     score = float(score_func(
                         metrics, trial=trial,
                         trades_pnl=_pnl_arr, total_days=_total_days,
+                        saldo_inicial=float(self.config.saldo_inicial),
                     ))
                 
                 t_total = time.perf_counter() - t0_total
@@ -955,8 +968,8 @@ def run_single_exit_type(
     logger = None,
 ) -> None:
     """
-    Ejecuta optimización para un único tipo de salida (pnl_fixed o pnl_trailing).
-    
+    Ejecuta optimización para un único tipo de salida (FIXED, TRAILING, BARS o ATR).
+
     Esta función encapsula toda la lógica de:
     1. Configurar el exit_type en BacktestConfig
     2. Detectar capacidades de la estrategia
@@ -967,7 +980,7 @@ def run_single_exit_type(
     7. Limpiar recursos
     
     Args:
-        exit_type: "pnl_fixed" o "pnl_trailing"
+        exit_type: "FIXED" | "TRAILING" | "BARS" | "ATR"
         strategy: Objeto estrategia con suggest_params y generate_signals
         strategy_name: Nombre de la estrategia
         strategy_safe: Nombre sanitizado para rutas
@@ -1029,8 +1042,8 @@ def run_single_exit_type(
         ENTRENAMIENTO_ROBUSTO_ACTIVAR = False
 
     if mostrar_cabecera_func:
-        # Salidas SIEMPRE en 1m para máxima precisión
-        _tf_exit_display = "1m"
+        # time_bars: salidas en el mismo TF de entrada (cuenta barras, no usa 1m)
+        _tf_exit_display = tf_display if str(exit_type).upper() == "BARS" else "1m"
         
         mostrar_cabecera_func(
             activo=activo,

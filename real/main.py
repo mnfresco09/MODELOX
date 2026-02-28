@@ -21,7 +21,8 @@ from __future__ import annotations
 import sys
 import time
 from pathlib import Path
-from typing import List, Optional
+from typing import Dict, List, Optional, Tuple
+from dataclasses import replace
 
 # Añadir el directorio raíz al path
 ROOT_DIR = Path(__file__).parent.parent
@@ -36,6 +37,7 @@ from rich import box
 from real.bingx_client import BingXClient
 from real.config import TradingConfig, get_bingx_symbol
 from real.trader import RealTrader
+from real.web.dashboard_server import launch_dashboard
 from real.display import (
     console,
     Colors,
@@ -67,8 +69,8 @@ from modelox.strategies.registry import (
 # SELECCIÓN DE ESTRATEGIA
 # =============================================================================
 
-def select_strategy() -> tuple[int, str, type]:
-    """Permite al usuario seleccionar una estrategia."""
+def select_strategies() -> List[Tuple[int, str, type]]:
+    """Permite seleccionar una o varias estrategias (IDs separados por coma)."""
     available = list_available_strategies()
 
     if not available:
@@ -77,26 +79,42 @@ def select_strategy() -> tuple[int, str, type]:
 
     show_strategies_list(available)
 
-    strat_dict = {str(sid): (sid, name) for sid, name in available}
+    by_id = {int(sid): name for sid, name in available}
 
     while True:
-        strategy_id = Prompt.ask(
-            "Ingresa el ID de la estrategia",
+        raw = Prompt.ask(
+            "Ingresa ID(s) de estrategia (ej: 1  o  1,2,5)",
             default=str(available[0][0])
         )
-
-        if strategy_id in strat_dict:
-            sid, name = strat_dict[strategy_id]
+        ids: List[int] = []
+        for p in str(raw).split(","):
+            p = p.strip()
+            if not p:
+                continue
+            try:
+                sid = int(p)
+                if sid in by_id and sid not in ids:
+                    ids.append(sid)
+            except Exception:
+                pass
+        if ids:
             break
-        else:
-            show_error(f"ID '{strategy_id}' no válido. Elige uno de la lista.")
+        show_error("Selección inválida. Usa IDs de la lista.")
 
-    strategies = instantiate_strategies(only_id=sid)
-    strategy_class = type(strategies[0])
+    selected: List[Tuple[int, str, type]] = []
+    for sid in ids:
+        found = instantiate_strategies(only_id=sid)
+        if not found:
+            continue
+        selected.append((sid, by_id[sid], type(found[0])))
 
-    console.print(f"\n[dim white]>[/dim white] Estrategia seleccionada: [bold]{name}[/bold] (ID: {sid})\n")
+    if not selected:
+        show_error("No se pudieron instanciar estrategias seleccionadas.")
+        sys.exit(1)
 
-    return sid, name, strategy_class
+    names = ", ".join([f"{n} (ID:{i})" for i, n, _ in selected])
+    console.print(f"\n[dim white]>[/dim white] Estrategias seleccionadas: [bold]{names}[/bold]\n")
+    return selected
 
 
 # =============================================================================
@@ -251,7 +269,7 @@ def _aggregate_stats(traders: List[RealTrader]) -> dict:
 
 def run_trading_loop(
     traders: List[RealTrader],
-    strategy_name: str,
+    strategy_names: Dict[int, str],
     initial_sides: List[Optional[str]],
 ):
     """
@@ -312,12 +330,23 @@ def run_trading_loop(
     )
 
     # Contadores por trader para fetch de datos/señales
-    last_data_fetch   = {t.symbol: 0.0 for t in traders}
+    def _tkey(tr: RealTrader) -> str:
+        return f"{tr.symbol}|{int(getattr(tr.config, 'strategy_id', 0))}"
+
+    last_data_fetch   = {_tkey(t): 0.0 for t in traders}
     data_fetch_interval = 10  # segundos
-    dfs = {t.symbol: None for t in traders}
+    dfs = {_tkey(t): None for t in traders}
 
     # Precio actual por trader (para el display)
-    current_prices = {t.symbol: 0.0 for t in traders}
+    current_prices = {_tkey(t): 0.0 for t in traders}
+    dashboard = None
+
+    # ─── Dashboard web institucional (auto-start REAL/DEMO) ───────────────────
+    try:
+        dashboard = launch_dashboard(traders=traders, host="127.0.0.1", port=8765, open_browser=True)
+        console.print(f"[dim]Dashboard Web: {dashboard.url}[/dim]")
+    except Exception as e:
+        live_display.add_message(f"Dashboard no disponible: {e}")
 
     try:
         with live_display.start() as live:
@@ -333,7 +362,13 @@ def run_trading_loop(
                     # Actualizar precio actual
                     try:
                         cp = trader.client.get_current_price(trader.symbol, trader.config.market_type)
-                        current_prices[trader.symbol] = cp
+                        current_prices[_tkey(trader)] = cp
+                        if dashboard:
+                            dashboard.update_market_data(
+                                symbol=trader.symbol,
+                                price=cp,
+                                strategy_id=int(getattr(trader.config, "strategy_id", 0)),
+                            )
                     except Exception:
                         pass
 
@@ -350,18 +385,12 @@ def run_trading_loop(
                 # MOSTRAR PANELES DE CIERRE
                 # ═══════════════════════════════════════════════════════════
                 if all_closed:
-                    live.stop()
-
-                    import os
-                    os.system('clear')
-
                     for trade, cfg in all_closed:
-                        console.print()
-                        show_trade_closed_externally(trade)
-
                         # Guardar en Excel
                         from real.trade_logger import log_trade
-                        log_trade(trade, cfg, strategy_name)
+                        sid = int(getattr(cfg, "strategy_id", 0))
+                        sname = strategy_names.get(sid, f"ID{sid}")
+                        log_trade(trade, cfg, sname)
 
                         # Notificar Telegram
                         from visual.telegram import notificar_trade_cerrado
@@ -384,45 +413,53 @@ def run_trading_loop(
                             roi=_roi,
                             razon=getattr(trade, 'reason', 'CIERRE') or 'CIERRE',
                         )
-                        console.print()
-
-                    console.print("\n[dim]Presiona ENTER para continuar[/]")
-                    try:
-                        input()
-                    except Exception:
-                        time.sleep(5)
-
-                    os.system('clear')
-                    live.start()
+                        # Mensaje no bloqueante en live (sin pedir ENTER)
+                        _sid = int(getattr(cfg, "strategy_id", 0))
+                        _sname = strategy_names.get(_sid, f"ID{_sid}")
+                        _asset = DISPLAY_NAMES.get(trade.symbol, trade.symbol)
+                        _tpnl = getattr(trade, 'total_pnl', None)
+                        _pnl = _tpnl if _tpnl is not None else (getattr(trade, 'pnl', 0) or 0)
+                        live_display.add_message(
+                            f"Cierre {_asset} [{_sname}] {trade.side} | PnL ${_pnl:+.2f}"
+                        )
 
                 # ═══════════════════════════════════════════════════════════
                 # SEÑALES (cada N segundos, por trader)
                 # ═══════════════════════════════════════════════════════════
                 now = time.time()
                 for trader in traders:
-                    if now - last_data_fetch.get(trader.symbol, 0) < data_fetch_interval:
+                    tk = _tkey(trader)
+                    if now - last_data_fetch.get(tk, 0) < data_fetch_interval:
                         continue
-                    last_data_fetch[trader.symbol] = now
+                    last_data_fetch[tk] = now
 
                     # Obtener datos de mercado
                     try:
-                        dfs[trader.symbol] = trader.fetch_market_data(limit=300)
+                        dfs[tk] = trader.fetch_market_data(limit=300)
                     except Exception as e:
                         live_display.add_message(f"Error datos {DISPLAY_NAMES.get(trader.symbol, trader.symbol)}: {e}")
 
                     # Generar señales en modo AUTO
                     cfg = trader.config
-                    df  = dfs.get(trader.symbol)
+                    df  = dfs.get(tk)
                     if cfg.execution_mode != "auto" or df is None or df.is_empty():
                         continue
 
                     try:
                         signals_df  = trader.generate_signals(df)
+                        if dashboard:
+                            dashboard.update_market_data(
+                                symbol=trader.symbol,
+                                price=current_prices.get(tk, 0),
+                                df_raw=df,
+                                df_signals=signals_df,
+                                strategy_id=int(getattr(trader.config, "strategy_id", 0)),
+                            )
                         last_row    = signals_df.tail(1)
                         signal_long  = last_row["signal_long"][0]  if "signal_long"  in last_row.columns else False
                         signal_short = last_row["signal_short"][0] if "signal_short" in last_row.columns else False
 
-                        cp = current_prices.get(trader.symbol, 0)
+                        cp = current_prices.get(tk, 0)
 
                         if signal_long and len(trader.active_trades) == 0:
                             trade = trader.execute_signal("LONG", cp)
@@ -476,7 +513,7 @@ def run_trading_loop(
                 stats = _aggregate_stats(traders)
 
                 # Precio de referencia para el header: primer trader
-                primary_price = current_prices.get(traders[0].symbol, 0)
+                primary_price = current_prices.get(_tkey(traders[0]), 0)
 
                 live_display.update(
                     current_price=primary_price,
@@ -491,6 +528,12 @@ def run_trading_loop(
 
     except KeyboardInterrupt:
         pass
+    finally:
+        if dashboard:
+            try:
+                dashboard.stop()
+            except Exception:
+                pass
 
     # ─── CIERRE Y RESUMEN ─────────────────────────────────────────────────────
     console.print("\n\nTrading detenido por el usuario")
@@ -524,14 +567,12 @@ def main():
     console.clear()
 
     try:
-        # 1. Seleccionar estrategia
-        strategy_id, strategy_name, strategy_class = select_strategy()
+        # 1. Seleccionar una o varias estrategias
+        selected_strategies = select_strategies()
+        strategy_names = {sid: name for sid, name, _ in selected_strategies}
 
         # 2. Configurar activos (uno o varios)
         configs, initial_sides = configure_trading()
-        for config in configs:
-            config.strategy_id = strategy_id
-
         # 3. Probar conexión (usando el primero)
         success, balance = test_connection(configs[0])
 
@@ -547,7 +588,12 @@ def main():
                 sys.exit(0)
 
         # 5. Mostrar configuración
-        show_startup_screen(strategy_name, strategy_id, configs[0], balance)
+        first_sid = selected_strategies[0][0]
+        first_name = selected_strategies[0][1]
+        show_startup_screen(first_name, first_sid, configs[0], balance)
+        if len(selected_strategies) > 1:
+            listed = ", ".join([f"{n}(ID:{i})" for i, n, _ in selected_strategies])
+            console.print(f"[dim]Estrategias activas: {listed}[/dim]\n")
 
         # Si hay más de un activo, mostrar los adicionales
         if len(configs) > 1:
@@ -571,18 +617,24 @@ def main():
         notificar_inicio_sesion(
             moneda=configs[0].quote_currency,
             activo=all_assets,
-            estrategia=f"{strategy_name} (ID: {strategy_id})",
+            estrategia=", ".join([f"{n} (ID:{i})" for i, n, _ in selected_strategies]),
             apalancamiento=configs[0].leverage,
             monto=configs[0].amount_per_trade,
             saldo=balance,
             modo=configs[0].execution_mode,
         )
 
-        # 6. Crear traders (uno por activo)
-        traders = [RealTrader(config, strategy_class) for config in configs]
+        # 6. Crear traders (uno por combinación activo x estrategia)
+        traders: List[RealTrader] = []
+        expanded_sides: List[Optional[str]] = []
+        for cfg, initial_side in zip(configs, initial_sides):
+            for sid, _name, sclass in selected_strategies:
+                cfg_i = replace(cfg, strategy_id=int(sid))
+                traders.append(RealTrader(cfg_i, sclass))
+                expanded_sides.append(initial_side)
 
         # 7. Ejecutar loop
-        run_trading_loop(traders, strategy_name, initial_sides)
+        run_trading_loop(traders, strategy_names, expanded_sides)
 
     except Exception as e:
         show_error(f"Error inesperado: {e}")

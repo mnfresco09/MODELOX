@@ -127,7 +127,7 @@ def _resolve_exit_setup() -> Dict[str, Any]:
     modo = str(MODO_SALIDA).strip().upper()
     if modo == "TRAILING":
         return {
-            "exit_type": "pnl_trailing",
+            "exit_type": "TRAILING",
             "exit_sl_pct": float(TRAILING_SL_PCT),
             "exit_tp_pct": 0.0,
             "exit_trail_act_pct": float(TRAILING_TP_ACT_PCT),
@@ -138,7 +138,7 @@ def _resolve_exit_setup() -> Dict[str, Any]:
             "exit_trail_dist_pct_range": tuple(TRAILING_DISTANCE_PCT_RANGE),
         }
     return {
-        "exit_type": "pnl_fixed",
+        "exit_type": "FIXED",
         "exit_sl_pct": float(FIXED_SL_PCT),
         "exit_tp_pct": float(FIXED_TP_PCT),
         "exit_trail_act_pct": float(CONFIG["EXIT_TRAIL_ACT_PCT"]),
@@ -159,7 +159,7 @@ def _build_exit_combinations() -> List[Dict[str, float]]:
     if modo in {"FIXED", "AMBOS", "BOTH"}:
         for sl, tp in product(_range_values(FIXED_SL_PCT_RANGE), _range_values(FIXED_TP_PCT_RANGE)):
             combos.append({
-                "exit_type": "pnl_fixed",
+                "exit_type": "FIXED",
                 "exit_sl_pct": float(sl),
                 "exit_tp_pct": float(tp),
                 "exit_trail_act_pct": float(CONFIG["EXIT_TRAIL_ACT_PCT"]),
@@ -172,7 +172,7 @@ def _build_exit_combinations() -> List[Dict[str, float]]:
             _range_values(TRAILING_DISTANCE_PCT_RANGE),
         ):
             combos.append({
-                "exit_type": "pnl_trailing",
+                "exit_type": "TRAILING",
                 "exit_sl_pct": float(sl),
                 "exit_tp_pct": 0.0,
                 "exit_trail_act_pct": float(act),
@@ -2188,12 +2188,12 @@ def main() -> None:
     rows: List[Dict[str, Any]] = []
     best_rich_score = -float("inf")
 
-    # ── Crear DATABASE/ incondicionalmente al arrancar ───────────────
+    # ── Crear resultados/DATABASE/ incondicionalmente al arrancar ────
     try:
         from modelox.optimizers.storage import get_database_dir as _gdd
-        _gdd()          # crea DATABASE/ si no existe
+        _gdd()          # crea resultados/DATABASE/ si no existe
     except Exception:
-        Path("DATABASE").mkdir(parents=True, exist_ok=True)
+        Path("resultados", "DATABASE").mkdir(parents=True, exist_ok=True)
 
     # ── Preparar directorios y timestamp antes del loop ──────────────
     out_dir = Path("resultados") / "BARRIDO_SALDO_APALANCAMIENTO"
@@ -2404,13 +2404,13 @@ def main() -> None:
         except Exception as _e:
             print(f"  ⚠ Error generando Excel resumen/trial: {_e}")
 
-    # ── Guardar DB Optuna en DATABASE/ (igual que ejecutar.py) ──────
+    # ── Guardar DB Optuna en resultados/DATABASE/ (igual que ejecutar.py) ──
     try:
         import optuna as _optuna
         import traceback as _tb
         from optuna.trial import create_trial as _create_trial, TrialState as _TrialState
         from optuna.distributions import FloatDistribution as _FloatDist
-        from modelox.optimizers.storage import get_database_dir as _get_db_dir
+        from modelox.optimizers.storage import get_database_dir as _get_db_dir, delete_database_file as _delete_db_file
         import os as _os
 
         _optuna.logging.set_verbosity(_optuna.logging.WARNING)
@@ -2424,10 +2424,16 @@ def main() -> None:
             lo, hi = float(lo), float(hi)
             return _FloatDist(lo, hi if hi > lo else lo + 1.0)
 
-        # Asegurar DATABASE/ existe (segunda garantía)
+        # Asegurar resultados/DATABASE/ existe (segunda garantía)
         _db_dir  = _get_db_dir()
         _db_name = f"BARRIDO_ID{strategy_id}.db"
         _db_path = _os.path.join(_db_dir, _db_name)
+
+        # Reset automático: si ya existe la DB de este ID, borrarla antes.
+        try:
+            _delete_db_file(_db_name, delete_root_legacy=True)
+        except Exception:
+            pass
 
         _study = _optuna.create_study(
             direction="maximize",
@@ -2475,7 +2481,7 @@ def main() -> None:
             except Exception as _re:
                 print(f"  ⚠ Trial omitido: {_re}")
 
-        print(f"  DB  → DATABASE/{_db_name}  ({_n_ok}/{len(rows)} trials OK)")
+        print(f"  DB  → resultados/DATABASE/{_db_name}  ({_n_ok}/{len(rows)} trials OK)")
     except Exception as _e:
         print(f"  ⚠ Error DB Optuna: {_e}")
         _tb.print_exc()

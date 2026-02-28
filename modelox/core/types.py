@@ -62,9 +62,11 @@ def _get_exit_defaults() -> dict:
     from modelox.core.exits import (
         DEFAULT_EXIT_TYPE, DEFAULT_EXIT_SL_PCT, DEFAULT_EXIT_TP_PCT,
         DEFAULT_EXIT_TRAIL_ACT_PCT, DEFAULT_EXIT_TRAIL_DIST_PCT,
+        DEFAULT_EXIT_TIME_BARS,
         DEFAULT_OPTIMIZE_EXITS,
         DEFAULT_EXIT_SL_PCT_RANGE, DEFAULT_EXIT_TP_PCT_RANGE,
         DEFAULT_EXIT_TRAIL_ACT_PCT_RANGE, DEFAULT_EXIT_TRAIL_DIST_PCT_RANGE,
+        DEFAULT_EXIT_TIME_BARS_RANGE,
     )
     return {
         "exit_type": DEFAULT_EXIT_TYPE,
@@ -72,17 +74,22 @@ def _get_exit_defaults() -> dict:
         "exit_tp_pct": DEFAULT_EXIT_TP_PCT,
         "exit_trail_act_pct": DEFAULT_EXIT_TRAIL_ACT_PCT,
         "exit_trail_dist_pct": DEFAULT_EXIT_TRAIL_DIST_PCT,
+        "exit_time_bars": DEFAULT_EXIT_TIME_BARS,
         "optimize_exits": DEFAULT_OPTIMIZE_EXITS,
         "exit_sl_pct_range": DEFAULT_EXIT_SL_PCT_RANGE,
         "exit_tp_pct_range": DEFAULT_EXIT_TP_PCT_RANGE,
         "exit_trail_act_pct_range": DEFAULT_EXIT_TRAIL_ACT_PCT_RANGE,
         "exit_trail_dist_pct_range": DEFAULT_EXIT_TRAIL_DIST_PCT_RANGE,
+        "exit_time_bars_range": DEFAULT_EXIT_TIME_BARS_RANGE,
     }
 
 
 # =============================================================================
 # 3. CONFIGURACIÓN DE BACKTEST
 # =============================================================================
+
+_EXIT_DEFAULTS = _get_exit_defaults()
+
 
 @dataclass(frozen=True)
 class BacktestConfig:
@@ -117,18 +124,20 @@ class BacktestConfig:
     # IMPORTANTE: No modificar estos defaults aquí. Cambiarlos en exits.py.
     # Los valores aquí son solo fallbacks de emergencia.
     # El runner SIEMPRE usa resolve_exit_settings_for_trial() de exits.py.
-    exit_type: str = "pnl_fixed"                 # "pnl_fixed" o "pnl_trailing"
-    exit_sl_pct: float = 8.0                     # Stop Loss % sobre stake
-    exit_tp_pct: float = 14.0                    # Take Profit % sobre stake
-    exit_trail_act_pct: float = 15.0             # Activación trailing % sobre stake
-    exit_trail_dist_pct: float = 3.0             # Distancia trailing % sobre stake
+    exit_type: str = _EXIT_DEFAULTS["exit_type"]                 # "FIXED" | "TRAILING" | "BARS" | "ATR"
+    exit_sl_pct: float = _EXIT_DEFAULTS["exit_sl_pct"]           # Stop Loss % sobre stake
+    exit_tp_pct: float = _EXIT_DEFAULTS["exit_tp_pct"]           # Take Profit % sobre stake
+    exit_trail_act_pct: float = _EXIT_DEFAULTS["exit_trail_act_pct"]   # Activación trailing % sobre stake
+    exit_trail_dist_pct: float = _EXIT_DEFAULTS["exit_trail_dist_pct"] # Distancia trailing % sobre stake
+    exit_time_bars: int = _EXIT_DEFAULTS["exit_time_bars"]       # Barras para time_bars (0=off)
 
     # ─── OPTIMIZACIÓN DE SALIDAS (OPTUNA) ────────────────────────────────
     optimize_exits: bool = True
-    exit_sl_pct_range: tuple[float, float, float] = (7.0, 27.0, 1.0)
-    exit_tp_pct_range: tuple[float, float, float] = (20.0, 40.0, 1.0)
-    exit_trail_act_pct_range: tuple[float, float, float] = (10.0, 28.0, 1.0)
-    exit_trail_dist_pct_range: tuple[float, float, float] = (2.0, 8.0, 0.5)
+    exit_sl_pct_range: tuple[float, float, float] = _EXIT_DEFAULTS["exit_sl_pct_range"]
+    exit_tp_pct_range: tuple[float, float, float] = _EXIT_DEFAULTS["exit_tp_pct_range"]
+    exit_trail_act_pct_range: tuple[float, float, float] = _EXIT_DEFAULTS["exit_trail_act_pct_range"]
+    exit_trail_dist_pct_range: tuple[float, float, float] = _EXIT_DEFAULTS["exit_trail_dist_pct_range"]
+    exit_time_bars_range: tuple[int, int, int] = _EXIT_DEFAULTS["exit_time_bars_range"]
 
 
 # =============================================================================

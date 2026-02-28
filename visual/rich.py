@@ -228,6 +228,7 @@ def mostrar_panel_elegante(
     tp = params.get("__exit_tp_pct", params.get("exit_tp_pct", 0.0))
     trail_act = params.get("__exit_trail_act_pct", params.get("exit_trail_act_pct", 0.0))
     trail_dist = params.get("__exit_trail_dist_pct", params.get("exit_trail_dist_pct", 0.0))
+    time_bars = int(params.get("__exit_time_bars", params.get("exit_time_bars", 0)))
     
     # Header info
     asset = activo.upper()[:6] if activo else "ASSET"
@@ -348,21 +349,31 @@ def mostrar_panel_elegante(
     param_grid.add_column(style=THEME.MUTED, width=16)
     param_grid.add_column(style=THEME.TEXT, justify="right", width=12)
     
-    is_trailing = "TRAIL" in exit_type
-    
-    # Exit section
-    param_grid.add_row(f"[bold {THEME.TEXT}]EXIT[/]", f"[bold {THEME.TEXT}]{'TRAILING' if is_trailing else ''}[/]")
-    param_grid.add_row("  SL%", f"= {sl:.1f}%")
-    
-    if is_trailing:
+    is_trailing  = exit_type == "TRAILING"
+    is_time_bars = exit_type == "BARS"
+    is_atr       = exit_type == "ATR"
+
+    # Exit section — 4 modos diferenciados
+    if is_time_bars:
+        param_grid.add_row(f"[bold {THEME.TEXT}]EXIT[/]", f"[bold {THEME.TEXT}]BARS[/]")
+        param_grid.add_row("  BARS", f"= {time_bars}")
+    elif is_trailing:
+        param_grid.add_row(f"[bold {THEME.TEXT}]EXIT[/]", f"[bold {THEME.TEXT}]TRAILING[/]")
+        param_grid.add_row("  SL%", f"= {sl:.1f}%")
         param_grid.add_row("  TRAIL ACT%", f"= {trail_act:.1f}%")
         param_grid.add_row("  TRAIL DIST%", f"= {trail_dist:.1f}%")
+    elif is_atr:
+        param_grid.add_row(f"[bold {THEME.TEXT}]EXIT[/]", f"[bold {THEME.TEXT}]ATR[/]")
+        param_grid.add_row("  SL% rng", f"20–40%")
+        param_grid.add_row("  TP% rng", f"20–40%")
     else:
+        param_grid.add_row(f"[bold {THEME.TEXT}]EXIT[/]", f"[bold {THEME.TEXT}]FIXED[/]")
+        param_grid.add_row("  SL%", f"= {sl:.1f}%")
         param_grid.add_row("  TP%", f"= {tp:.1f}%")
-    
+
     # Strategy params
-    skip_keys = {"exit_type", "exit_sl_pct", "exit_tp_pct", "exit_trail_act_pct", 
-                 "exit_trail_dist_pct", "NOMBRE_COMBO", "cantidad"}
+    skip_keys = {"exit_type", "exit_sl_pct", "exit_tp_pct", "exit_trail_act_pct",
+                 "exit_trail_dist_pct", "exit_time_bars", "NOMBRE_COMBO", "cantidad"}
     strategy_params = {k: v for k, v in params.items() 
                        if not str(k).startswith("__") and k not in skip_keys}
     

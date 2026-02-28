@@ -151,7 +151,7 @@ def load_data(path: str) -> pl.DataFrame:
     if ext in {".parquet", ".pq"}:
         q = pl.scan_parquet(str(p))
     elif ext in {".feather", ".fthr"}:
-        q = pl.scan_ipc(str(p))
+        q = pl.scan_ipc(str(p), memory_map=False)
     elif ext in {".csv"}:
         q = pl.scan_csv(str(p))
     else:
@@ -178,7 +178,9 @@ def _normalize_pl(q: pl.LazyFrame) -> pl.LazyFrame:
     Raises:
         ValueError: Si no se encuentra columna temporal.
     """
-    schema = q.collect_schema()
+    # En Polars >=0.20, LazyFrame expone el esquema vía la propiedad `.schema`
+    # (collect_schema fue removido). Usamos la propiedad para compatibilidad.
+    schema = q.schema
 
     # ─── DETECTAR COLUMNA TEMPORAL ───────────────────────────────────────
     col_time = next(

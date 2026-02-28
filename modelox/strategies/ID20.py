@@ -35,8 +35,10 @@ SEÑAL LONG  : CCI > +cci_threshold AND slope_ema >  +0.02
 SEÑAL SHORT : CCI < -cci_threshold AND slope_ema < -0.02
               Solo en FLANCO. Mutuamente excluyente con LONG.
 
-SALIDAS:
-  SALIDAS_PERSONALIZADAS = False
+SALIDAS PERSONALIZADAS (SALIDAS_PERSONALIZADAS=True):
+  Exit Long : CCI cruza por debajo de 0  OR  CCI vuelve a caer bajo +cci_threshold.
+  Exit Short: CCI cruza por encima de 0  OR  CCI vuelve a subir sobre -cci_threshold.
+  El SL fijo de exits.py actúa como backstop de emergencia.
 
 RANGOS OPTUNA (2 parámetros — anti-overfitting):
   cci_window    : int [14, 40]  step=2
@@ -85,8 +87,8 @@ class EstrategiaID20CCIBREAK(EstrategiaBase):
         Total combinaciones: 14 x 5 = 70 — espacio muy controlado.
         """
         return {
-            "cci_window":    trial.suggest_int("cci_window",    14, 40,  step=2),
-            "cci_threshold": trial.suggest_int("cci_threshold", 150, 200, step=10),
+            "cci_window":    trial.suggest_int("cci_window",    20, 80,  step=2),
+            "cci_threshold": trial.suggest_int("cci_threshold", 100, 300, step=5),
         }
 
     def get_required_timeframes(self, params: Dict[str, Any]) -> List[str]:
@@ -100,8 +102,9 @@ class EstrategiaID20CCIBREAK(EstrategiaBase):
           B) CCI = (PT - SMA(PT,n)) / (0.015 * MAD(PT,n))
           C) EMA(close, n) + pendiente normalizada
           D) Condiciones base: CCI breakout AND pendiente EMA válida
-          E) Flancos
-          F) finalize_signals (1 collect)
+          E) Flancos de entrada
+          F) Salidas personalizadas (exit_long / exit_short por CCI)
+          G) finalize_signals (1 collect)
         """
 
         self._init_params_metadata(params)
@@ -221,7 +224,7 @@ class EstrategiaID20CCIBREAK(EstrategiaBase):
             ).fill_null(False).alias("_cond_short"),
         ])
 
-        # ── FASE E: Flancos ────────────────────────────────────────────────────
+        # ── FASE E: Flancos de entrada ─────────────────────────────────────────
         q = q.with_columns([
             self._as_bool(
                 pl.col("_cond_long") &
@@ -235,7 +238,43 @@ class EstrategiaID20CCIBREAK(EstrategiaBase):
             ).alias("signal_short"),
         ])
 
-        # ── FASE F: finalize_signals ───────────────────────────────────────────
+        # ── FASE F: Salidas personalizadas ─────────────────────────────────────
+        # CCI previo para detección de flancos de salida
+        q = q.with_columns([
+            pl.col("cci").shift(1).alias("_cci_prev")
+        ])
+
+        thr = float(cci_threshold)
+
+        # Exit Long:
+        #   - CCI cruza por debajo de 0 (momentum alcista perdido)
+        #   - O vuelve a caer bajo +cci_threshold (impulso debilitado)
+        q = q.with_columns([
+            self._as_bool(
+                (
+                    (pl.col("cci") < 0.0) &
+                    (pl.col("_cci_prev").fill_null(0.0) >= 0.0)
+                ) | (
+                    (pl.col("cci") < thr) &
+                    (pl.col("_cci_prev").fill_null(thr) >= thr)
+                )
+            ).alias("exit_long"),
+
+            # Exit Short:
+            #   - CCI cruza por encima de 0 (momentum bajista perdido)
+            #   - O vuelve a subir sobre -cci_threshold (impulso debilitado)
+            self._as_bool(
+                (
+                    (pl.col("cci") > 0.0) &
+                    (pl.col("_cci_prev").fill_null(0.0) <= 0.0)
+                ) | (
+                    (pl.col("cci") > -thr) &
+                    (pl.col("_cci_prev").fill_null(-thr) <= -thr)
+                )
+            ).alias("exit_short"),
+        ])
+
+        # ── FASE G: finalize_signals ───────────────────────────────────────────
         return self.finalize_signals(
             q,
             keep_cols=[
@@ -243,5 +282,7 @@ class EstrategiaID20CCIBREAK(EstrategiaBase):
                 "cci",
                 "ema_val",
                 "slope_ema",
+                "exit_long",
+                "exit_short",
             ],
         )

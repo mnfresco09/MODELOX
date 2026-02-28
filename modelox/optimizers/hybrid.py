@@ -20,23 +20,36 @@ VENTAJAS:
 
 FILOSOFÍA DEL SCORING:
 ======================
-  Implementa un motor de gradiente continuo (Gradient Mirroring) vectorizado:
-  - Esperanza (Retorno por trade)
-  - Riesgo (Racha perdedora amortiguada)
-  - Estabilidad (R-Cuadrado de la curva trade a trade)
-  - Frecuencia (Penalización progresiva por operaciones diarias)
+  Score ∈ [0, 100] = media de N_PARTS slices temporales del periodo.
+
+  Cada slice:
+    raw_score  = E_score(E) + DD_score(DD)
+    slice_score = clamp(raw_score, 0) / E_MAX × T_score(tpd) × 100
+
+  Componentes:
+    E = WR × (AvgWin / AvgLoss_abs) − LR       (R-Multiple; equilibrio en 0)
+
+    E_score = E_MAX × tanh(E)           si E ≥ 0   → progresivo hasta E_MAX
+            = E_MAX × tanh(E × 2.0)     si E < 0   → penalización más dura
+
+    DD = Max Drawdown % desde pico del equity
+    DD_score = 0                         si DD ≤ DD_THRESHOLD   (neutro)
+             = −MAX_DD_PENALTY × ((DD − DD_THRESHOLD) / (100 − DD_THRESHOLD))^1.5
+
+    T_score  = 1.0                       si tpd ≥ TPD_THRESHOLD  (multiplicativo)
+             = (tpd / TPD_THRESHOLD)^3   si tpd < TPD_THRESHOLD
+
+  Anti-overfitting: un slice sin trades puntúa 0.
 ═══════════════════════════════════════════════════════════════════════════════
 """
 
 from __future__ import annotations
 
-import gc
 import math
 import re
-import time
 import warnings
-from dataclasses import dataclass, field
-from typing import Any, Callable, Dict, List, Mapping, Optional, Sequence, Tuple, TYPE_CHECKING
+from dataclasses import dataclass
+from typing import Any, Callable, Dict, List, Mapping, Optional, Sequence
 
 import numpy as np
 import optuna
@@ -48,8 +61,6 @@ from .storage import resolve_storage_for_strategy
 # =============================================================================
 # IMPORTS INTERNOS
 # =============================================================================
-from modelox.core.engine import BacktestParams, calculate_performance_vectorized_numba
-from modelox.core.metrics import resumen_metricas
 from modelox.core.types import (
     BacktestConfig,
     Reporter,
@@ -67,24 +78,97 @@ optuna.logging.set_verbosity(optuna.logging.WARNING)
 
 
 # =============================================================================
+# HELPER: SERIALIZACIÓN COMPACTA DE TRADES (para dashboard analítico)
+# =============================================================================
+
+def _serialize_trades_compact(trades_df: "pl.DataFrame", max_trades: int = 5000) -> list:
+    """
+    Serializa trades a una lista compacta de dicts para almacenamiento en Optuna DB.
+    Usado por el dashboard analítico institucional.
+
+    Formato por trade:
+        t   → type ("long"/"short")
+        ep  → entry_price (float, 2 decimales)
+        xp  → exit_price  (float, 2 decimales)
+        pnl → pnl_neto    (float, 4 decimales)
+        pct → pnl_pct     (float, 4 decimales)
+        r   → reason int  (0=EndData 1=SL 2=TP 3=Trail 4=Time 5=Signal)
+        ent → entry_time  str (ISO, 19 chars)
+        ext → exit_time   str (ISO, 19 chars)
+    """
+    try:
+        n = len(trades_df)
+        if n == 0:
+            return []
+        if n > max_trades:
+            trades_df = trades_df.head(max_trades)
+
+        cols = set(trades_df.columns)
+        select_map = {
+            "type":        "t",
+            "entry_price": "ep",
+            "exit_price":  "xp",
+            "pnl_neto":    "pnl",
+            "pnl_pct":     "pct",
+            "reason":      "r",
+            "entry_time":  "ent",
+            "exit_time":   "ext",
+        }
+        available = {src: dst for src, dst in select_map.items() if src in cols}
+        if not available:
+            return []
+
+        df_small = trades_df.select(list(available.keys())).rename(available)
+
+        # Redondear floats
+        for c, decimals in [("ep", 2), ("xp", 2), ("pnl", 4), ("pct", 4)]:
+            if c in df_small.columns:
+                df_small = df_small.with_columns(pl.col(c).round(decimals))
+
+        # Timestamps → string truncado
+        for c in ("ent", "ext"):
+            if c in df_small.columns:
+                try:
+                    df_small = df_small.with_columns(
+                        pl.col(c).cast(pl.String).str.slice(0, 19).alias(c)
+                    )
+                except Exception:
+                    pass
+
+        return df_small.to_dicts()
+    except Exception:
+        return []
+
+
+# =============================================================================
 # [SECCIÓN 1] CONFIGURACIÓN DEL SCORING HYBRID
 # =============================================================================
 
 @dataclass
 class HybridScoringConfig:
     """
-    Configuración del sistema de scoring híbrido continuo.
-    
-    Fórmula:
-        Score = (Esperanza / (Max_Racha_Perdedora + 1)) × R² × P_lineal(x)
-    
-    Donde P_lineal(x) con x = trades/día:
-        Si x >= TARGET_TRADES_PER_DAY → 1.0
-        Si x <  TARGET_TRADES_PER_DAY → x / TARGET_TRADES_PER_DAY
+    Configuración del scoring híbrido.
+
+    Score ∈ [0, 100] = media de N_PARTS slices temporales.
+
+    Cada slice:
+        raw        = E_score(E) + DD_score(DD)
+        slice_score = clamp(raw, 0) / E_MAX × T_score(tpd) × 100
+
+    E_score: E_MAX × tanh(E)       si E ≥ 0
+             E_MAX × tanh(E × 2.0) si E < 0   (más severo)
+    DD_score: 0                     si DD ≤ DD_THRESHOLD
+              −MAX_DD_PENALTY × ((DD − DD_THRESHOLD) / (100 − DD_THRESHOLD))^1.5
+    T_score:  1.0                   si tpd ≥ TPD_THRESHOLD
+              (tpd / TPD_THRESHOLD)^3
     """
-    # OBJETIVOS DEL MOTOR MATEMÁTICO
-    TARGET_TRADES_PER_DAY: float = 0.3    # Rampa de penalización progresiva
-    MIN_TRADES_FOR_RELIABLE: int = 10     # Debajo de esto, esperanza se amortigua linealmente
+    E_MAX: float          = 2.0   # Techo de E_score (y divisor de normalización)
+    DD_THRESHOLD: float   = 27.5  # Umbral de drawdown en % (por encima → penaliza)
+    MAX_DD_PENALTY: float = 2.0   # Penalización máxima de DD (en unidades de E_score)
+    TPD_THRESHOLD: float  = 0.25  # Trades/día mínimos sin penalización
+    N_PARTS: int          = 4     # Slices temporales para anti-overfitting
+    # BASE_CAPITAL: se usa saldo_inicial del BacktestConfig, no hay valor fijo aquí
+
 
 # Instancia por defecto
 HYBRID_SCORING_CONFIG = HybridScoringConfig()
@@ -97,8 +181,13 @@ HYBRID_SCORING_CONFIG = HybridScoringConfig()
 class HybridScorer:
     """
     Scorer para Optimizador Híbrido QMC/TPE.
+
+    Score ∈ [0, 100] = media de N_PARTS slices temporales.
+
+    Cada slice puntúa por [Expectancy, Drawdown, Frecuencia].
+    Un slice sin trades puntúa 0 (penaliza inconsistencia temporal).
     """
-    
+
     def __init__(
         self,
         study: Optional[optuna.Study] = None,
@@ -106,41 +195,159 @@ class HybridScorer:
     ):
         self.study = study
         self.config = config or HYBRID_SCORING_CONFIG
-    
+
+    # =========================================================================
+    # HELPERS MATEMÁTICOS (ESTÁTICOS)
+    # =========================================================================
+
     @staticmethod
-    def _safe_get(metrics: Mapping[str, Any], key: str, default: float = 0.0) -> float:
-        try:
-            val = metrics.get(key, default)
-            if val is None:
-                return default
-            f_val = float(val)
-            if math.isnan(f_val) or math.isinf(f_val):
-                return default
-            return f_val
-        except Exception:
-            return default
-    
+    def _compute_expectancy(pnl: np.ndarray) -> float:
+        """
+        E = WR × (AvgWin / AvgLoss_abs) − LR
+
+        Punto de equilibrio estricto en 0.0.
+        Si no hay pérdidas → AvgLoss_abs = 1e-10 (E muy alto, tanh lo amortigua).
+        """
+        n = len(pnl)
+        if n == 0:
+            return -1.0
+
+        winners = pnl[pnl > 0]
+        losers  = pnl[pnl < 0]
+
+        wr  = len(winners) / n
+        lr  = 1.0 - wr
+
+        avg_win      = float(np.mean(winners))           if len(winners) > 0 else 0.0
+        avg_loss_abs = float(np.mean(np.abs(losers)))    if len(losers)  > 0 else 1e-10
+
+        rr = avg_win / max(avg_loss_abs, 1e-10)
+        return float(wr * rr - lr)
+
+    @staticmethod
+    def _compute_max_dd_pct(pnl: np.ndarray, base_capital: float) -> float:
+        """
+        Max Drawdown % desde el pico del equity.
+        equity = base_capital + cumsum(pnl)
+        """
+        if len(pnl) == 0:
+            return 0.0
+        equity = base_capital + np.cumsum(pnl)
+        peak   = np.maximum.accumulate(equity)
+        dd_pct = np.where(peak > 0, (peak - equity) / peak * 100.0, 0.0)
+        return float(np.max(dd_pct))
+
+    # =========================================================================
+    # COMPONENTES DEL SCORE
+    # =========================================================================
+
+    def _e_score(self, E: float) -> float:
+        """
+        E ≥ 0 → E_MAX × tanh(E)          progresivo hasta E_MAX
+        E < 0 → E_MAX × tanh(E × 2.0)    penalización más dura
+        """
+        cfg = self.config
+        if E >= 0.0:
+            return cfg.E_MAX * math.tanh(E)
+        else:
+            return cfg.E_MAX * math.tanh(E * 2.0)
+
+    def _dd_score(self, dd_pct: float) -> float:
+        """
+        DD ≤ DD_THRESHOLD → 0.0           (neutro, sin bonus ni penalización)
+        DD > DD_THRESHOLD → penalización progresiva creciente [−MAX_DD_PENALTY, 0)
+        """
+        cfg = self.config
+        if dd_pct <= cfg.DD_THRESHOLD:
+            return 0.0
+        excess_norm = (dd_pct - cfg.DD_THRESHOLD) / max(100.0 - cfg.DD_THRESHOLD, 1e-10)
+        excess_norm = min(1.0, excess_norm)
+        return -cfg.MAX_DD_PENALTY * (excess_norm ** 1.5)
+
+    def _t_score(self, tpd: float) -> float:
+        """
+        tpd ≥ TPD_THRESHOLD → 1.0              (sin efecto)
+        tpd < TPD_THRESHOLD → (tpd / threshold)^3   (colapsa hacia 0)
+        Multiplicativo: destruye el score si la estrategia no opera suficiente.
+        """
+        cfg = self.config
+        if tpd >= cfg.TPD_THRESHOLD:
+            return 1.0
+        return (tpd / cfg.TPD_THRESHOLD) ** 3.0
+
+    # =========================================================================
+    # SCORE POR SLICE
+    # =========================================================================
+
+    def _score_slice(self, pnl_slice: np.ndarray, days_slice: float, saldo_inicial: float) -> float:
+        """
+        Score [0, 100] para un slice temporal.
+        Slice vacío → 0.0  (penaliza periodos sin actividad).
+        """
+        return self._score_slice_detailed(pnl_slice, days_slice, saldo_inicial)["score"]
+
+    def _score_slice_detailed(self, pnl_slice: np.ndarray, days_slice: float, saldo_inicial: float) -> dict:
+        """
+        Score [0, 100] + desglose de componentes para un slice temporal.
+        Devuelve dict con: score, e_score, dd_score, t_score, E, dd_pct, tpd, n
+        """
+        cfg = self.config
+        n = len(pnl_slice)
+        if n == 0 or days_slice <= 0.0:
+            return {"score": 0.0, "e_score": 0.0, "dd_score": 0.0, "t_score": 0.0,
+                    "E": -1.0, "dd_pct": 0.0, "tpd": 0.0, "n": 0}
+
+        E      = self._compute_expectancy(pnl_slice)
+        dd_pct = self._compute_max_dd_pct(pnl_slice, saldo_inicial)
+        tpd    = n / days_slice
+
+        e_s  = self._e_score(E)
+        dd_s = self._dd_score(dd_pct)
+        t_s  = self._t_score(tpd)
+
+        raw     = e_s + dd_s
+        clamped = max(0.0, raw)
+        norm    = clamped / cfg.E_MAX
+        score   = norm * t_s * 100.0
+
+        return {
+            "score":    round(score, 4),
+            "e_score":  round(e_s,   4),
+            "dd_score": round(dd_s,  4),
+            "t_score":  round(t_s,   4),
+            "E":        round(E,     4),
+            "dd_pct":   round(dd_pct, 3),
+            "tpd":      round(tpd,   4),
+            "n":        int(n),
+        }
+
+    # =========================================================================
+    # FUNCIÓN PÚBLICA PRINCIPAL
+    # =========================================================================
+
     def compute_score(
         self,
         trial: Optional[optuna.Trial],
         metrics: Mapping[str, Any],
-        returns: Optional[np.ndarray] = None,
         equity_curve: Optional[np.ndarray] = None,
         trades_pnl: Optional[np.ndarray] = None,
         total_days: Optional[float] = None,
+        saldo_inicial: Optional[float] = None,
     ) -> float:
         """
-        SCORING HÍBRIDO — Fórmula única:
-        
-            Score = (Esperanza / (Max_Racha_Perdedora + 1)) × R² × P_lineal(x)
-        
-        Donde:
-            Esperanza = Beneficio Neto Total / Número Total de Trades
-                        (amortiguado si n_trades < MIN_TRADES_FOR_RELIABLE)
-            R²        = Coef. determinación de capital acumulado vs nº trade
-            P_lineal  = min(1, trades_per_day / 0.5)
+        Score ∈ [0, 100] = media de N_PARTS slices del periodo.
+
+        Divide trades_pnl en N_PARTS chunks iguales por índice.
+        Cada chunk cubre total_days / N_PARTS días.
+        Un chunk sin trades puntúa 0.
+
+        saldo_inicial: capital de partida del backtest (BacktestConfig.saldo_inicial).
+                       Se usa como referencia para calcular el Drawdown %.
+                       Si no se pasa, se infiere de equity_curve[0].
         """
-        # ── 1. Extracción y validación de datos ────────────────────────
+        cfg = self.config
+
+        # ── 1. Extracción de datos ─────────────────────────────────────────
         if trades_pnl is None:
             raw = metrics.get("_trades_pnl_array", None)
             if raw is not None:
@@ -150,86 +357,53 @@ class HybridScorer:
             return 0.0
 
         if total_days is None or total_days <= 0.0:
-            td = self._safe_get(metrics, "_total_days", 0.0)
+            td = float(metrics.get("_total_days", 0.0) or 0.0)
             if td <= 0.0:
-                tpd = self._safe_get(metrics, "trades_por_dia", 0.0)
-                n_t = int(self._safe_get(metrics, "n_trades", 0))
-                if n_t == 0:
-                    n_t = int(self._safe_get(metrics, "total_trades", 0))
+                tpd = float(metrics.get("trades_por_dia", 0.0) or 0.0)
+                n_t = int(metrics.get("n_trades", 0) or metrics.get("total_trades", 0))
                 td = float(n_t) / tpd if tpd > 0 else 1.0
             total_days = td
 
-        n_trades = len(trades_pnl)
+        # Resolver capital de referencia para DD
+        if saldo_inicial is None or saldo_inicial <= 0.0:
+            if equity_curve is not None and len(equity_curve) > 0:
+                saldo_inicial = float(equity_curve[0])
+            else:
+                saldo_inicial = 1_000.0  # fallback mínimo
+
+        trades_pnl = np.asarray(trades_pnl, dtype=np.float64)
+        n_trades   = len(trades_pnl)
         if n_trades == 0 or total_days <= 0.0:
             return 0.0
 
-        # ── 2. Cálculos Matemáticos Core ───────────────────────────────
+        # ── 2. Anti-overfitting: N_PARTS slices temporales ────────────────
+        n_parts        = max(1, cfg.N_PARTS)
+        slices         = np.array_split(trades_pnl, n_parts)
+        days_slice     = total_days / n_parts
+        slice_details  = [self._score_slice_detailed(s, days_slice, saldo_inicial) for s in slices]
+        slice_scores   = [d["score"] for d in slice_details]
 
-        # A. Esperanza = Beneficio Neto Total / N trades
-        #    Con amortiguación para pocos trades: si n_trades < MIN,
-        #    escalamos linealmente para evitar que la esperanza se dispare.
-        esperanza_raw = float(np.sum(trades_pnl)) / n_trades
-        min_trades = getattr(self.config, 'MIN_TRADES_FOR_RELIABLE', 10)
-        if n_trades < min_trades and min_trades > 0:
-            # Rampa lineal: 1 trade → factor 0.1, 10 trades → factor 1.0
-            trade_factor = n_trades / min_trades
-            esperanza = esperanza_raw * trade_factor
-        else:
-            esperanza = esperanza_raw
-
-        # B. Racha Perdedora máxima (Vectorizada)
-        es_negativo = (trades_pnl < 0).astype(int)
-        padded = np.pad(es_negativo, (1, 1), 'constant', constant_values=0)
-        diffs = np.diff(padded)
-        starts = np.where(diffs == 1)[0]
-        ends = np.where(diffs == -1)[0]
-        max_racha = float(np.max(ends - starts)) if len(starts) > 0 else 0.0
-
-        # C. R² (Estabilidad de la curva de capital)
-        #    Eje X = Número de trade (1, 2, 3, ...)
-        #    Eje Y = Capital acumulado (cumsum de PnL por trade)
-        #    R² mide qué tan bien los puntos siguen una línea recta
-        if n_trades > 1:
-            x = np.arange(1, n_trades + 1)
-            y = np.cumsum(trades_pnl)
-            if np.std(y) == 0:
-                r_squared = 0.0
-            else:
-                correlacion = np.corrcoef(x, y)[0, 1]
-                r_squared = float(correlacion**2) if not np.isnan(correlacion) else 0.0
-        else:
-            r_squared = 0.0
-
-        # D. Penalización Lineal por frecuencia — P_lineal(x)
-        #    x = trades_per_day
-        #    Si x >= 0.5 → 1.0 (sin penalización)
-        #    Si x <  0.5 → x / 0.5 (rampa suave)
-        trades_per_day = n_trades / total_days
-        target_tpd = getattr(self.config, 'TARGET_TRADES_PER_DAY', 0.5)
-        p_lineal = min(1.0, trades_per_day / target_tpd) if target_tpd > 0 else 1.0
-
-        # ── 3. Fórmula Final ───────────────────────────────────────────
-        #    Score = (Esperanza / (Max_Racha_Perdedora + 1)) × R² × P_lineal × 100
-        final_score = (esperanza / (max_racha + 1.0)) * r_squared * p_lineal * 100.0
-
-        # ── SEGURO: proteger contra NaN / Inf por edge cases numéricos ──
+        final_score = float(np.mean(slice_scores))
         if not math.isfinite(final_score):
             final_score = 0.0
 
-        # ── 4. Auditoría en Optuna ─────────────────────────────────────
+        # ── 3. Auditoría en Optuna ─────────────────────────────────────────
         if trial is not None:
             try:
-                trial.set_user_attr('final_score', float(final_score))
-                trial.set_user_attr('esperanza', float(esperanza))
-                trial.set_user_attr('esperanza_raw', float(esperanza_raw))
-                trial.set_user_attr('max_racha', float(max_racha))
-                trial.set_user_attr('r_squared', float(r_squared))
-                trial.set_user_attr('p_lineal', float(p_lineal))
-                trial.set_user_attr('n_trades', int(n_trades))
+                E_global   = self._compute_expectancy(trades_pnl)
+                dd_global  = self._compute_max_dd_pct(trades_pnl, saldo_inicial)
+                tpd_global = n_trades / total_days
+                trial.set_user_attr("final_score",       float(final_score))
+                trial.set_user_attr("expectancy",        float(E_global))
+                trial.set_user_attr("max_dd_pct",        float(dd_global))
+                trial.set_user_attr("trades_per_day",    float(tpd_global))
+                trial.set_user_attr("slice_scores",      [round(s, 4) for s in slice_scores])
+                trial.set_user_attr("slice_components",  slice_details)
+                trial.set_user_attr("n_trades",          int(n_trades))
             except Exception:
                 pass
 
-        return float(final_score)
+        return final_score
 
 
 # =============================================================================
@@ -303,16 +477,18 @@ class HybridOptimizer:
         params_rt["__exit_tp_pct"] = exit_settings.tp_pct
         params_rt["__exit_trail_act_pct"] = exit_settings.trail_act_pct
         params_rt["__exit_trail_dist_pct"] = exit_settings.trail_dist_pct
-        
+        params_rt["__exit_time_bars"] = exit_settings.time_stop_bars
+
         params_rt["exit_type"] = exit_settings.exit_type
         params_rt["exit_sl_pct"] = exit_settings.sl_pct
         params_rt["exit_tp_pct"] = exit_settings.tp_pct
         params_rt["exit_trail_act_pct"] = exit_settings.trail_act_pct
         params_rt["exit_trail_dist_pct"] = exit_settings.trail_dist_pct
-        
+        params_rt["exit_time_bars"] = exit_settings.time_stop_bars
+
         entry_tf = normalize_timeframe_to_suffix(getattr(strategy, "timeframe_entry", None) or base_tf)
-        # FORZAR salidas SIEMPRE en 1m para máxima precisión (SL/TP/Trailing)
-        exit_tf = "1m"
+        # time_bars: usa el mismo TF de entrada para contar barras (no 1m)
+        exit_tf = entry_tf if exit_settings.exit_type == "BARS" else "1m"
         
         params_rt["__timeframe_base"] = base_tf
         params_rt["__timeframe_entry"] = entry_tf
@@ -331,7 +507,6 @@ class HybridOptimizer:
         from modelox.core.runner import SignalGenerator, BacktestEngine, periodic_cleanup
         
         def objective(trial: optuna.Trial) -> float:
-            t0_total = time.perf_counter()
             periodic_cleanup(trial.number)
             
             params_rt = self._prepare_params(trial, strategy, base_tf)
@@ -342,18 +517,29 @@ class HybridOptimizer:
             trades_df, equity_curve, metrics = BacktestEngine.run_backtest(
                 df_entry, signals_df, self.config, params_rt, strategy,
             )
-            
+
             if trades_df.is_empty():
                 return 0.0
-            
+
             trial.set_user_attr("metricas", metrics)
-            
-            # Extraer pnl_neto array y total_days
+
+            # ── Dashboard analytics: trades compactos + equity curve ──────
+            try:
+                trial.set_user_attr("trades_data", _serialize_trades_compact(trades_df))
+            except Exception:
+                pass
+            try:
+                if equity_curve and len(equity_curve) <= 10_000:
+                    trial.set_user_attr("equity_curve", [round(v, 4) for v in equity_curve])
+            except Exception:
+                pass
+
+            # Extraer pnl_neto array
             if isinstance(trades_df, pl.DataFrame):
                 _pnl_arr = trades_df["pnl_neto"].to_numpy().astype(np.float64)
             else:
                 _pnl_arr = trades_df["pnl_neto"].to_numpy(dtype=np.float64)
-            
+
             # total_days desde timestamps del DataFrame de entrada
             _total_days = 0.0
             if "timestamp" in df_entry.columns and len(df_entry) > 0:
@@ -366,13 +552,14 @@ class HybridOptimizer:
                     _total_days = max(1.0, float(_delta["d"][0]))
                 except Exception:
                     _total_days = 1.0
-            
+
             score = self._scorer.compute_score(
                 trial=trial,
                 metrics=metrics,
                 equity_curve=np.array(equity_curve) if equity_curve else None,
                 trades_pnl=_pnl_arr,
                 total_days=_total_days,
+                saldo_inicial=float(self.config.saldo_inicial),
             )
             
             artifacts = TrialArtifacts(
@@ -519,6 +706,7 @@ def score_hybrid(
     equity_curve: Optional[List[float]] = None,
     trades_pnl: Optional[np.ndarray] = None,
     total_days: Optional[float] = None,
+    saldo_inicial: Optional[float] = None,
 ) -> float:
     scorer = HybridScorer()
     return scorer.compute_score(
@@ -527,6 +715,7 @@ def score_hybrid(
         equity_curve=np.array(equity_curve) if equity_curve else None,
         trades_pnl=trades_pnl,
         total_days=total_days,
+        saldo_inicial=saldo_inicial,
     )
 
 __all__ = [

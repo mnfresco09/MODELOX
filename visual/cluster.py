@@ -10,8 +10,7 @@ http://127.0.0.1:8050
 
 
  
-optuna-dashboard sqlite:////Users/manuel/Desktop/MODELOX/DATABASE/ID2.db
- 
+optuna-dashboard sqlite:////Users/manuel/Desktop/MODELOX/resultados/DATABASE/ID2.db 
 Ejecutar desde la raíz del proyecto:  python visual/cluster_optuna.py [archivo]
 ================================================================================
 """
@@ -215,8 +214,8 @@ def _prepare_params_matrix(
 # =============================================================================
 
 APLICAR_FILTRO_METRICAS = True  # <--- NUEVA CONDICIÓN (True = filtra por métricas, False = solo agrupa por parámetros)
-ROI_MIN = 0.05
-TRADES_DIA_MIN = 0.05
+ROI_MIN = 0.65
+TRADES_DIA_MIN = 0.15
 
 def _find_metric_columns(df: pd.DataFrame) -> Tuple[Optional[str], Optional[str], Optional[str]]:
     """Detecta columnas ROI, TRADES_DIA y SCORE por nombre."""

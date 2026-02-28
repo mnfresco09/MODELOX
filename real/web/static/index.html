@@ -1,0 +1,116 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>MODELOX | Institutional Trading Dashboard</title>
+  <link rel="stylesheet" href="/static/style.css" />
+  <script src="https://unpkg.com/lightweight-charts@4.1.0/dist/lightweight-charts.standalone.production.js"></script>
+</head>
+<body>
+  <div class="terminal-grid">
+    <header class="panel panel-header">
+      <div class="brand-block">
+        <div class="brand-title">MODELOX TRADING TERMINAL</div>
+        <div class="brand-meta" id="marketMode">LIVE</div>
+      </div>
+      <div class="header-stats">
+        <div class="kv"><span>ACTIVO</span><strong id="statAsset">-</strong></div>
+        <div class="kv"><span>TF</span><strong id="statTf">-</strong></div>
+        <div class="kv"><span>PRICE</span><strong id="statPrice" class="mono">-</strong></div>
+        <div class="kv"><span>EQUITY</span><strong id="statEquity" class="mono">-</strong></div>
+      </div>
+    </header>
+
+    <aside class="left-col">
+      <section class="panel panel-controls">
+        <div class="control-row">
+          <label for="assetSelect">ACTIVO</label>
+          <select id="assetSelect"></select>
+        </div>
+        <div class="control-row tf-row">
+          <span class="label">TIMEFRAME</span>
+          <div id="tfButtons" class="tf-buttons"></div>
+        </div>
+        <div class="control-row">
+          <label for="strategySelect">ESTRATEGIA</label>
+          <select id="strategySelect"></select>
+        </div>
+        <button id="applySelectors" class="btn btn-primary">APLICAR CONTEXTO</button>
+      </section>
+
+      <section class="panel panel-order">
+        <div class="panel-title">ORDER ENTRY</div>
+        <div class="order-grid">
+          <div class="field">
+            <label for="orderSide">L/S</label>
+            <select id="orderSide">
+              <option value="LONG">BUY / LONG</option>
+              <option value="SHORT">SELL / SHORT</option>
+            </select>
+          </div>
+          <div class="field">
+            <label for="orderType">TIPO</label>
+            <select id="orderType">
+              <option value="MARKET">MARKET</option>
+            </select>
+          </div>
+          <div class="field">
+            <label for="orderMargin">MARGEN</label>
+            <input id="orderMargin" type="number" min="0" step="0.01" placeholder="0.00" />
+          </div>
+          <div class="field">
+            <label>APAL.</label>
+            <input id="orderLeverage" type="text" value="-" readonly />
+          </div>
+        </div>
+        <div class="order-estimation mono">
+          Tamaño pos.: <span id="estQty">-</span> | Nocional: <span id="estNotional">-</span>
+        </div>
+        <div class="order-balance mono">
+          Disponible: <span id="balAvailable">-</span> | Equity: <span id="balEquity">-</span>
+        </div>
+        <div class="order-actions">
+          <button id="btnBuy" class="btn btn-buy">BUY</button>
+          <button id="btnSell" class="btn btn-sell">SELL</button>
+        </div>
+        <div id="orderStatus" class="status-line mono"></div>
+      </section>
+
+      <section class="panel panel-positions">
+        <div class="panel-title">POSICIONES ACTIVAS</div>
+        <div class="table-wrap">
+          <table>
+            <thead>
+              <tr>
+                <th>Símbolo</th>
+                <th>L/S</th>
+                <th>Estrategia</th>
+                <th>Entrada</th>
+                <th>Actual</th>
+                <th>PnL</th>
+                <th>Acción</th>
+              </tr>
+            </thead>
+            <tbody id="positionsBody"></tbody>
+          </table>
+        </div>
+      </section>
+    </aside>
+
+    <section class="panel panel-chart">
+      <div class="panel-title">PRICE & INDICATORS</div>
+      <div id="chartContainer"></div>
+      <div id="subPanels"></div>
+    </section>
+
+    <section class="panel panel-status">
+      <div class="panel-title">ESTADO</div>
+      <div id="systemStatus" class="mono">Conectando stream...</div>
+      <div id="apiError" class="mono"></div>
+    </section>
+  </div>
+
+  <script src="/static/app.js"></script>
+</body>
+</html>

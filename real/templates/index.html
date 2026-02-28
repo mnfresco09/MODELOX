@@ -1,0 +1,308 @@
+<!doctype html>
+<html lang="es">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>MODELOX · Real Dashboard</title>
+  <script src="https://unpkg.com/lightweight-charts@4.1.1/dist/lightweight-charts.standalone.production.js"></script>
+  <style>
+    :root {
+      --bg: #0b1220;
+      --card: #121b2e;
+      --line: #21304a;
+      --text: #dbe4f3;
+      --muted: #8da0c4;
+      --green: #29d391;
+      --red: #ff5e7b;
+      --blue: #56a0ff;
+    }
+    * { box-sizing: border-box; }
+    body { margin: 0; font-family: Inter, system-ui, sans-serif; background: var(--bg); color: var(--text); }
+    .app { display: grid; grid-template-rows: auto 1fr; height: 100vh; }
+    .top {
+      display: grid;
+      grid-template-columns: 1fr auto auto auto auto;
+      gap: 10px;
+      padding: 10px;
+      border-bottom: 1px solid var(--line);
+      background: #0f1728;
+      align-items: center;
+    }
+    .title { font-weight: 700; letter-spacing: .4px; }
+    select, button {
+      background: var(--card);
+      border: 1px solid var(--line);
+      color: var(--text);
+      border-radius: 8px;
+      padding: 8px 10px;
+    }
+    button { cursor: pointer; }
+    .main { display: grid; grid-template-columns: 2fr 1fr; min-height: 0; }
+    .left { border-right: 1px solid var(--line); display: grid; grid-template-rows: 1fr auto auto; min-height: 0; }
+    #chartMain { min-height: 0; }
+    #chartSub { min-height: 180px; border-top: 1px solid var(--line); }
+    .statusbar { padding: 8px 10px; border-top: 1px solid var(--line); color: var(--muted); font-size: 13px; }
+    .right { padding: 10px; overflow: auto; display: grid; gap: 10px; align-content: start; }
+    .card { background: var(--card); border: 1px solid var(--line); border-radius: 10px; padding: 10px; }
+    .card h3 { margin: 0 0 8px; font-size: 13px; color: var(--muted); text-transform: uppercase; letter-spacing: .5px; }
+    .row { display: flex; justify-content: space-between; gap: 10px; padding: 4px 0; font-size: 14px; }
+    .btns { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; }
+    .btn-green { border-color: #1f6f56; color: var(--green); }
+    .btn-red { border-color: #7a3342; color: var(--red); }
+    table { width: 100%; border-collapse: collapse; font-size: 12px; }
+    th, td { border-bottom: 1px solid var(--line); padding: 6px 4px; text-align: left; }
+    th { color: var(--muted); font-weight: 600; }
+    .pos { color: var(--green); }
+    .neg { color: var(--red); }
+  </style>
+</head>
+<body>
+  <div class="app">
+    <div class="top">
+      <div class="title">MODELOX · REAL DASHBOARD</div>
+      <select id="assetSel"></select>
+      <select id="strategySel"></select>
+      <select id="tfSel"></select>
+      <button id="applyBtn">Aplicar cambios</button>
+    </div>
+
+    <div class="main">
+      <div class="left">
+        <div id="chartMain"></div>
+        <div id="chartSub"></div>
+        <div class="statusbar" id="statusLine">Iniciando...</div>
+      </div>
+
+      <div class="right">
+        <div class="card">
+          <h3>Estado</h3>
+          <div class="row"><span>Precio</span><strong id="price">-</strong></div>
+          <div class="row"><span>Activo</span><strong id="symbol">-</strong></div>
+          <div class="row"><span>Timeframe</span><strong id="tf">-</strong></div>
+          <div class="row"><span>Estrategia</span><strong id="strategy">-</strong></div>
+          <div class="row"><span>Última señal</span><strong id="lastSignal">-</strong></div>
+        </div>
+
+        <div class="card">
+          <h3>Operación manual</h3>
+          <div class="btns">
+            <button class="btn-green" onclick="manualOpen('LONG')">Abrir LONG</button>
+            <button class="btn-red" onclick="manualOpen('SHORT')">Abrir SHORT</button>
+            <button style="grid-column:1/3" onclick="manualClose()">Cerrar operación activa</button>
+          </div>
+        </div>
+
+        <div class="card">
+          <h3>Operaciones abiertas</h3>
+          <table>
+            <thead>
+              <tr><th>Lado</th><th>Entrada</th><th>PnL</th><th>Cant.</th></tr>
+            </thead>
+            <tbody id="openTradesBody">
+              <tr><td colspan="4">Sin operaciones</td></tr>
+            </tbody>
+          </table>
+        </div>
+
+        <div class="card">
+          <h3>Métricas sesión</h3>
+          <div class="row"><span>Total trades</span><strong id="mTrades">0</strong></div>
+          <div class="row"><span>Wins / Losses</span><strong id="mWL">0 / 0</strong></div>
+          <div class="row"><span>Winrate</span><strong id="mWin">0%</strong></div>
+          <div class="row"><span>PnL total</span><strong id="mPnl">0</strong></div>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <script>
+    let chartMain, chartSub, candleSeries, subplotSeries;
+    let overlaySeries = [];
+
+    function initChart() {
+      const el = document.getElementById('chartMain');
+      chartMain = LightweightCharts.createChart(el, {
+        layout: { background: { color: '#0b1220' }, textColor: '#8da0c4' },
+        grid: { vertLines: { color: '#21304a44' }, horzLines: { color: '#21304a44' } },
+        rightPriceScale: { borderColor: '#21304a' },
+        timeScale: { borderColor: '#21304a', timeVisible: true, secondsVisible: false },
+        width: el.clientWidth,
+        height: el.clientHeight,
+      });
+      candleSeries = chartMain.addCandlestickSeries({
+        upColor: '#29d391', downColor: '#ff5e7b',
+        borderUpColor: '#29d391', borderDownColor: '#ff5e7b',
+        wickUpColor: '#29d391', wickDownColor: '#ff5e7b'
+      });
+
+      const sub = document.getElementById('chartSub');
+      chartSub = LightweightCharts.createChart(sub, {
+        layout: { background: { color: '#0b1220' }, textColor: '#8da0c4' },
+        grid: { vertLines: { color: '#21304a44' }, horzLines: { color: '#21304a44' } },
+        rightPriceScale: { borderColor: '#21304a' },
+        timeScale: { borderColor: '#21304a', timeVisible: true, secondsVisible: false },
+        width: sub.clientWidth,
+        height: sub.clientHeight,
+      });
+      subplotSeries = chartSub.addLineSeries({ color: '#56a0ff', lineWidth: 2, priceLineVisible: false });
+
+      new ResizeObserver(() => {
+        chartMain.applyOptions({ width: el.clientWidth, height: el.clientHeight });
+      }).observe(el);
+
+      new ResizeObserver(() => {
+        chartSub.applyOptions({ width: sub.clientWidth, height: sub.clientHeight });
+      }).observe(sub);
+    }
+
+    async function loadOptions() {
+      const res = await fetch('/api/options');
+      const opt = await res.json();
+
+      const assetSel = document.getElementById('assetSel');
+      assetSel.innerHTML = (opt.assets || []).map(a => `<option value="${a.symbol}">${a.name}</option>`).join('');
+
+      const strategySel = document.getElementById('strategySel');
+      strategySel.innerHTML = (opt.strategies || []).map(s => `<option value="${s.id}">ID ${s.id} · ${s.name}</option>`).join('');
+
+      const tfSel = document.getElementById('tfSel');
+      tfSel.innerHTML = (opt.timeframes || []).map(tf => `<option value="${tf}">${tf}</option>`).join('');
+    }
+
+    async function sendCommand(payload) {
+      const r = await fetch('/api/command', {
+        method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(payload)
+      });
+      return r.json();
+    }
+
+    async function applyChanges() {
+      const asset = document.getElementById('assetSel').value;
+      const strategyId = Number(document.getElementById('strategySel').value);
+      const timeframe = document.getElementById('tfSel').value;
+
+      await sendCommand({ action: 'set_asset', asset });
+      await sendCommand({ action: 'set_strategy', strategy_id: strategyId });
+      await sendCommand({ action: 'set_timeframe', timeframe });
+    }
+
+    async function manualOpen(direction) {
+      await sendCommand({ action: 'manual_open', direction });
+    }
+
+    async function manualClose() {
+      await sendCommand({ action: 'manual_close' });
+    }
+
+    async function refreshState() {
+      const stateRes = await fetch('/api/state');
+      const state = await stateRes.json();
+
+      document.getElementById('price').textContent = state.price ? `$${Number(state.price).toFixed(2)}` : '-';
+      document.getElementById('symbol').textContent = state.symbol || '-';
+      document.getElementById('tf').textContent = state.timeframe || '-';
+      document.getElementById('strategy').textContent = state.strategy ? `${state.strategy.id} · ${state.strategy.name}` : '-';
+      document.getElementById('lastSignal').textContent = state.last_signal || '-';
+      document.getElementById('statusLine').textContent = state.message || 'OK';
+
+      if (state.symbol) document.getElementById('assetSel').value = state.symbol;
+      if (state.strategy?.id) document.getElementById('strategySel').value = String(state.strategy.id);
+      if (state.timeframe) document.getElementById('tfSel').value = state.timeframe;
+
+      const stats = state.stats || {};
+      document.getElementById('mTrades').textContent = stats.total_trades || 0;
+      document.getElementById('mWL').textContent = `${stats.wins || 0} / ${stats.losses || 0}`;
+      document.getElementById('mWin').textContent = `${Number(stats.winrate || 0).toFixed(1)}%`;
+      const pnl = Number(stats.total_pnl || 0);
+      const pnlEl = document.getElementById('mPnl');
+      pnlEl.textContent = `${pnl >= 0 ? '+' : ''}${pnl.toFixed(2)}`;
+      pnlEl.className = pnl >= 0 ? 'pos' : 'neg';
+
+      const body = document.getElementById('openTradesBody');
+      const rows = state.active_trades || [];
+      if (!rows.length) {
+        body.innerHTML = '<tr><td colspan="4">Sin operaciones</td></tr>';
+      } else {
+        body.innerHTML = rows.map(t => {
+          const p = Number(t.total_pnl || t.unrealized_pnl || 0);
+          return `<tr>
+            <td>${t.side}</td>
+            <td>${Number(t.entry_price).toFixed(2)}</td>
+            <td class="${p >= 0 ? 'pos' : 'neg'}">${p.toFixed(2)}</td>
+            <td>${Number(t.quantity).toFixed(4)}</td>
+          </tr>`;
+        }).join('');
+      }
+    }
+
+    async function refreshChart() {
+      const res = await fetch('/api/chart');
+      const payload = await res.json();
+      candleSeries.setData(payload.candles || []);
+
+      // Señales en velas
+      const markers = (payload.signals || []).map(s => ({
+        time: s.time,
+        position: s.type === 'LONG' ? 'belowBar' : 'aboveBar',
+        color: s.type === 'LONG' ? '#29d391' : '#ff5e7b',
+        shape: s.type === 'LONG' ? 'arrowUp' : 'arrowDown',
+        text: s.type,
+      }));
+      candleSeries.setMarkers(markers);
+
+      // Limpiar overlays anteriores
+      for (const s of overlaySeries) {
+        try { chartMain.removeSeries(s); } catch (_) {}
+      }
+      overlaySeries = [];
+
+      // Dibujar overlays en gráfico principal
+      for (const ov of (payload.overlays || [])) {
+        const ls = chartMain.addLineSeries({
+          color: '#56a0ff',
+          lineWidth: 1,
+          priceLineVisible: false,
+          lastValueVisible: true,
+          title: ov.name || 'IND',
+        });
+        ls.setData(ov.data || []);
+        overlaySeries.push(ls);
+      }
+
+      // Subplot: tomar el primer indicador de subplots (si existe)
+      const subs = payload.subplots || [];
+      if (subs.length > 0) {
+        document.getElementById('chartSub').style.display = 'block';
+        subplotSeries.setData(subs[0].data || []);
+        if (subs[0].bounds) {
+          // limpiar price lines previas no es crítico en lightweight; añadimos solo lectura visual
+          const b = subs[0].bounds;
+          if (typeof b.upper === 'number') {
+            subplotSeries.createPriceLine({ price: b.upper, color: '#ff5e7b66', lineWidth: 1, lineStyle: 2, axisLabelVisible: false });
+          }
+          if (typeof b.lower === 'number') {
+            subplotSeries.createPriceLine({ price: b.lower, color: '#29d39166', lineWidth: 1, lineStyle: 2, axisLabelVisible: false });
+          }
+        }
+      } else {
+        document.getElementById('chartSub').style.display = 'none';
+        subplotSeries.setData([]);
+      }
+
+      chartMain.timeScale().fitContent();
+      chartSub.timeScale().fitContent();
+    }
+
+    document.getElementById('applyBtn').addEventListener('click', applyChanges);
+
+    (async () => {
+      initChart();
+      await loadOptions();
+      await refreshState();
+      await refreshChart();
+      setInterval(refreshState, 1000);
+      setInterval(refreshChart, 5000);
+    })();
+  </script>
+</body>
+</html>

@@ -70,19 +70,51 @@ METADATA EN params (IMPORTANTE PARA REPORTING / GRAFICOS)
 
 FUENTE ÚNICA DE VERDAD: modelox/core/exits.py
 
-OPCIONES DE SALIDA:
-  1. SALIDAS_PERSONALIZADAS = False (DEFAULT - RECOMENDADO)
-     → El engine controla SL/TP/Trailing usando parámetros de exits.py
-     → Los valores se configuran en configuracion.py
-     → Optuna puede optimizar automáticamente los parámetros de salida
-  
-  2. SALIDAS_PERSONALIZADAS = True (AVANZADO)
-     → La estrategia DEBE implementar decide_exit(...)
-     → El método debe retornar ExitDecision o dict con exit_idx, reason, exit_price
-     → El engine llamará a decide_exit() para cada trade en lugar de usar lógica global
+────────────────────────────────────────────────────────────────────────────────
+OPCIÓN 1 — SALIDAS_PERSONALIZADAS = False  (DEFAULT)
+────────────────────────────────────────────────────────────────────────────────
+  El engine gestiona todo: SL / TP / Trailing según exits.py + configuracion.py.
+  Optuna puede optimizar los parámetros de salida automáticamente.
+  No necesitas añadir nada extra a generate_signals().
 
-NOTA CRÍTICA: 
-  Los % de salida (sl_pct, tp_pct, etc.) son sobre el STAKE (saldo_usado), 
+────────────────────────────────────────────────────────────────────────────────
+OPCIÓN 2 — SALIDAS_PERSONALIZADAS = True  (SALIDA LÓGICA PROPIA)
+────────────────────────────────────────────────────────────────────────────────
+  La estrategia define CUÁNDO salir según su propia lógica de indicadores.
+  El runner aplica automáticamente (sin que tengas que hacer nada más):
+
+  ┌─────────────────────────────────────────────────────────────────────────┐
+  │  REGLA UNIVERSAL — siempre que SALIDAS_PERSONALIZADAS = True:           │
+  │                                                                         │
+  │  • exit_long / exit_short  (tus columnas) → salida principal           │
+  │  • SL fijo de exits.py                    → backstop de emergencia     │
+  │  • TP y Trailing                          → desactivados (999 %)       │
+  │                                                                         │
+  │  exit_type se fuerza a "FIXED" con el sl_pct real del config.          │
+  │  Ante crashes, gaps o cualquier movimiento que tu señal no cubra,       │
+  │  el SL actúa de última línea de defensa.                                │
+  └─────────────────────────────────────────────────────────────────────────┘
+
+  IMPLEMENTACIÓN — sólo necesitas hacer DOS cosas:
+
+    1. Declarar el flag en la clase:
+         SALIDAS_PERSONALIZADAS: bool = True
+
+    2. Añadir exit_long / exit_short al final de generate_signals():
+         q = q.with_columns([
+             self._as_bool(<condicion_salida_long> ).alias("exit_long"),
+             self._as_bool(<condicion_salida_short>).alias("exit_short"),
+         ])
+         return self.finalize_signals(q, keep_cols=[..., "exit_long", "exit_short"])
+
+  Las columnas son booleanas y vectoriales (Polars). El engine las lee barra
+  a barra mientras hay una posición abierta y cierra al primer True.
+
+  PRIORIDAD dentro del engine:
+    exit_long/short  →  SL (emergencia)  →  (TP/Trailing desactivados)
+
+NOTA CRÍTICA:
+  Los % de salida (sl_pct, tp_pct, etc.) son sobre el STAKE (saldo_usado),
   NO sobre el precio de entrada. Ver exits.py para documentación completa.
 
 ================================================================================
@@ -112,8 +144,10 @@ class EstrategiaBase:
     # =============================================================================
     # SALIDAS
     # =============================================================================
-    # False = SALIDAS CONTROLADAS POR  (EXITS)
-    # True  = SALIDAS CONTROLADAS POR LA ESTRATEGIA (decide_exit)
+    # False → SL/TP/Trailing del engine (exits.py + configuracion.py). DEFAULT.
+    # True  → La estrategia aporta exit_long/exit_short en generate_signals().
+    #         El runner activa automáticamente el SL fijo como backstop de emergencia.
+    #         TP y Trailing quedan desactivados.  Ver docstring del módulo.
     SALIDAS_PERSONALIZADAS: bool = False
 
     # =============================================================================
@@ -185,61 +219,11 @@ class EstrategiaBase:
         )
         return self.finalize_signals(q)
 
-    def decide_exit(
-        self,
-        df: pl.DataFrame,
-        params: Dict[str, Any],
-        entry_idx: int,
-        entry_price: float,
-        side: int,
-        **kwargs: Any,
-    ):
-        """SALIDA PERSONALIZADA (SOLO SI SALIDAS_PERSONALIZADAS=True).
-        
-        ════════════════════════════════════════════════════════════════════════
-                        HOOK PARA SALIDAS PERSONALIZADAS
-        ════════════════════════════════════════════════════════════════════════
-        
-        Este método se llama ÚNICAMENTE cuando:
-          SALIDAS_PERSONALIZADAS = True
-        
-        CONTRATO:
-          - Retorna None → "No salir, el engine decide"
-          - Retorna ExitDecision → Salir en el índice y precio especificados
-          - Retorna dict {"exit_idx": int, "exit_price": float, "reason": str}
-        
-        PARÁMETROS:
-          df: DataFrame con todos los datos OHLCV
-          params: Parámetros del trial (incluye __exit_* con configuración de salidas)
-          entry_idx: Índice de la barra de entrada
-          entry_price: Precio de entrada
-          side: 1=Long, -1=Short (también puede venir como "LONG"/"SHORT" en kwargs)
-          **kwargs: Incluye saldo_apertura y otros datos del trade
-        
-        EJEMPLO DE IMPLEMENTACIÓN:
-        
-            def decide_exit(self, df, params, entry_idx, entry_price, side, **kwargs):
-                # Acceder a arrays de precio
-                close = df["close"].to_numpy()
-                high = df["high"].to_numpy()
-                
-                # Implementar lógica de salida
-                for i in range(entry_idx + 1, len(close)):
-                    if mi_condicion_de_salida(close[i]):
-                        return {
-                            "exit_idx": i,
-                            "exit_price": close[i],
-                            "reason": "MI_CONDICION"
-                        }
-                
-                # Si no se cumple ninguna condición, dejar que el engine decida
-                return None
-        
-        NOTA: Si retornas None, el engine usará la lógica global de exits.py
-        (SL/TP fijos o trailing, según EXIT_TYPE configurado).
-        """
-        # IMPLEMENTACIÓN POR DEFECTO: Delegar al engine global
-        return None
+    # ── NOTA: decide_exit() fue eliminado ────────────────────────────────────
+    # El mecanismo de salidas personalizadas usa columnas vectoriales Polars
+    # (exit_long / exit_short) dentro de generate_signals(), NO un hook por trade.
+    # Esto mantiene todo 100 % vectorial y compatible con el kernel Numba del engine.
+    # Ver docstring del módulo para la guía completa.
 
     # =============================================================================
     # HELPERS OFICIALES (PARA VELOCIDAD Y CONSISTENCIA)
@@ -332,33 +316,62 @@ class EstrategiaBase:
             extras = [c for c in keep_cols if c not in base]
             cols = base + extras
 
-        # AUTO-INCLUDE OHLCV (Case-Insensitive)
-        # Esto asegura que el DF final tenga los datos necesarios para plot_trades
+        # AUTO-INCLUDE OHLCV (Case-Insensitive) — EXPLÍCITO Y A PRUEBA DE FALLAS
+        # Usamos el schema ya disponible (dict) para evitar collect_schema
         try:
-            # Obtener esquema para detectar columnas existentes
-            schema_keys = q.collect_schema().names()
-            
-            # Definir columnas críticas que siempre queremos conservar
+            schema_keys = list(q.schema.keys())
             target_cols = {"open", "high", "low", "close", "volume", "vol"}
-            
-            # Buscar coincidencias case-insensitive
-            ohlcv_found = []
+
             existing_cols_lower = {c.lower(): c for c in schema_keys}
-            
+            ohlcv_found = []
             for target in target_cols:
                 if target in existing_cols_lower:
                     real_name = existing_cols_lower[target]
                     if real_name not in cols:
                         ohlcv_found.append(real_name)
-            
-            # Añadirlas a la selección
+
             if ohlcv_found:
                 cols.extend(ohlcv_found)
-                
         except Exception:
-            pass # Si falla la introspección (raro), seguimos con lo básico
+            pass  # fallback silencioso
 
-        out = q.select(cols).collect()
+        # Validación defensiva de esquema antes del collect
+        try:
+            schema_cols = set(q.schema.keys())
+            missing = [c for c in cols if c not in schema_cols]
+            if missing:
+                raise ValueError(
+                    f"finalize_signals: faltan columnas antes de collect: {missing}. "
+                    f"Schema actual: {sorted(schema_cols)}"
+                )
+        except Exception:
+            # Re-lanzar para dejar rastro claro en el stacktrace
+            raise
+
+        try:
+            out = q.select(cols).collect()
+        except Exception as e:
+            # Fallback específico para KeyError:0 (polars ComputeError) → intenta devolver DF vacío con las columnas
+            if "KeyError: 0" in str(e):
+                try:
+                    out = q.select(cols).limit(0).collect()
+                except Exception:
+                    # Si también falla, re-lanzar con contexto
+                    raise RuntimeError(
+                        f"finalize_signals collect failed (KeyError 0) y fallback limit(0) también falló: {e}.\n"
+                        f"  cols={cols}\n"
+                        f"  schema={q.schema}\n"
+                        f"  selected_cols_exist={[c for c in cols if c in q.schema]}"
+                    ) from e
+            else:
+                # Propagar contexto detallado para depurar otros errores
+                raise RuntimeError(
+                    f"finalize_signals collect failed: {e}.\n"
+                    f"  cols={cols}\n"
+                    f"  schema={q.schema}\n"
+                    f"  selected_cols_exist={[c for c in cols if c in q.schema]}"
+                ) from e
+
         self.validate_signals_df(out)
         return out
 

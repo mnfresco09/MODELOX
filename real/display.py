@@ -621,13 +621,13 @@ def create_live_trading_panel(
         wr_style = "green" if winrate >= 50 else "red"
         pnl_style = "green" if total_pnl >= 0 else "red"
         
-        stats_text.append(f"Trades: ", style="dim")
+        stats_text.append(f"TRADES OPERADOS: ", style="dim")
         stats_text.append(f"{total_trades}", style="bold")
         stats_text.append(f"  │  ", style="dim")
-        stats_text.append(f"WR: ", style="dim")
+        stats_text.append(f"WIN RATE: ", style="dim")
         stats_text.append(f"{winrate:.1f}%", style=wr_style)
         stats_text.append(f"  │  ", style="dim")
-        stats_text.append(f"Total PnL: ", style="dim")
+        stats_text.append(f"PNL SESION: ", style="dim")
         stats_text.append(f"${total_pnl:+,.2f}", style=pnl_style)
     else:
         stats_text.append("Esperando primer trade...", style="dim italic")

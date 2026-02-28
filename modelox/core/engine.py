@@ -111,8 +111,14 @@ class BacktestParams:
     exit_tp_pct: float
     exit_trail_act_pct: float
     exit_trail_dist_pct: float
+    exit_time_bars: int
     block_velas_after_exit: int
     time_stop_bars: int
+    # ── ATR adaptive ──
+    exit_atr_period:   int   = 14
+    exit_atr_min_pct:  float = 20.0   # % stake mínimo (igual que sl_pct)
+    exit_atr_max_pct:  float = 40.0   # % stake máximo (igual que sl_pct)
+    exit_atr_lookback: int   = 100
 
     @classmethod
     def from_config_and_params(cls, config: BacktestConfig, params: Dict[str, Any]) -> "BacktestParams":
@@ -123,18 +129,111 @@ class BacktestParams:
             saldo_minimo_operativo=float(config.saldo_minimo_operativo),
             saldo_usado=float(getattr(config, "saldo_usado", 75.0)),
             apalancamiento_max=float(getattr(config, "apalancamiento_max", 60.0)),
-            exit_type=str(params.get("__exit_type", getattr(config, "exit_type", "pnl_fixed"))),
+            exit_type=str(params.get("__exit_type", getattr(config, "exit_type", "FIXED"))),
             exit_sl_pct=float(params.get("__exit_sl_pct", getattr(config, "exit_sl_pct", 0.0))),
             exit_tp_pct=float(params.get("__exit_tp_pct", getattr(config, "exit_tp_pct", 0.0))),
             exit_trail_act_pct=float(params.get("__exit_trail_act_pct", getattr(config, "exit_trail_act_pct", 0.0))),
             exit_trail_dist_pct=float(params.get("__exit_trail_dist_pct", getattr(config, "exit_trail_dist_pct", 0.0))),
+            exit_time_bars=int(params.get("__exit_time_bars", getattr(config, "exit_time_bars", 0))),
             block_velas_after_exit=int(params.get("block_velas_after_exit", 0)),
-            time_stop_bars=int(params.get("time_stop_bars", 0)),
+            time_stop_bars=int(params.get("time_stop_bars", params.get("__exit_time_bars", 0))),
+            exit_atr_period=int(params.get("__exit_atr_period", getattr(config, "exit_atr_period", 14))),
+            exit_atr_min_pct=float(params.get("__exit_atr_min_pct", getattr(config, "exit_atr_min_pct", 20.0))),
+            exit_atr_max_pct=float(params.get("__exit_atr_max_pct", getattr(config, "exit_atr_max_pct", 40.0))),
+            exit_atr_lookback=int(params.get("__exit_atr_lookback", getattr(config, "exit_atr_lookback", 100))),
         )
 
 
 # =============================================================================
-# 3. KERNEL NUMBA: SALIDAS (SL/TP/TRAILING) - KERNEL ESTÁNDAR (MISMO TF)
+# 3. ATR ADAPTIVE — HELPER DE PRE-CÓMPUTO (Python puro, antes de Numba)
+# =============================================================================
+
+def _compute_atr_adaptive_distances(
+    high: np.ndarray,
+    low: np.ndarray,
+    close: np.ndarray,
+    entry_indices: np.ndarray,
+    entry_prices: np.ndarray,
+    apalancamiento_max: float,
+    atr_period: int,
+    atr_min_pct: float,   # % stake mínimo (ej. 20.0) — mismo formato que sl_pct
+    atr_max_pct: float,   # % stake máximo (ej. 40.0) — mismo formato que sl_pct
+    atr_lookback: int,
+) -> tuple:
+    """
+    Pre-computa distancias SL/TP adaptativas por entrada, en unidades de precio.
+
+    El ATR(14) se usa como INDICADOR DE VOLATILIDAD para determinar qué %
+    del stake aplicar. El rango [atr_min_pct, atr_max_pct] es equivalente
+    a sl_pct/tp_pct en modo FIXED, pero el valor se ajusta automáticamente.
+
+    Lógica:
+        1. ATR(atr_period) Wilder — mide volatilidad absoluta de precios.
+        2. ATR relativo = ATR / close — normaliza por nivel de precio.
+        3. Rolling min/max sobre atr_lookback barras → vol_rank ∈ [0, 1]:
+               vol_rank = 0  → volatilidad baja  → sl_pct = atr_min_pct (ej. 20%)
+               vol_rank = 1  → volatilidad alta  → sl_pct = atr_max_pct (ej. 40%)
+               vol_rank = 0.5 → volatilidad media → sl_pct ≈ 30%
+        4. sl_pct_adaptive = atr_min_pct + (atr_max_pct - atr_min_pct) × vol_rank
+           → Mismo concepto que sl_pct en modo FIXED, pero dinámico.
+        5. Distancia de precio (equivalente al kernel):
+               sl_distance = (sl_pct_adaptive / 100) × entry_price / apalancamiento
+           Derivado de: sl_distance = (stake × sl_pct/100) / qty
+                        qty = stake × leverage / entry_p
+                    → sl_distance = (sl_pct/100) × entry_p / leverage
+
+    Ejemplo con leverage=60, entry_price=50000, vol_rank=0.5:
+        sl_pct_adaptive = 20 + (40-20)×0.5 = 30  (30% del stake)
+        sl_distance = (30/100) × 50000 / 60 = 250 USD desde precio de entrada
+
+    Returns:
+        (sl_dists, tp_dists): arrays float64 de longitud len(entry_indices),
+        en unidades de precio (distancia absoluta SL/TP desde el precio de entrada).
+    """
+    import pandas as pd
+
+    n = len(close)
+
+    # ── True Range (vectorizado) ──────────────────────────────────────────────
+    prev_close = np.empty(n)
+    prev_close[0] = close[0]
+    prev_close[1:] = close[:-1]
+
+    tr = np.maximum(
+        high - low,
+        np.maximum(np.abs(high - prev_close), np.abs(low - prev_close))
+    )
+
+    # ── ATR Wilder via pandas EWM (com = period-1) ───────────────────────────
+    atr = pd.Series(tr).ewm(com=atr_period - 1, adjust=False).mean().to_numpy()
+
+    # ── ATR relativo: normaliza volatilidad por nivel de precio ──────────────
+    close_safe = np.where(np.abs(close) > 1e-10, close, 1.0)
+    atr_pct = atr / close_safe
+
+    # ── Rolling min/max → ranking de volatilidad relativa ────────────────────
+    s = pd.Series(atr_pct)
+    roll_min = s.rolling(atr_lookback, min_periods=1).min().to_numpy()
+    roll_max = s.rolling(atr_lookback, min_periods=1).max().to_numpy()
+
+    rng = roll_max - roll_min
+    safe_rng = np.where(rng > 1e-10, rng, 1.0)   # evita división por cero
+    vol_rank = np.where(rng > 1e-10, (atr_pct - roll_min) / safe_rng, 0.5)
+    vol_rank = np.clip(vol_rank, 0.0, 1.0)
+
+    # ── % del stake adaptativo en [atr_min_pct, atr_max_pct] ─────────────────
+    valid_idx = np.clip(entry_indices, 0, n - 1)
+    sl_pct_adaptive = atr_min_pct + (atr_max_pct - atr_min_pct) * vol_rank[valid_idx]
+
+    # ── Distancia de precio: (sl_pct/100) × entry_price / leverage ───────────
+    lev = max(apalancamiento_max, 1.0)
+    dists = (sl_pct_adaptive / 100.0 * entry_prices / lev).astype(np.float64)
+
+    return dists, dists.copy()
+
+
+# =============================================================================
+# 4. KERNEL NUMBA: SALIDAS (SL/TP/TRAILING) - KERNEL ESTÁNDAR (MISMO TF)
 # =============================================================================
 
 @nb.njit(cache=True, fastmath=True)
@@ -469,7 +568,10 @@ def _simulate_trades_with_1m_exits(
     custom_exit_short_1m: np.ndarray,
     # Ratio de timeframes
     tf_ratio: int,  # Cuántas velas de 1m por vela del TF de entrada
-) -> Tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray, np.ndarray, 
+    # ATR adaptive: distancias por entrada (longitud n_entries o 0 si no aplica)
+    atr_sl_dist_arr: np.ndarray,
+    atr_tp_dist_arr: np.ndarray,
+) -> Tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray, np.ndarray,
            np.ndarray, np.ndarray, np.ndarray, np.ndarray, np.ndarray,
            np.ndarray, np.ndarray, np.ndarray, np.ndarray, int]:
     """
@@ -537,12 +639,16 @@ def _simulate_trades_with_1m_exits(
         if qty <= 0 or saldo_usado <= 0:
             continue
         
-        # Calcular distancias de precio basadas en % sobre stake
-        sl_distance = (saldo_usado * sl_pct / 100.0) / qty
-        tp_distance = (saldo_usado * tp_pct / 100.0) / qty
+        # Calcular distancias de precio (ATR adaptive o % sobre stake)
+        if len(atr_sl_dist_arr) > 0:
+            sl_distance = atr_sl_dist_arr[i]
+            tp_distance = atr_tp_dist_arr[i]
+        else:
+            sl_distance = (saldo_usado * sl_pct / 100.0) / qty
+            tp_distance = (saldo_usado * tp_pct / 100.0) / qty
         trail_act_distance = (saldo_usado * trail_act_pct / 100.0) / qty
         trail_dist_distance = (saldo_usado * trail_dist_pct / 100.0) / qty
-        
+
         if side == 1:  # LONG
             sl_price = entry_p - sl_distance
             tp_price = entry_p + tp_distance
@@ -551,10 +657,10 @@ def _simulate_trades_with_1m_exits(
             sl_price = entry_p + sl_distance
             tp_price = entry_p - tp_distance
             activation_price = entry_p - trail_act_distance
-        
+
         trailing_active = False
         trailing_level = 0.0
-        
+
         # Calcular límite de búsqueda en 1m
         # time_stop_bars está en barras del TF de entrada
         search_limit_1m = n_bars_1m
@@ -756,13 +862,16 @@ def _simulate_trades_sequential(
     comision_sides: int,
     custom_exit_long: np.ndarray,
     custom_exit_short: np.ndarray,
+    # ATR adaptive: distancias por entrada (longitud n_entries o 0 si no aplica)
+    atr_sl_dist_arr: np.ndarray,
+    atr_tp_dist_arr: np.ndarray,
 ) -> Tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray, np.ndarray,
            np.ndarray, np.ndarray, np.ndarray, np.ndarray, np.ndarray,
            np.ndarray, np.ndarray, np.ndarray, np.ndarray, int]:
     """
     Kernel Numba optimizado para simular todos los trades secuencialmente.
     Kernel estándar que usa el mismo timeframe para entradas y salidas.
-    
+
     Para salidas en 1m, usar _simulate_trades_with_1m_exits().
     """
     n_entries = len(entry_indices)
@@ -807,11 +916,16 @@ def _simulate_trades_sequential(
         if qty <= 0 or saldo_usado <= 0:
             continue
         
-        sl_distance = (saldo_usado * sl_pct / 100.0) / qty
-        tp_distance = (saldo_usado * tp_pct / 100.0) / qty
+        # Calcular distancias de precio (ATR adaptive o % sobre stake)
+        if len(atr_sl_dist_arr) > 0:
+            sl_distance = atr_sl_dist_arr[i]
+            tp_distance = atr_tp_dist_arr[i]
+        else:
+            sl_distance = (saldo_usado * sl_pct / 100.0) / qty
+            tp_distance = (saldo_usado * tp_pct / 100.0) / qty
         trail_act_distance = (saldo_usado * trail_act_pct / 100.0) / qty
         trail_dist_distance = (saldo_usado * trail_dist_pct / 100.0) / qty
-        
+
         if side == 1:
             sl_price = entry_p - sl_distance
             tp_price = entry_p + tp_distance
@@ -820,10 +934,10 @@ def _simulate_trades_sequential(
             sl_price = entry_p + sl_distance
             tp_price = entry_p - tp_distance
             activation_price = entry_p - trail_act_distance
-        
+
         trailing_active = False
         trailing_level = 0.0
-        
+
         search_limit = n_bars
         if time_stop_bars > 0:
             limit = entry_idx + time_stop_bars + 1
@@ -1074,7 +1188,10 @@ def calculate_performance_vectorized_numba(
     # Precio de entrada = OPEN de la vela de entrada (la siguiente a la señal)
     entry_prices = o_arr[entry_indices]
     
-    is_trailing = params.exit_type == "pnl_trailing"
+    # Preparar modos de salida
+    is_trailing     = params.exit_type == "TRAILING"
+    is_time_bars    = params.exit_type == "BARS"
+    is_atr_adaptive = params.exit_type == "ATR"
     
     # Parámetros
     fee_rate = float(params.comision_pct)
@@ -1086,6 +1203,42 @@ def calculate_performance_vectorized_numba(
     trail_act = float(params.exit_trail_act_pct)
     trail_dist = float(params.exit_trail_dist_pct)
     time_stop = int(params.time_stop_bars)
+    time_bars_cfg = int(params.exit_time_bars)
+
+    # Si es modo time_bars: desactivar SL/TP/Trailing y usar time_stop_bars = exit_time_bars
+    # IMPORTANTE: sl_pct = 9999.0 (NO 0.0) porque sl_pct=0 → sl_price=entry_price → salida inmediata
+    if is_time_bars:
+        sl_pct = 9999.0
+        tp_pct = 0.0
+        trail_act = 0.0
+        trail_dist = 0.0
+        is_trailing = False
+        time_stop = time_bars_cfg if time_bars_cfg > 0 else time_stop
+
+    # Pre-cómputo de distancias ATR adaptive (por entrada, en unidades de precio)
+    # Arrays vacíos → kernels usan el modo sl_pct/tp_pct estándar
+    _atr_sl_dist = np.empty(0, dtype=np.float64)
+    _atr_tp_dist = np.empty(0, dtype=np.float64)
+    if is_atr_adaptive:
+        _atr_sl_dist, _atr_tp_dist = _compute_atr_adaptive_distances(
+            high=h_arr,
+            low=l_arr,
+            close=c_arr,
+            entry_indices=entry_indices,
+            entry_prices=entry_prices,
+            apalancamiento_max=apalancamiento_max,
+            atr_period=int(getattr(params, "exit_atr_period", 14)),
+            atr_min_pct=float(getattr(params, "exit_atr_min_pct", 20.0)),
+            atr_max_pct=float(getattr(params, "exit_atr_max_pct", 40.0)),
+            atr_lookback=int(getattr(params, "exit_atr_lookback", 100)),
+        )
+        # sl_pct/tp_pct no se usan para las distancias (se usan los arrays per-entry),
+        # pero tp_pct debe ser > 0 para que el kernel evalúe el TP.
+        sl_pct = 1.0
+        tp_pct = 1.0
+        trail_act = 0.0
+        trail_dist = 0.0
+
     comision_sides_int = int(params.comision_sides)
     saldo_inicial = float(params.saldo_inicial)
     
@@ -1093,9 +1246,9 @@ def calculate_performance_vectorized_numba(
     # 3) Decidir si usar salidas en 1m
     # =========================================================================
     # SIEMPRE usar salidas en 1m si los datos están disponibles, incluso si el TF de entrada es 1m.
-    # Esto asegura consistencia y permite usar el kernel _simulate_trades_with_1m_exits
-    # que soporta el flujo unificado.
-    use_1m_exits = (df_1m is not None)
+    # EXCEPCIÓN: time_bars evalúa el time stop contando barras del TF de entrada,
+    # por lo que debe usar el kernel estándar del mismo timeframe.
+    use_1m_exits = (df_1m is not None) and not is_time_bars
     
     if use_1m_exits:
         # Usar kernel con salidas en 1m
@@ -1145,6 +1298,8 @@ def calculate_performance_vectorized_numba(
             custom_exit_long_1m=exit_long_1m,
             custom_exit_short_1m=exit_short_1m,
             tf_ratio=tf_ratio,
+            atr_sl_dist_arr=_atr_sl_dist,
+            atr_tp_dist_arr=_atr_tp_dist,
         )
         
         # Para timestamps de salida, usar df_1m
@@ -1175,6 +1330,8 @@ def calculate_performance_vectorized_numba(
             comision_sides=comision_sides_int,
             custom_exit_long=exit_long,
             custom_exit_short=exit_short,
+            atr_sl_dist_arr=_atr_sl_dist,
+            atr_tp_dist_arr=_atr_tp_dist,
         )
         
         ts_arr_exit = ts_arr
@@ -1238,6 +1395,15 @@ def calculate_performance_vectorized_numba(
         "trail_act_idx": trail_act_idx_view,
         "trail_act_price": trail_act_price_view,
     })
+
+    # Para exit_type=time_bars, la duración debe representar barras del TF de entrada,
+    # no tiempo de reloj (que puede incluir huecos de mercado como overnight/weekend).
+    # Esto garantiza que "12 barras en 1H" se refleje como 720 min fijos en métricas.
+    if is_time_bars and timeframe_minutes > 0:
+        duracion_min = (exit_idx_view - entry_idx_view).astype(np.float64) * float(timeframe_minutes)
+        # Seguridad defensiva: evitar negativos por cualquier desalineación de índices.
+        duracion_min = np.maximum(duracion_min, 0.0)
+        trades_df = trades_df.with_columns(pl.Series("duracion_min", duracion_min))
     
     # Trailing activation timestamps
     if use_1m_exits:

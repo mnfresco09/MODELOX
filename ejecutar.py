@@ -151,7 +151,7 @@ def main() -> None:
     try:
         moved = organize_root_database_files(base_dir=str(_PROJECT_ROOT))
         if moved > 0:
-            print(f"📁 DATABASE: se movieron {moved} archivo(s) .db a la carpeta DATABASE/")
+            print(f"📁 DATABASE: se movieron {moved} archivo(s) .db a la carpeta resultados/DATABASE/")
     except Exception:
         # Nunca bloquear la ejecución principal por esta organización.
         pass
@@ -374,7 +374,7 @@ def main() -> None:
 
                         # Tipos de salida a ejecutar
                         e_type = str(CONFIG["EXIT_TYPE"]).lower()
-                        exit_types = ["pnl_fixed", "pnl_trailing"] if e_type == "all" else [CONFIG["EXIT_TYPE"]]
+                        exit_types = ["FIXED", "TRAILING"] if e_type == "all" else [CONFIG["EXIT_TYPE"]]
 
                         # ---------------------------------------------------------
                         # EJECUTAR POR TIPO DE SALIDA
