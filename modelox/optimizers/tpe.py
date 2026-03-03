@@ -1,56 +1,13 @@
-"""modelox/optimizers/tpe.py
-
-═══════════════════════════════════════════════════════════════════════════════
-   ████████╗██████╗ ███████╗
-   ╚══██╔══╝██╔══██╗██╔════╝
-      ██║   ██████╔╝█████╗  
-      ██║   ██╔═══╝ ██╔══╝  
-      ██║   ██║     ███████╗
-      ╚═╝   ╚═╝     ╚══════╝
-      
-    TREE-STRUCTURED PARZEN ESTIMATOR
-═══════════════════════════════════════════════════════════════════════════════
-
-DESCRIPCIÓN:
-============
-TPE es un algoritmo bayesiano que modela la distribución de parámetros buenos
-y malos por separado, usando estimadores de densidad Parzen.
-
-VENTAJAS:
-=========
-  ✓ EXPLORACIÓN AMPLIA del espacio de parámetros
-  ✓ DIVERSIDAD de soluciones encontradas
-  ✓ Ideal para ESPACIOS GRANDES y DISCONTINUOS
-  ✓ Puede manejar PARÁMETROS CATEGÓRICOS
-  ✓ RÁPIDO en convergencia inicial
-
-FILOSOFÍA DEL SCORING TPE:
-==========================
-El scoring de TPE usa una arquitectura MÁS SIMPLE orientada a:
-  - EXPLORACIÓN: No penaliza agresivamente
-  - DIVERSIDAD: Score más uniforme para permitir exploración
-  - VELOCIDAD: Menos cálculos complejos
-
-DIFERENCIAS CON CMA:
-====================
-  - SIN DSR (permite exploración sin penalización por múltiples pruebas)
-  - SIN SAM (no evalúa vecindario para mayor velocidad)
-  - PENALIZACIONES MÁS SUAVES
-  - IDEAL PARA FASE INICIAL DE OPTIMIZACIÓN
-
-═══════════════════════════════════════════════════════════════════════════════
-"""
+"""modelox.optimizers.tpe — Optimizador TPE (Tree-structured Parzen Estimator)."""
 
 from __future__ import annotations
 
-import gc
 import math
-import os
 import re
 import time
 import warnings
-from dataclasses import dataclass, field
-from typing import Any, Callable, Dict, List, Mapping, Optional, Sequence, Tuple, TYPE_CHECKING
+from dataclasses import dataclass
+from typing import Any, Callable, Dict, List, Mapping, Optional, Sequence
 
 import numpy as np
 import optuna
@@ -58,9 +15,6 @@ import polars as pl
 from optuna.exceptions import ExperimentalWarning
 from optuna.samplers import TPESampler
 from .storage import resolve_storage_for_strategy
-
-if TYPE_CHECKING:
-    pass
 
 # =============================================================================
 # IMPORTS INTERNOS
@@ -83,131 +37,46 @@ warnings.filterwarnings("ignore", category=ExperimentalWarning)
 optuna.logging.set_verbosity(optuna.logging.WARNING)
 
 
-# =============================================================================
-# ███████╗ ██████╗ ██████╗ ██████╗ ██╗███╗   ██╗ ██████╗ 
-# ██╔════╝██╔════╝██╔═══██╗██╔══██╗██║████╗  ██║██╔════╝ 
-# ███████╗██║     ██║   ██║██████╔╝██║██╔██╗ ██║██║  ███╗
-# ╚════██║██║     ██║   ██║██╔══██╗██║██║╚██╗██║██║   ██║
-# ███████║╚██████╗╚██████╔╝██║  ██║██║██║ ╚████║╚██████╔╝
-# ╚══════╝ ╚═════╝ ╚═════╝ ╚═╝  ╚═╝╚═╝╚═╝  ╚═══╝ ╚═════╝ 
-#                                                         
-# SISTEMA DE SCORING TPE - SIMPLE Y EXPLORATORIA
-# =============================================================================
-
-
-# =============================================================================
-# [SECCIÓN 1] CONFIGURACIÓN DEL SCORING TPE
-# =============================================================================
 
 @dataclass
 class TPEScoringConfig:
-    """
-    ┌────────────────────────────────────────────────────────────────────────┐
-    │              CONFIGURACIÓN DEL SCORING TPE v2.0                         │
-    │                                                                         │
-    │  ARQUITECTURA: Simple y Exploratoria                                   │
-    │  FILOSOFÍA: Menos penalizaciones = Más diversidad                      │
-    │  RANGO SALIDA: [1, 1000]                                               │
-    └────────────────────────────────────────────────────────────────────────┘
-    """
-    
-    # =========================================================================
-    # 1.1 RANGO DE SALIDA DEL SCORE
-    # =========================================================================
-    SCORE_MIN: float = 1.0               # MÍNIMO ABSOLUTO
-    SCORE_MAX: float = 1000.0            # MÁXIMO ABSOLUTO
-    
-    # =========================================================================
-    # 1.2 COMPONENTES DEL SCORE TPE
-    # =========================================================================
-    # EL SCORE TPE ES MÁS SIMPLE QUE CMA
-    # USA MÉTRICAS DIRECTAS SIN TRANSFORMACIONES COMPLEJAS
-    
-    # PESOS PARA CADA MÉTRICA (SUMAN 1.0)
-    WEIGHT_SHARPE: float = 0.35          # SHARPE RATIO
-    WEIGHT_SQN: float = 0.20             # SQN (SYSTEM QUALITY NUMBER)
-    WEIGHT_ROI: float = 0.20             # RETORNO SOBRE INVERSIÓN
-    WEIGHT_DRAWDOWN: float = 0.15        # PENALIZACIÓN POR DRAWDOWN
-    WEIGHT_TRADES: float = 0.10          # ACTIVIDAD DE TRADING
-    
-    # =========================================================================
-    # 1.3 ESCALADORES DE MÉTRICAS
-    # =========================================================================
-    # SHARPE: ESCALA A [0, 1] USANDO SIGMOIDE SUAVE
-    SHARPE_CENTER: float = 1.0           # CENTRO DE NORMALIZACIÓN
-    SHARPE_SCALE: float = 1.5            # FACTOR DE ESCALA
-    
-    # SQN: ESCALA LINEAL HASTA MÁXIMO
-    SQN_TARGET: float = 4.0              # SQN OBJETIVO (> 4 = EXCELENTE)
-    
-    # ROI: ESCALA LOGARÍTMICA
-    ROI_TARGET: float = 100.0            # ROI OBJETIVO (100% = DOBLAR)
-    
-    # DRAWDOWN: PENALIZACIÓN LINEAL
-    DRAWDOWN_MAX_ACCEPTABLE: float = 30.0  # DD MÁXIMO SIN PENALIZACIÓN
-    
-    # TRADES: ESCALA LOGARÍTMICA
-    MIN_TRADES_TARGET: int = 50          # NÚMERO OBJETIVO DE TRADES
-    
-    # =========================================================================
-    # 1.4 UMBRALES MÍNIMOS (SOFT)
-    # =========================================================================
-    MIN_TRADES_FOR_VALID: int = 10       # TRADES MÍNIMOS PARA SCORE VÁLIDO
-    MIN_TRADES_PER_DAY: float = 0.05     # ACTIVIDAD MÍNIMA
-    MAX_DRAWDOWN_LIMIT: float = 80.0     # LÍMITE ABSOLUTO DE DRAWDOWN
-    
-    # =========================================================================
-    # 1.5 PSR SIMPLE (OPCIONAL)
-    # =========================================================================
-    PSR_ENABLED: bool = True             # ACTIVAR PSR SIMPLE
-    PSR_BENCHMARK: float = 0.0           # SR DE REFERENCIA
-    PSR_MIN_TRADES: int = 30             # TRADES MÍNIMOS PARA PSR
-    PSR_WEIGHT: float = 0.15             # PESO DEL PSR EN SCORE FINAL
+    SCORE_MIN: float = 1.0
+    SCORE_MAX: float = 1000.0
+    WEIGHT_SHARPE: float = 0.35
+    WEIGHT_SQN: float = 0.20
+    WEIGHT_ROI: float = 0.20
+    WEIGHT_DRAWDOWN: float = 0.15
+    WEIGHT_TRADES: float = 0.10
+    SHARPE_CENTER: float = 1.0
+    SHARPE_SCALE: float = 1.5
+    SQN_TARGET: float = 4.0
+    ROI_TARGET: float = 100.0
+    DRAWDOWN_MAX_ACCEPTABLE: float = 30.0
+    MIN_TRADES_TARGET: int = 50
+    MIN_TRADES_FOR_VALID: int = 10
+    MIN_TRADES_PER_DAY: float = 0.05
+    MAX_DRAWDOWN_LIMIT: float = 80.0
+    PSR_ENABLED: bool = True
+    PSR_BENCHMARK: float = 0.0
+    PSR_MIN_TRADES: int = 30
+    PSR_WEIGHT: float = 0.15
 
 
-# =============================================================================
-# INSTANCIA DE CONFIGURACIÓN POR DEFECTO
-# =============================================================================
 TPE_SCORING_CONFIG = TPEScoringConfig()
 
 
-# =============================================================================
-# [SECCIÓN 2] CLASE SCORER TPE
-# =============================================================================
-
 class TPEScorer:
-    """
-    ┌────────────────────────────────────────────────────────────────────────┐
-    │                     SCORER EXPLORATORIA TPE v2.0                        │
-    │                                                                         │
-    │  FILOSOFÍA: Score simple orientado a exploración                       │
-    │  ARQUITECTURA: Promedio ponderado de métricas normalizadas             │
-    │  RANGO: [1, 1000]                                                      │
-    └────────────────────────────────────────────────────────────────────────┘
-    """
     
     def __init__(
         self,
         study: Optional[optuna.Study] = None,
         config: Optional[TPEScoringConfig] = None,
     ):
-        """
-        INICIALIZA EL SCORER TPE.
-        
-        ARGS:
-            study: OBJETO OPTUNA.STUDY (OPCIONAL PARA TPE)
-            config: CONFIGURACIÓN PERSONALIZADA (USA DEFAULT SI NONE)
-        """
         self.study = study
         self.config = config or TPE_SCORING_CONFIG
-    
-    # =========================================================================
-    # [2.1] FUNCIONES AUXILIARES
-    # =========================================================================
-    
+
     @staticmethod
     def _safe_get(metrics: Mapping[str, Any], key: str, default: float = 0.0) -> float:
-        """EXTRAE VALOR NUMÉRICO DE FORMA SEGURA."""
         try:
             val = metrics.get(key, default)
             if val is None:
@@ -232,117 +101,46 @@ class TPEScorer:
         except (OverflowError, ValueError):
             return 0.5
     
-    # =========================================================================
-    # [2.2] NORMALIZACIÓN DE MÉTRICAS
-    # =========================================================================
-    
     def _normalize_sharpe(self, sharpe: float) -> float:
-        """
-        NORMALIZA SHARPE RATIO A [0, 1] USANDO SIGMOIDE.
-        
-        MAPEO:
-            SHARPE -2 → ~0.1
-            SHARPE  0 → ~0.3
-            SHARPE  1 → ~0.5 (CENTRO)
-            SHARPE  2 → ~0.7
-            SHARPE  4 → ~0.9
-        """
         cfg = self.config
         normalized = self._sigmoid(sharpe, cfg.SHARPE_CENTER, cfg.SHARPE_SCALE)
         return float(np.clip(normalized, 0.01, 0.99))
-    
+
     def _normalize_sqn(self, sqn: float) -> float:
-        """
-        NORMALIZA SQN A [0, 1].
-        
-        SQN ESCALAS (SEGÚN VAN THARP):
-            < 1.6  → POBRE
-            1.6-2  → PROMEDIO
-            2-2.5  → BUENO
-            2.5-3  → EXCELENTE
-            > 3    → SÚPER
-        """
         cfg = self.config
         normalized = sqn / cfg.SQN_TARGET
         return float(np.clip(normalized, 0.0, 1.0))
-    
+
     def _normalize_roi(self, roi: float) -> float:
-        """
-        NORMALIZA ROI A [0, 1] USANDO FUNCIÓN LOGARÍTMICA.
-        
-        ESCALA:
-            ROI < 0   → PENALIZACIÓN PROPORCIONAL
-            ROI 0-50  → 0.0 - 0.5
-            ROI 50-100→ 0.5 - 0.75
-            ROI > 100 → 0.75 - 1.0 (ASINTÓTICO)
-        """
         cfg = self.config
-        
         if roi <= 0:
-            # PENALIZACIÓN PARA ROI NEGATIVO
-            normalized = max(0.0, 0.5 + (roi / 200.0))  # -200% → 0, 0% → 0.5
+            normalized = max(0.0, 0.5 + (roi / 200.0))
         else:
-            # LOG SCALING PARA ROI POSITIVO
-            log_roi = math.log1p(roi)  # log(1 + roi)
+            log_roi = math.log1p(roi)
             log_target = math.log1p(cfg.ROI_TARGET)
             normalized = 0.5 + 0.5 * min(1.0, log_roi / log_target)
-        
         return float(np.clip(normalized, 0.01, 0.99))
-    
+
     def _normalize_drawdown(self, drawdown: float) -> float:
-        """
-        PENALIZACIÓN POR DRAWDOWN.
-        
-        ESCALA:
-            DD 0-10%   → 1.0 (SIN PENALIZACIÓN)
-            DD 10-30%  → 0.8 - 0.5
-            DD 30-50%  → 0.5 - 0.2
-            DD > 50%   → 0.2 - 0.0
-        """
         cfg = self.config
-        
         if drawdown <= cfg.DRAWDOWN_MAX_ACCEPTABLE:
-            # PENALIZACIÓN SUAVE
             penalty = 1.0 - (drawdown / cfg.DRAWDOWN_MAX_ACCEPTABLE) * 0.5
         else:
-            # PENALIZACIÓN FUERTE
             excess = drawdown - cfg.DRAWDOWN_MAX_ACCEPTABLE
             max_excess = cfg.MAX_DRAWDOWN_LIMIT - cfg.DRAWDOWN_MAX_ACCEPTABLE
             penalty = 0.5 * (1.0 - min(1.0, excess / max_excess))
-        
         return float(np.clip(penalty, 0.01, 1.0))
-    
+
     def _normalize_trades(self, n_trades: int, days: float) -> float:
-        """
-        PENALIZACIÓN POR POCA ACTIVIDAD.
-        
-        ESCALA:
-            < 10 TRADES → PENALIZACIÓN SEVERA
-            10-50       → PENALIZACIÓN MODERADA
-            50+         → SIN PENALIZACIÓN
-        """
         cfg = self.config
-        
         if n_trades < cfg.MIN_TRADES_FOR_VALID:
             return 0.1
-        
-        # ESCALA LOGARÍTMICA
         log_trades = math.log1p(n_trades)
         log_target = math.log1p(cfg.MIN_TRADES_TARGET)
         normalized = min(1.0, log_trades / log_target)
-        
         return float(np.clip(normalized, 0.1, 1.0))
-    
-    # =========================================================================
-    # [2.3] PSR SIMPLE (SIN DSR)
-    # =========================================================================
-    
+
     def _calculate_simple_psr(self, returns: np.ndarray) -> float:
-        """
-        CALCULA UN PSR SIMPLIFICADO.
-        
-        NO USA DSR (DEFLATED SHARPE) PARA PERMITIR MÁS EXPLORACIÓN.
-        """
         cfg = self.config
         
         if not cfg.PSR_ENABLED:

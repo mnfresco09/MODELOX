@@ -33,6 +33,7 @@ from rich.panel import Panel
 from rich.table import Table
 from rich.text import Text
 from rich.columns import Columns
+from modelox.core.exits import DEFAULT_EXIT_ATR_MIN_PCT, DEFAULT_EXIT_ATR_MAX_PCT
 
 
 # ============================================================================
@@ -229,6 +230,10 @@ def mostrar_panel_elegante(
     trail_act = params.get("__exit_trail_act_pct", params.get("exit_trail_act_pct", 0.0))
     trail_dist = params.get("__exit_trail_dist_pct", params.get("exit_trail_dist_pct", 0.0))
     time_bars = int(params.get("__exit_time_bars", params.get("exit_time_bars", 0)))
+    atr_min = float(params.get("__exit_atr_min_pct", params.get("exit_atr_min_pct", DEFAULT_EXIT_ATR_MIN_PCT)))
+    atr_max = float(params.get("__exit_atr_max_pct", params.get("exit_atr_max_pct", DEFAULT_EXIT_ATR_MAX_PCT)))
+    if atr_min <= 0 or atr_max <= 0:
+        atr_min, atr_max = float(DEFAULT_EXIT_ATR_MIN_PCT), float(DEFAULT_EXIT_ATR_MAX_PCT)
     
     # Header info
     asset = activo.upper()[:6] if activo else "ASSET"
@@ -364,8 +369,8 @@ def mostrar_panel_elegante(
         param_grid.add_row("  TRAIL DIST%", f"= {trail_dist:.1f}%")
     elif is_atr:
         param_grid.add_row(f"[bold {THEME.TEXT}]EXIT[/]", f"[bold {THEME.TEXT}]ATR[/]")
-        param_grid.add_row("  SL% rng", f"20–40%")
-        param_grid.add_row("  TP% rng", f"20–40%")
+        param_grid.add_row("  SL% rng", f"{atr_min:.0f}–{atr_max:.0f}%")
+        param_grid.add_row("  TP% rng", f"{atr_min:.0f}–{atr_max:.0f}%")
     else:
         param_grid.add_row(f"[bold {THEME.TEXT}]EXIT[/]", f"[bold {THEME.TEXT}]FIXED[/]")
         param_grid.add_row("  SL%", f"= {sl:.1f}%")
@@ -373,7 +378,8 @@ def mostrar_panel_elegante(
 
     # Strategy params
     skip_keys = {"exit_type", "exit_sl_pct", "exit_tp_pct", "exit_trail_act_pct",
-                 "exit_trail_dist_pct", "exit_time_bars", "NOMBRE_COMBO", "cantidad"}
+                 "exit_trail_dist_pct", "exit_time_bars", "exit_atr_period", "exit_atr_min_pct",
+                 "exit_atr_max_pct", "exit_atr_lookback", "NOMBRE_COMBO", "cantidad"}
     strategy_params = {k: v for k, v in params.items() 
                        if not str(k).startswith("__") and k not in skip_keys}
     

@@ -1,44 +1,12 @@
-"""
-================================================================================
-MODELOX/CORE/DATA.PY — CARGA Y TRANSFORMACIÓN DE DATOS OHLCV
-================================================================================
+"""modelox.core.data — Carga y transformación de datos OHLCV.
 
-PROPÓSITO:
-    FUENTE ÚNICA para toda carga y transformación de datos.
-    Ningún otro módulo debe leer archivos o resamplear datos directamente.
-
-CONTENIDO:
-    1. CACHÉ DE DATOS MTF          — Evita recálculos entre trials
-    2. CARGA DE DATOS              — load_data() (Parquet, Feather, CSV)
-    3. NORMALIZACIÓN               — Precisión temporal (UTC, microsegundos)
-    4. CONSTANTES MULTI-TIMEFRAME  — Mapeos de TF y expresiones OHLCV
-    5. FUNCIONES AUXILIARES TF     — Conversión y detección de timeframes
-    6. RESAMPLEO AL TF BASE        — 1m → TF elegido por el usuario
-    7. RESAMPLEO MTF (ANTI-LOOKAHEAD) — TFs auxiliares con shift(1)
-    8. FUSIÓN AL DATAFRAME BASE    — join_asof backward
-    9. PREPARE MULTITIMEFRAME DATA — Función principal para estrategias MTF
-   10. UTILIDADES                  — Listar TFs disponibles, validación
-
-FLUJO DE DATOS:
-    1. load_data()                   → Carga archivo _1m (resolución atómica)
-    2. resample_to_base_timeframe()  → Convierte de 1m al TF de configuracion.py
-    3. prepare_multitimeframe_data() → Añade TFs extras para estrategias MTF
-
-SEGURIDAD ANTI-LOOKAHEAD:
-    Los datos MTF auxiliares usan .shift(1) para evitar mirar al futuro.
-    El resampleo al base timeframe NO usa shift (es la resolución de operación).
-
-DEPENDENCIAS:
-    → types.py (normalize_timeframe_to_suffix)
-    ← runner.py, engine.py, estrategias
-
-================================================================================
+Flujo: load_data() → resample_to_base_timeframe() → prepare_multitimeframe_data().
+MTF auxiliares usan shift(1) anti-lookahead. Resampleo base sin shift.
 """
 
 from __future__ import annotations
 
 import hashlib
-from functools import lru_cache
 from pathlib import Path
 from typing import Dict, FrozenSet, List, Optional, Tuple
 
@@ -615,27 +583,3 @@ def get_available_timeframes(df: pl.DataFrame) -> List[str]:
                 tfs.add(tf)
 
     return sorted(tfs, key=_tf_to_minutes)
-
-
-def validate_multitimeframe_data(
-    df: pl.DataFrame,
-    required_timeframes: List[str],
-) -> Tuple[bool, List[str]]:
-    """
-    VALIDA QUE EL DATAFRAME CONTENGA TODOS LOS TFs REQUERIDOS.
-
-    Args:
-        df:                  DataFrame a validar.
-        required_timeframes: Lista de TFs que deben estar presentes.
-
-    Returns:
-        Tupla (is_valid, missing_tfs).
-    """
-    missing = []
-
-    for tf in required_timeframes:
-        tf_suffix = normalize_timeframe_to_suffix(tf)
-        if f"close_{tf_suffix}" not in df.columns:
-            missing.append(tf_suffix)
-
-    return (len(missing) == 0, missing)

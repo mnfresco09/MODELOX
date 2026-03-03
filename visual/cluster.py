@@ -214,7 +214,7 @@ def _prepare_params_matrix(
 # =============================================================================
 
 APLICAR_FILTRO_METRICAS = True  # <--- NUEVA CONDICIÓN (True = filtra por métricas, False = solo agrupa por parámetros)
-ROI_MIN = 0.65
+ROI_MIN = 0.15
 TRADES_DIA_MIN = 0.15
 
 def _find_metric_columns(df: pd.DataFrame) -> Tuple[Optional[str], Optional[str], Optional[str]]:

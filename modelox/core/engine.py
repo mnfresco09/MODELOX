@@ -60,6 +60,12 @@ import numpy as np
 import polars as pl
 
 from modelox.core.types import BacktestConfig, Strategy, suffix_to_minutes
+from modelox.core.exits import (
+    DEFAULT_EXIT_ATR_PERIOD,
+    DEFAULT_EXIT_ATR_MIN_PCT,
+    DEFAULT_EXIT_ATR_MAX_PCT,
+    DEFAULT_EXIT_ATR_LOOKBACK,
+)
 
 
 # Motor: Numba JIT (puro Python, sin extensiones C)
@@ -115,10 +121,10 @@ class BacktestParams:
     block_velas_after_exit: int
     time_stop_bars: int
     # ── ATR adaptive ──
-    exit_atr_period:   int   = 14
-    exit_atr_min_pct:  float = 20.0   # % stake mínimo (igual que sl_pct)
-    exit_atr_max_pct:  float = 40.0   # % stake máximo (igual que sl_pct)
-    exit_atr_lookback: int   = 100
+    exit_atr_period:   int   = DEFAULT_EXIT_ATR_PERIOD
+    exit_atr_min_pct:  float = DEFAULT_EXIT_ATR_MIN_PCT   # % stake mínimo (igual que sl_pct)
+    exit_atr_max_pct:  float = DEFAULT_EXIT_ATR_MAX_PCT   # % stake máximo (igual que sl_pct)
+    exit_atr_lookback: int   = DEFAULT_EXIT_ATR_LOOKBACK
 
     @classmethod
     def from_config_and_params(cls, config: BacktestConfig, params: Dict[str, Any]) -> "BacktestParams":
@@ -137,10 +143,10 @@ class BacktestParams:
             exit_time_bars=int(params.get("__exit_time_bars", getattr(config, "exit_time_bars", 0))),
             block_velas_after_exit=int(params.get("block_velas_after_exit", 0)),
             time_stop_bars=int(params.get("time_stop_bars", params.get("__exit_time_bars", 0))),
-            exit_atr_period=int(params.get("__exit_atr_period", getattr(config, "exit_atr_period", 14))),
-            exit_atr_min_pct=float(params.get("__exit_atr_min_pct", getattr(config, "exit_atr_min_pct", 20.0))),
-            exit_atr_max_pct=float(params.get("__exit_atr_max_pct", getattr(config, "exit_atr_max_pct", 40.0))),
-            exit_atr_lookback=int(params.get("__exit_atr_lookback", getattr(config, "exit_atr_lookback", 100))),
+            exit_atr_period=int(params.get("__exit_atr_period", getattr(config, "exit_atr_period", DEFAULT_EXIT_ATR_PERIOD))),
+            exit_atr_min_pct=float(params.get("__exit_atr_min_pct", getattr(config, "exit_atr_min_pct", DEFAULT_EXIT_ATR_MIN_PCT))),
+            exit_atr_max_pct=float(params.get("__exit_atr_max_pct", getattr(config, "exit_atr_max_pct", DEFAULT_EXIT_ATR_MAX_PCT))),
+            exit_atr_lookback=int(params.get("__exit_atr_lookback", getattr(config, "exit_atr_lookback", DEFAULT_EXIT_ATR_LOOKBACK))),
         )
 
 
@@ -1227,10 +1233,10 @@ def calculate_performance_vectorized_numba(
             entry_indices=entry_indices,
             entry_prices=entry_prices,
             apalancamiento_max=apalancamiento_max,
-            atr_period=int(getattr(params, "exit_atr_period", 14)),
-            atr_min_pct=float(getattr(params, "exit_atr_min_pct", 20.0)),
-            atr_max_pct=float(getattr(params, "exit_atr_max_pct", 40.0)),
-            atr_lookback=int(getattr(params, "exit_atr_lookback", 100)),
+            atr_period=int(getattr(params, "exit_atr_period", DEFAULT_EXIT_ATR_PERIOD)),
+            atr_min_pct=float(getattr(params, "exit_atr_min_pct", DEFAULT_EXIT_ATR_MIN_PCT)),
+            atr_max_pct=float(getattr(params, "exit_atr_max_pct", DEFAULT_EXIT_ATR_MAX_PCT)),
+            atr_lookback=int(getattr(params, "exit_atr_lookback", DEFAULT_EXIT_ATR_LOOKBACK)),
         )
         # sl_pct/tp_pct no se usan para las distancias (se usan los arrays per-entry),
         # pero tp_pct debe ser > 0 para que el kernel evalúe el TP.

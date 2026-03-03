@@ -110,7 +110,7 @@ def _empty_metrics_fast(saldo_inicial: float) -> Dict[str, Any]:
         "max_perdida": 0.0,
         "duration_mean_min": 0.0,
         "comisiones_total": 0.0,
-        "saldo_sin_comisiones": float(saldo_inicial),
+        "saldo_sin_comisiones": 0.0,
         "pnl_neto": 0.0,
         "net_pnl": 0.0,
     }
@@ -445,7 +445,9 @@ if NUMBA_METRICS_AVAILABLE:
             "max_perdida": float(max_perdida),
             "duration_mean_min": 0.0,
             "comisiones_total": 0.0,
-            "saldo_sin_comisiones": float(saldo_inicial),
+            # beneficio bruto: el wrapper lo recalculará con datos reales
+            # Aquí ponemos pnl_neto como fallback (comisiones_total=0 en esta etapa)
+            "saldo_sin_comisiones": float(np.sum(pnl_neto)),
             "pnl_neto": float(np.sum(pnl_neto)),
             "net_pnl": float(np.sum(pnl_neto)),
         }
@@ -1217,7 +1219,7 @@ def _empty_metrics_dict(saldo_inicial: float) -> Dict[str, Any]:
         "max_perdida": 0.0,
         "duration_mean_min": 0.0,
         "comisiones_total": 0.0,
-        "saldo_sin_comisiones": float(saldo_inicial),
+        "saldo_sin_comisiones": 0.0,
     }
 
 
@@ -1294,10 +1296,15 @@ def _resumen_metricas_numba_wrapper(
     metrics["sharpe"] = sharpe(trades, annualize=False)
     metrics["sortino"] = sortino(trades, annualize=False)
 
-    # Saldo sin comisiones
+    # Beneficio bruto (sin comisiones) = PNL neto + comisiones pagadas
+    # Esto da el beneficio BRUTO (profit), NO el saldo/balance bruto
+    pnl_neto_total = metrics.get("pnl_neto", 0.0) or metrics.get("net_pnl", 0.0)
+    metrics["saldo_sin_comisiones"] = pnl_neto_total + metrics["comisiones_total"]
+
+    # Si existe columna pnl (bruto), usar cálculo exacto del beneficio bruto
     if "pnl" in cols:
         pnl_bruto = _to_numpy(trades, "pnl")
-        metrics["saldo_sin_comisiones"] = float(saldo_antes[0]) + float(pnl_bruto.sum())
+        metrics["saldo_sin_comisiones"] = float(pnl_bruto.sum())
 
     return metrics
 
@@ -1330,10 +1337,10 @@ def _resumen_metricas_python(
     racha_g, racha_p = racha_maxima(trades)
     porc_gan, porc_perd = porcentaje_ganadoras_perdedoras(trades)
 
-    # "Saldo sin comisiones"
-    saldo_antes = _to_numpy(trades, "saldo_antes") if "saldo_antes" in cols else np.array([saldo_inicial])
+    # Beneficio bruto (sin comisiones) = sum(pnl_bruto)
+    # Esto es el beneficio BRUTO (profit), NO el saldo bruto
     pnl_bruto = _to_numpy(trades, "pnl") if "pnl" in cols else pnl_neto
-    saldo_sin_comisiones = float(saldo_antes[0]) + float(pnl_bruto.sum())
+    beneficio_bruto = float(pnl_bruto.sum())
 
     # Contar trades long y short
     if isinstance(trades, pl.DataFrame):
@@ -1401,7 +1408,7 @@ def _resumen_metricas_python(
         "max_perdida": float(np.min(pnl_neto)),
         "duration_mean_min": duration_mean_min,
         "comisiones_total": float(np.sum(comision)),
-        "saldo_sin_comisiones": saldo_sin_comisiones,
+        "saldo_sin_comisiones": beneficio_bruto,
         # PnL aliases
         "pnl_neto": float(np.sum(pnl_neto)),
         "net_pnl": float(np.sum(pnl_neto)),

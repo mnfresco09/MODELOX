@@ -17,38 +17,38 @@ APALANCAMIENTO_MAX = 20    # Apalancamiento máximo
 # =============================================================================
 # COMBINACIÓN & ESTRATEGIA
 # =============================================================================
-COMBINACION_A_EJECUTAR = [77]   # IDs de estrategias en modelox/strategies/
+COMBINACION_A_EJECUTAR = [2]   # IDs de estrategias en modelox/strategies/
 
 # =============================================================================
 # OPTIMIZACIÓN (OPTUNA)
 # =============================================================================
-N_TRIALS                 = 1024     # Trials (potencias de 2 para QMC: 32,64,128,256…)
+N_TRIALS                 = 25     # Trials (potencias de 2 para QMC: 32,64,128,256…)
 OPTUNA_SAMPLER           = "HYBRID" # HYBRID | QMC | TPE | CMA | GT | ML
 
 # =============================================================================
 # ACTIVO
 # =============================================================================
-ACTIVO = "BTC, ETH, GOLD, SILVER"  # BTC | ETH | GOLD | SILVER | SP500 | NASDAQ | BIST100
+ACTIVO = "BTC"  # BTC | ETH | GOLD | SILVER | SP500 | NASDAQ | BIST100
 
 # =============================================================================
 # RANGO DE FECHAS
 # =============================================================================
-FECHA_INICIO = "2022-01-01"
-FECHA_FIN    = "2025-01-01"
+FECHA_INICIO = "2021-10-01"
+FECHA_FIN    = "2023-11-01"
 
 USAR_RANGOS_POR_TRIAL = False  # False = rango fijo | True = sub-ventana aleatoria por trial
-MESES_POR_TRIAL       = 12     # Duración de la ventana (solo si USAR_RANGOS_POR_TRIAL=True)
+MESES_POR_TRIAL       = 7     # Duración de la ventana (solo si USAR_RANGOS_POR_TRIAL=True)
 
 # =============================================================================
 # TIMEFRAME
 # =============================================================================
-TIMEFRAME_BASE = "30"           # 1|5|15|30|60|240|720|1440 (min) o "1m","5m","1h","4h","1d"
+TIMEFRAME_BASE = "60"           # 1|5|15|30|60|240|720|1440 (min) o "1m","5m","1h","4h","1d"
 TIMEFRAMES     = [TIMEFRAME_BASE]
 
 # =============================================================================
 # PERTURBACIONES (anti-overfitting — Leashed Brownian Motion)
 # =============================================================================
-ENTRENAMIENTO_ROBUSTO_ACTIVAR = True    # Mutar OHLCV por trial
+ENTRENAMIENTO_ROBUSTO_ACTIVAR = False    # Mutar OHLCV por trial
 MAX_DRIFT_PCT                 = 0.15    # Desviación máxima del precio real (±%)
 DRIFT_STEP_VOLATILITY         = 0.0050  # Volatilidad browniana por vela
 RUIDO_MECHAS_PCT              = 0.10    # Ruido en mechas

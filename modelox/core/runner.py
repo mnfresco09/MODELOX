@@ -592,6 +592,16 @@ class OptimizationRunner:
             params_rt["exit_trail_act_pct"] = exit_settings.trail_act_pct
             params_rt["exit_trail_dist_pct"] = exit_settings.trail_dist_pct
             params_rt["exit_time_bars"] = exit_settings.time_stop_bars
+
+        # ATR params (siempre inyectados para trazabilidad/reporting consistente)
+        params_rt["__exit_atr_period"] = exit_settings.atr_period
+        params_rt["__exit_atr_min_pct"] = exit_settings.atr_min_pct
+        params_rt["__exit_atr_max_pct"] = exit_settings.atr_max_pct
+        params_rt["__exit_atr_lookback"] = exit_settings.atr_lookback
+        params_rt["exit_atr_period"] = exit_settings.atr_period
+        params_rt["exit_atr_min_pct"] = exit_settings.atr_min_pct
+        params_rt["exit_atr_max_pct"] = exit_settings.atr_max_pct
+        params_rt["exit_atr_lookback"] = exit_settings.atr_lookback
         
         # Timeframes
         entry_tf = normalize_timeframe_to_suffix(getattr(strategy, "timeframe_entry", None) or base_tf)
@@ -1077,10 +1087,21 @@ def run_single_exit_type(
 
         if usar_excel and excel_dir:
             from visual.excel import ExcelReporter
+            try:
+                from general.configuracion import (
+                    FECHA_INICIO as _FI, FECHA_FIN as _FF,
+                    CARPETA_DATOS as _CDAT, FORMATO_DATOS as _FMT,
+                )
+            except Exception:
+                _FI = _FF = None; _CDAT = "datos"; _FMT = "feather"
             reporters.append(ExcelReporter(
                 resumen_path=f"{excel_dir}/RESUMEN ID{strategy.combinacion_id}.xlsx",
                 trades_base_dir=excel_dir,
                 max_archivos=max_archivos,
+                fecha_inicio=_FI,
+                fecha_fin=_FF,
+                datos_dir=_CDAT,
+                formato_datos=_FMT,
             ))
 
         if generar_plots and graficos_dir:

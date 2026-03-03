@@ -40,28 +40,28 @@ logger = logging.getLogger(__name__)
 # ==============================================================================
 
 COLORS = {
-    "header_bg_metrics": "1A1A2E",
-    "header_bg_params":  "16213E",
-    "header_bg_id":      "0F3460",
+    "header_bg_metrics": "2D3436",
+    "header_bg_params":  "636E72",
+    "header_bg_id":      "2D3436",
     "text_white":        "FFFFFF",
-    "text_dark":         "1A1A2E",
-    "border_color":      "E8EDF5",
-    "success_bg":        "E8F5E9",
-    "danger_bg":         "FFEBEE",
-    "accent_green":      "00897B",
-    "accent_red":        "C62828",
-    "row_alt":           "F7F9FC",
-    "section_border":    "3A86FF",
-    "table_header_bg":   "E3EAF6",
+    "text_dark":         "2D3436",
+    "border_color":      "DFE6E9",
+    "success_bg":        "F0FFF4",
+    "danger_bg":         "FFF5F5",
+    "accent_green":      "38A169",
+    "accent_red":        "E53E3E",
+    "row_alt":           "F8F9FA",
+    "section_border":    "A0AEC0",
+    "table_header_bg":   "EDF2F7",
 }
 
-FONT_TITLE = "Arial"
-FONT_BODY  = "Arial"
+FONT_TITLE = "Calibri"
+FONT_BODY  = "Calibri"
 
 METRICS_ORDER = [
-    "TOTAL_TRADES", "TRADES_DIA", "LONG", "SHORT",
-    "PROFIT_FACTOR", "ROI_PCT", "WINRATE_PCT", "MAX_DD_PCT",
-    "SHARPE", "SQN", "EXPECTATIVA"
+    "TRADES_DIA", "LONG", "SHORT", "PROFIT_FACTOR",
+    "ROI_PCT", "MAX_DD_PCT", "EXPECTATIVA",
+    "SALDO_SIN_COMISIONES", "PNL_NETO", "SALDO_ACTUAL", "COMISIONES_TOTAL",
 ]
 
 # Alias y métricas extra para detectar correctamente columnas de métricas
@@ -86,12 +86,37 @@ METRIC_ALIASES_TO_CANONICAL = {
     "TRADES_POR_DIA": "TRADES_DIA",
 }
 
-EXTRA_METRICS_ORDER = [
-    "SORTINO", "CALMAR", "PAYOFF_RATIO", "NET_PNL", "PNL_NETO",
-    "SALDO_ACTUAL", "SALDO_MAX", "SALDO_MIN", "COMISIONES_TOTAL",
-]
+# Nombres para mostrar en las cabeceras del Excel (interno → display)
+METRIC_DISPLAY_NAMES = {
+    "TRADES_DIA":           "TRADES DIA",
+    "LONG":                 "LONG",
+    "SHORT":                "SHORT",
+    "PROFIT_FACTOR":        "PROFIT FACTOR",
+    "ROI_PCT":              "ROI",
+    "MAX_DD_PCT":           "MAX DD",
+    "EXPECTATIVA":          "EXPECTATIVA",
+    "SALDO_SIN_COMISIONES": "BEN BRUTO",
+    "PNL_NETO":             "BEN NETO",
+    "SALDO_ACTUAL":         "SALDO ACTUAL",
+    "COMISIONES_TOTAL":     "COMISIONES",
+}
 
-ALL_METRICS_ORDER = METRICS_ORDER + [m for m in EXTRA_METRICS_ORDER if m not in METRICS_ORDER]
+ALL_METRICS_ORDER = METRICS_ORDER
+
+# Todas las métricas conocidas (para excluirlas de la sección PARÁMETROS)
+ALL_KNOWN_METRICS = {
+    "TOTAL_TRADES", "TRADES_DIA", "LONG", "SHORT",
+    "PROFIT_FACTOR", "ROI_PCT", "WINRATE_PCT", "MAX_DD_PCT",
+    "SHARPE", "SQN", "EXPECTATIVA", "SORTINO", "CALMAR",
+    "PAYOFF_RATIO", "NET_PNL", "PNL_NETO", "SALDO_ACTUAL",
+    "SALDO_MAX", "SALDO_MIN", "COMISIONES_TOTAL", "SALDO_SIN_COMISIONES",
+    "ROI%", "WINRATE%", "MAX_DD%", "WIN_STREAK", "LOSS_STREAK",
+    "AVG_TRADE", "TRADES_POR_DIA", "PNL_NETO_POR_DIA_OPERADO",
+    "DURATION_MEAN_MIN", "RACHA_GANADORA", "RACHA_PERDEDORA",
+    "PORC_GANADORAS", "PORC_PERDEDORAS", "SALDO_MEAN",
+    "MAX_GANANCIA", "MAX_PERDIDA",
+}
+
 ID_COLS = ["TRIAL", "ESTRATEGIA", "SCORE"]
 
 EXCLUDED_PARAMS = {
@@ -133,6 +158,11 @@ class ExcelReporter:
     trades_base_dir: str = "resultados/excel"
     max_archivos: int = 5
     use_fast_mode: bool = True
+    # Datos de precio para la gráfica comparativa
+    datos_dir: str = "datos"
+    fecha_inicio: Optional[str] = None
+    fecha_fin: Optional[str] = None
+    formato_datos: str = "feather"
 
     _csv_resumen_path: Optional[str] = field(default=None, init=False, repr=False)
     _resumen_rows: List[Dict[str, Any]] = field(default_factory=list, init=False, repr=False)
@@ -218,13 +248,28 @@ class ExcelReporter:
             except Exception as e:
                 logger.warning(f"Error guardando trades trial {candidate['trial_number']}: {e}")
 
+        # Intentar leer fechas desde configuracion.py si no se pasaron
+        _fecha_inicio = self.fecha_inicio
+        _fecha_fin    = self.fecha_fin
+        if _fecha_inicio is None:
+            try:
+                from general.configuracion import FECHA_INICIO, FECHA_FIN
+                _fecha_inicio = FECHA_INICIO
+                _fecha_fin    = FECHA_FIN
+            except Exception:
+                pass
+
         try:
             self._final_excel_path = convertir_resumen_csv_a_excel(
                 csv_path=csv_path,
                 strategy_name=strategy_name,
                 activo=activo_safe,
                 output_dir=base_dir,
-                excel_path=self.resumen_path
+                excel_path=self.resumen_path,
+                datos_dir=self.datos_dir,
+                fecha_inicio=_fecha_inicio,
+                fecha_fin=_fecha_fin,
+                formato_datos=self.formato_datos,
             )
         except Exception as e:
             logger.warning(f"Error generando Dashboard Excel: {e}")
@@ -419,9 +464,10 @@ def _escribir_trades_xlsxwriter(
 
     # ── BASE de formato ──────────────────────────────────────────────────────
     _BASE = dict(
-        font_name='Arial', font_size=10, font_color='#1A1A2E',
+        font_name='Calibri', font_size=10, font_color='#2D3436',
         align='center', valign='vcenter',
-        border=1, border_color='#E8EDF5'
+        bottom=1, bottom_color='#E2E8F0',
+        top=0, left=0, right=0,
     )
 
     def _fmt(bg='#FFFFFF', num_format=None, **kw):
@@ -432,20 +478,22 @@ def _escribir_trades_xlsxwriter(
         return wb.add_format(p)
 
     hdr_fmt = wb.add_format({
-        'bold': True, 'font_name': 'Arial', 'font_size': 11,
-        'font_color': '#FFFFFF', 'bg_color': '#1A1A2E',
+        'bold': True, 'font_name': 'Calibri', 'font_size': 10,
+        'font_color': '#718096', 'bg_color': '#F7FAFC',
         'align': 'center', 'valign': 'vcenter',
-        'border': 1, 'border_color': '#E8EDF5', 'text_wrap': True,
+        'bottom': 2, 'bottom_color': '#A0AEC0',
+        'top': 0, 'left': 0, 'right': 0,
+        'text_wrap': True,
     })
 
     # Pares de formato (fila normal, fila alternada)
     FMT = {
-        'gen':   (_fmt('#FFFFFF'),                          _fmt('#F7F9FC')),
-        'dt':    (_fmt('#FFFFFF', 'dd/mm/yy hh:mm'),        _fmt('#F7F9FC', 'dd/mm/yy hh:mm')),
-        'price': (_fmt('#FFFFFF', '#,##0.00'),               _fmt('#F7F9FC', '#,##0.00')),
-        'money': (_fmt('#FFFFFF', '#,##0.00'),               _fmt('#F7F9FC', '#,##0.00')),
-        'pct':   (_fmt('#FFFFFF', '0.00%'),                  _fmt('#F7F9FC', '0.00%')),
-        'apal':  (_fmt('#FFFFFF', '0.00"x"'),                _fmt('#F7F9FC', '0.00"x"')),
+        'gen':   (_fmt('#FFFFFF'),                          _fmt('#F7FAFC')),
+        'dt':    (_fmt('#FFFFFF', 'dd/mm/yy hh:mm'),        _fmt('#F7FAFC', 'dd/mm/yy hh:mm')),
+        'price': (_fmt('#FFFFFF', '#,##0.00'),               _fmt('#F7FAFC', '#,##0.00')),
+        'money': (_fmt('#FFFFFF', '#,##0.00'),               _fmt('#F7FAFC', '#,##0.00')),
+        'pct':   (_fmt('#FFFFFF', '0.00%'),                  _fmt('#F7FAFC', '0.00%')),
+        'apal':  (_fmt('#FFFFFF', '0.00"x"'),                _fmt('#F7FAFC', '0.00"x"')),
     }
 
     def _fmt_key(hdr: str) -> str:
@@ -460,9 +508,125 @@ def _escribir_trades_xlsxwriter(
     col_keys = [_fmt_key(c) for c in cols]
 
     # Índices de columnas especiales
-    pnl_neto_idx   = next((i for i, c in enumerate(cols) if 'PNL' in c and 'NETO' in c), None)
-    balance_idx    = next((i for i, c in enumerate(cols) if c == 'BALANCE'), None)
-    entry_time_idx = next((i for i, c in enumerate(cols) if c == 'ENTRY_TIME'), None)
+    pnl_neto_idx    = next((i for i, c in enumerate(cols) if 'PNL' in c and 'NETO' in c), None)
+    balance_idx     = next((i for i, c in enumerate(cols) if c == 'BALANCE'), None)
+    entry_time_idx  = next((i for i, c in enumerate(cols) if c == 'ENTRY_TIME'), None)
+    comisiones_idx  = next((i for i, c in enumerate(cols) if 'COMISIONES' in c), None)
+    entry_price_idx = next((i for i, c in enumerate(cols) if c == 'ENTRY_PRICE'), None)
+    exit_price_idx  = next((i for i, c in enumerate(cols) if c == 'EXIT_PRICE'), None)
+
+    # ── Hoja auxiliar oculta para datos de gráficos ─────────────────────
+    # Columnas: A=ENTRY_TIME, B=BAL_BRUTO, C=STRAT_ROI%, D=BH_ROI%
+    has_bruto_data = False
+    has_roi_data   = False
+    if n_rows > 0:
+        ws_aux = wb.add_worksheet('_ChartData')
+        ws_aux.hide()
+        ws_aux.write_string(0, 0, 'ENTRY_TIME')
+        ws_aux.write_string(0, 1, 'BAL_BRUTO')
+        ws_aux.write_string(0, 2, 'STRAT_IDX')
+        ws_aux.write_string(0, 3, 'BH_IDX')
+        ws_aux.write_string(0, 4, 'CUM_COMISIONES')
+        ws_aux.write_string(0, 5, 'CUM_PNL_NETO')
+
+        dt_fmt = wb.add_format({'num_format': 'dd/mm/yy hh:mm'})
+
+        # Primer precio del activo (para Buy & Hold)
+        first_entry_price = None
+        _saldo_ini = 0.0  # Se calcula en la primera iteración
+        if entry_price_idx is not None:
+            try:
+                first_entry_price = float(df.iloc[0, entry_price_idx])
+            except (ValueError, TypeError):
+                first_entry_price = None
+
+        comisiones_acum = 0.0
+        pnl_neto_acum   = 0.0
+        has_fee_data    = False
+        for r_idx in range(n_rows):
+            # Col A: Timestamp
+            if entry_time_idx is not None:
+                try:
+                    et_val = df.iloc[r_idx, entry_time_idx]
+                    if isinstance(et_val, (pd.Timestamp, datetime.datetime)):
+                        dt = et_val.to_pydatetime() if hasattr(et_val, 'to_pydatetime') else et_val
+                        dt = dt.replace(tzinfo=None)
+                        ws_aux.write_datetime(r_idx + 1, 0, dt, dt_fmt)
+                    else:
+                        ws_aux.write(r_idx + 1, 0, str(et_val))
+                except Exception:
+                    ws_aux.write(r_idx + 1, 0, r_idx)
+
+            # Col B: Balance Bruto
+            if balance_idx is not None and comisiones_idx is not None:
+                try:
+                    comision_val = float(df.iloc[r_idx, comisiones_idx])
+                except (ValueError, TypeError):
+                    comision_val = 0.0
+                comisiones_acum += comision_val
+                try:
+                    balance_val = float(df.iloc[r_idx, balance_idx])
+                except (ValueError, TypeError):
+                    balance_val = 0.0
+                bruto_val = balance_val + comisiones_acum
+                ws_aux.write_number(r_idx + 1, 1, bruto_val)
+                has_bruto_data = True
+
+            # Col C: Strategy ROI % (0% = punto de partida)
+            # saldo_inicial = BALANCE[0] - PNL_NETO[0] (balance antes del primer trade)
+            if balance_idx is not None and pnl_neto_idx is not None:
+                try:
+                    bal = float(df.iloc[r_idx, balance_idx])
+                except (ValueError, TypeError):
+                    bal = 0.0
+                if r_idx == 0:
+                    try:
+                        first_pnl = float(df.iloc[0, pnl_neto_idx])
+                        first_bal = float(df.iloc[0, balance_idx])
+                        _saldo_ini = first_bal - first_pnl
+                    except (ValueError, TypeError):
+                        _saldo_ini = first_bal if first_bal > 0 else 1.0
+                if _saldo_ini > 0:
+                    strat_roi = (bal / _saldo_ini - 1.0) * 100.0
+                    ws_aux.write_number(r_idx + 1, 2, strat_roi)
+                    has_roi_data = True
+
+            # Col D: Buy & Hold ROI %
+            if entry_price_idx is not None and first_entry_price and first_entry_price > 0:
+                # Usar exit_price del último trade, entry_price para el resto
+                if r_idx == n_rows - 1 and exit_price_idx is not None:
+                    try:
+                        price_now = float(df.iloc[r_idx, exit_price_idx])
+                    except (ValueError, TypeError):
+                        price_now = first_entry_price
+                else:
+                    try:
+                        price_now = float(df.iloc[r_idx, entry_price_idx])
+                    except (ValueError, TypeError):
+                        price_now = first_entry_price
+                # ROI % (0% = inicio)
+                bh_roi = (price_now / first_entry_price - 1.0) * 100.0
+                ws_aux.write_number(r_idx + 1, 3, bh_roi)
+
+            # Col E: Comisiones acumuladas
+            if comisiones_idx is not None:
+                try:
+                    com_val = float(df.iloc[r_idx, comisiones_idx])
+                except (ValueError, TypeError):
+                    com_val = 0.0
+                # Solo sumar si no se sumó ya arriba (evitar doble suma)
+                # comisiones_acum ya fue actualizada en Col B
+                ws_aux.write_number(r_idx + 1, 4, comisiones_acum)
+                has_fee_data = True
+
+            # Col F: PNL Neto acumulado
+            if pnl_neto_idx is not None:
+                try:
+                    pnl_val = float(df.iloc[r_idx, pnl_neto_idx])
+                except (ValueError, TypeError):
+                    pnl_val = 0.0
+                pnl_neto_acum += pnl_val
+                ws_aux.write_number(r_idx + 1, 5, pnl_neto_acum)
 
     # ── Anchos de columna: muestrea 20 filas, O(cols) ───────────────────────
     for i, col_name in enumerate(cols):
@@ -503,10 +667,10 @@ def _escribir_trades_xlsxwriter(
 
     # ── FORMATO CONDICIONAL PNL NETO ────────────────────────────────────────
     if pnl_neto_idx is not None and n_rows > 0:
-        fmt_green = wb.add_format({**_BASE, 'bg_color': '#E8F5E9',
-                                    'font_color': '#00897B', 'bold': True})
-        fmt_red   = wb.add_format({**_BASE, 'bg_color': '#FFEBEE',
-                                    'font_color': '#C62828', 'bold': True})
+        fmt_green = wb.add_format({**_BASE,
+                                    'font_color': '#38A169', 'bold': True})
+        fmt_red   = wb.add_format({**_BASE,
+                                    'font_color': '#E53E3E', 'bold': True})
         ws.conditional_format(1, pnl_neto_idx, n_rows, pnl_neto_idx,
                                {'type': 'cell', 'criteria': '>', 'value': 0, 'format': fmt_green})
         ws.conditional_format(1, pnl_neto_idx, n_rows, pnl_neto_idx,
@@ -515,124 +679,288 @@ def _escribir_trades_xlsxwriter(
     # ── FILA DE SEPARACIÓN entre datos y gráfico/tabla ──────────────────────
     BLOCK_ROW = n_rows + 2   # fila 0-indexed donde empieza bloque inferior
 
-    # ── GRÁFICO: col B (índice 1), 500px ancho × 430px alto ─────────────────
-    # 500px ≈ 8 columnas × ~62px → termina antes de col J
+    CHARTS_HEIGHT_ROWS = 0  # filas que ocupan los gráficos (para calcular TABLE_ROW)
+
+    # ── GRÁFICO 1: EVOLUCIÓN DEL BALANCE (solo Balance Neto) ────────────────
     if balance_idx is not None and n_rows > 0:
         bal_series = df.iloc[:, balance_idx].dropna()
         y_min_raw  = float(bal_series.min())
         y_max_raw  = float(bal_series.max())
         data_range = y_max_raw - y_min_raw if y_max_raw != y_min_raw else max(abs(y_max_raw) * 0.1, 1.0)
 
-        # Margen del 3% arriba y abajo
         margin     = data_range * 0.03
         y_min_axis = y_min_raw - margin
         y_max_axis = y_max_raw + margin
         major_unit = _nice_major_unit(data_range, target_ticks=6)
 
-        chart = wb.add_chart({'type': 'line'})
+        chart1 = wb.add_chart({'type': 'line'})
 
         bal_col_letter = xl_col_to_name(balance_idx)
-        series_cfg = {
+        series_neto = {
+            'name':   'Balance Neto',
             'values': f"=Trades!${bal_col_letter}$2:${bal_col_letter}${n_rows + 1}",
-            'line':   {'color': '#3A86FF', 'width': 1.75, 'smooth': True},
+            'line':   {'color': '#4A5568', 'width': 1.5},
             'marker': {'type': 'none'},
         }
         if entry_time_idx is not None:
             et_letter = xl_col_to_name(entry_time_idx)
-            series_cfg['categories'] = f"=Trades!${et_letter}$2:${et_letter}${n_rows + 1}"
+            series_neto['categories'] = f"=Trades!${et_letter}$2:${et_letter}${n_rows + 1}"
+        chart1.add_series(series_neto)
 
-        chart.add_series(series_cfg)
-        chart.set_title({'name': 'EVOLUCIÓN DEL BALANCE', 'name_font': {'size': 12, 'bold': True}})
-
-        chart.set_y_axis({
-            'name':            'Balance ($)',
-            'name_font':       {'size': 9, 'bold': False},
-            'num_format':      '#,##0.00',
-            'num_font':        {'size': 8},
+        chart1.set_title({'name': 'Balance', 'name_font': {'size': 11, 'bold': True, 'color': '#2D3436', 'name': 'Calibri'}})
+        chart1.set_y_axis({
+            'num_format':      '#,##0',
+            'num_font':        {'size': 8, 'color': '#718096', 'name': 'Calibri'},
             'min':             y_min_axis,
             'max':             y_max_axis,
             'major_unit':      major_unit,
-            'major_gridlines': {'visible': False},
+            'major_gridlines': {'visible': True, 'line': {'color': '#EDF2F7', 'width': 0.5}},
             'minor_gridlines': {'visible': False},
             'line':            {'none': True},
         })
-        chart.set_x_axis({
-            'num_format':      'dd/mm/yy',
-            'num_font':        {'size': 7},
+        chart1.set_x_axis({
+            'num_format':      'MMM yy',
+            'num_font':        {'size': 7, 'color': '#A0AEC0', 'name': 'Calibri'},
             'major_gridlines': {'visible': False},
-            'major_tick_mark': 'outside',
-            'line':            {'color': '#CCCCCC'},
+            'major_tick_mark': 'none',
+            'minor_tick_mark': 'none',
+            'line':            {'color': '#E2E8F0', 'width': 0.5},
         })
-        chart.set_legend({'none': True})
-        chart.set_plotarea({'border': {'none': True}})
-        chart.set_chartarea({'border': {'color': '#E0E0E0'}, 'fill': {'color': '#FAFBFF'}})
+        chart1.set_legend({'none': True})
+        chart1.set_plotarea({'border': {'none': True}, 'fill': {'color': '#FFFFFF'}})
+        chart1.set_chartarea({'border': {'none': True}, 'fill': {'color': '#FFFFFF'}})
+        chart1.set_size({'width': 1000, 'height': 400})
 
-        # Tamaño: 1000 × 430 px (Ancho 10)
-        chart.set_size({'width': 1000, 'height': 430})
+        ws.insert_chart(BLOCK_ROW, 1, chart1, {'x_offset': 2, 'y_offset': 5})
+        CHARTS_HEIGHT_ROWS += 24  # ~430px ≈ 24 filas
 
-        # Anclar: fila=BLOCK_ROW (0-indexed), columna=1 (B)
-        ws.insert_chart(BLOCK_ROW, 1, chart, {'x_offset': 2, 'y_offset': 5})
+    # ── GRÁFICO 2: BALANCE NETO vs BALANCE BRUTO (comparación) ──────────────
+    # Usa datos de _ChartData (hoja oculta) para Balance Bruto
+    if balance_idx is not None and has_bruto_data and n_rows > 0:
+        # Calcular rango Y incluyendo ambas series
+        bal_series = df.iloc[:, balance_idx].dropna()
+        y_min_raw2 = float(bal_series.min())
+        y_max_raw2 = float(bal_series.max())
 
-    # ── TABLA DE PARÁMETROS: Col B, debajo del gráfico ──────────────────────
-    # El gráfico ocupa ~22-23 filas (430px). Ponemos la tabla en la 24.
-    TABLE_COL = 1    # B (0-indexed)
-    TABLE_ROW = BLOCK_ROW + 24
+        comisiones_acum = 0.0
+        for r_idx in range(n_rows):
+            try:
+                comision_val = float(df.iloc[r_idx, comisiones_idx])
+            except (ValueError, TypeError):
+                comision_val = 0.0
+            comisiones_acum += comision_val
+            try:
+                balance_val = float(df.iloc[r_idx, balance_idx])
+            except (ValueError, TypeError):
+                balance_val = 0.0
+            bruto_val = balance_val + comisiones_acum
+            y_min_raw2 = min(y_min_raw2, bruto_val)
+            y_max_raw2 = max(y_max_raw2, bruto_val)
 
-    # Fuente 13pt = visualmente "2x" respecto al cuerpo de 10pt
-    _TBL = dict(font_name='Arial', font_size=13, valign='vcenter', indent=1)
+        data_range2 = y_max_raw2 - y_min_raw2 if y_max_raw2 != y_min_raw2 else max(abs(y_max_raw2) * 0.1, 1.0)
+        margin2     = data_range2 * 0.03
+        y_min_axis2 = y_min_raw2 - margin2
+        y_max_axis2 = y_max_raw2 + margin2
+        major_unit2 = _nice_major_unit(data_range2, target_ticks=6)
+
+        chart2 = wb.add_chart({'type': 'line'})
+
+        # Serie 1 — BALANCE NETO (azul) — desde hoja Trades
+        bal_col_letter = xl_col_to_name(balance_idx)
+        series_neto2 = {
+            'name':   'Balance Neto',
+            'values': f"=Trades!${bal_col_letter}$2:${bal_col_letter}${n_rows + 1}",
+            'line':   {'color': '#4A5568', 'width': 1.5},
+            'marker': {'type': 'none'},
+        }
+        if entry_time_idx is not None:
+            et_letter = xl_col_to_name(entry_time_idx)
+            series_neto2['categories'] = f"=Trades!${et_letter}$2:${et_letter}${n_rows + 1}"
+        chart2.add_series(series_neto2)
+
+        # Serie 2 — BALANCE BRUTO (verde) — desde hoja _ChartData
+        series_bruto2 = {
+            'name':       'Balance Bruto',
+            'values':     f"='_ChartData'!$B$2:$B${n_rows + 1}",
+            'categories': f"='_ChartData'!$A$2:$A${n_rows + 1}",
+            'line':       {'color': '#CBD5E0', 'width': 1.5, 'dash_type': 'dash'},
+            'marker':     {'type': 'none'},
+        }
+        chart2.add_series(series_bruto2)
+
+        chart2.set_title({'name': 'Neto vs Bruto', 'name_font': {'size': 11, 'bold': True, 'color': '#2D3436', 'name': 'Calibri'}})
+        chart2.set_y_axis({
+            'num_format':      '#,##0',
+            'num_font':        {'size': 8, 'color': '#718096', 'name': 'Calibri'},
+            'min':             y_min_axis2,
+            'max':             y_max_axis2,
+            'major_unit':      major_unit2,
+            'major_gridlines': {'visible': True, 'line': {'color': '#EDF2F7', 'width': 0.5}},
+            'minor_gridlines': {'visible': False},
+            'line':            {'none': True},
+        })
+        chart2.set_x_axis({
+            'num_format':      'MMM yy',
+            'num_font':        {'size': 7, 'color': '#A0AEC0', 'name': 'Calibri'},
+            'major_gridlines': {'visible': False},
+            'major_tick_mark': 'none',
+            'minor_tick_mark': 'none',
+            'line':            {'color': '#E2E8F0', 'width': 0.5},
+        })
+        chart2.set_legend({'position': 'bottom', 'font': {'size': 9, 'color': '#718096', 'name': 'Calibri'}})
+        chart2.set_plotarea({'border': {'none': True}, 'fill': {'color': '#FFFFFF'}})
+        chart2.set_chartarea({'border': {'none': True}, 'fill': {'color': '#FFFFFF'}})
+        chart2.set_size({'width': 1000, 'height': 400})
+
+        ws.insert_chart(BLOCK_ROW + CHARTS_HEIGHT_ROWS, 1, chart2, {'x_offset': 2, 'y_offset': 5})
+        CHARTS_HEIGHT_ROWS += 24
+
+    # ── GRÁFICO 3: ESTRATEGIA vs BUY & HOLD (índice base 100, escala log) ───
+    if has_roi_data and entry_price_idx is not None and n_rows > 0:
+        chart3 = wb.add_chart({'type': 'line'})
+
+        # Serie 1 — Estrategia (gris oscuro)
+        series_strat = {
+            'name':       'Estrategia',
+            'values':     f"='_ChartData'!$C$2:$C${n_rows + 1}",
+            'categories': f"='_ChartData'!$A$2:$A${n_rows + 1}",
+            'line':       {'color': '#4A5568', 'width': 1.5},
+            'marker':     {'type': 'none'},
+        }
+        chart3.add_series(series_strat)
+
+        # Serie 2 — Buy & Hold (gris claro)
+        series_bh = {
+            'name':       'Buy & Hold',
+            'values':     f"='_ChartData'!$D$2:$D${n_rows + 1}",
+            'categories': f"='_ChartData'!$A$2:$A${n_rows + 1}",
+            'line':       {'color': '#CBD5E0', 'width': 1.5},
+            'marker':     {'type': 'none'},
+        }
+        chart3.add_series(series_bh)
+
+        chart3.set_title({'name': 'Estrategia vs Buy & Hold', 'name_font': {'size': 11, 'bold': True, 'color': '#2D3436', 'name': 'Calibri'}})
+        chart3.set_y_axis({
+            'num_format':      '#,##0"%"',
+            'num_font':        {'size': 8, 'color': '#718096', 'name': 'Calibri'},
+            'major_gridlines': {'visible': True, 'line': {'color': '#EDF2F7', 'width': 0.5}},
+            'minor_gridlines': {'visible': False},
+            'line':            {'none': True},
+            'crossing':        0,
+        })
+        chart3.set_x_axis({
+            'num_format':      'MMM yy',
+            'num_font':        {'size': 7, 'color': '#A0AEC0', 'name': 'Calibri'},
+            'major_gridlines': {'visible': False},
+            'major_tick_mark': 'none',
+            'minor_tick_mark': 'none',
+            'line':            {'color': '#E2E8F0', 'width': 0.5},
+            'label_position':  'low',
+        })
+        chart3.set_legend({'position': 'bottom', 'font': {'size': 9, 'color': '#718096', 'name': 'Calibri'}})
+        chart3.set_plotarea({'border': {'none': True}, 'fill': {'color': '#FFFFFF'}})
+        chart3.set_chartarea({'border': {'none': True}, 'fill': {'color': '#FFFFFF'}})
+        chart3.set_size({'width': 1000, 'height': 400})
+
+        ws.insert_chart(BLOCK_ROW + CHARTS_HEIGHT_ROWS, 1, chart3, {'x_offset': 2, 'y_offset': 5})
+        CHARTS_HEIGHT_ROWS += 24
+
+    # ── GRÁFICO 4: COMISIONES vs BENEFICIO ──────────────────────────────────
+    if has_fee_data and pnl_neto_idx is not None and n_rows > 0:
+        chart4 = wb.add_chart({'type': 'line'})
+
+        # Serie 1 — PNL Neto acumulado (gris oscuro sólido)
+        chart4.add_series({
+            'name':       'Beneficio Neto',
+            'values':     f"='_ChartData'!$F$2:$F${n_rows + 1}",
+            'categories': f"='_ChartData'!$A$2:$A${n_rows + 1}",
+            'line':       {'color': '#4A5568', 'width': 1.5},
+            'marker':     {'type': 'none'},
+        })
+
+        # Serie 2 — Comisiones acumuladas (gris claro punteado)
+        chart4.add_series({
+            'name':       'Comisiones',
+            'values':     f"='_ChartData'!$E$2:$E${n_rows + 1}",
+            'categories': f"='_ChartData'!$A$2:$A${n_rows + 1}",
+            'line':       {'color': '#CBD5E0', 'width': 1.5, 'dash_type': 'dash'},
+            'marker':     {'type': 'none'},
+        })
+
+        chart4.set_title({'name': 'Comisiones vs Beneficio', 'name_font': {'size': 11, 'bold': True, 'color': '#2D3436', 'name': 'Calibri'}})
+        chart4.set_y_axis({
+            'num_format':      '#,##0',
+            'num_font':        {'size': 8, 'color': '#718096', 'name': 'Calibri'},
+            'major_gridlines': {'visible': True, 'line': {'color': '#EDF2F7', 'width': 0.5}},
+            'minor_gridlines': {'visible': False},
+            'line':            {'none': True},
+        })
+        chart4.set_x_axis({
+            'num_format':      'MMM yy',
+            'num_font':        {'size': 7, 'color': '#A0AEC0', 'name': 'Calibri'},
+            'major_gridlines': {'visible': False},
+            'major_tick_mark': 'none',
+            'minor_tick_mark': 'none',
+            'line':            {'color': '#E2E8F0', 'width': 0.5},
+            'label_position':  'low',
+        })
+        chart4.set_legend({'position': 'bottom', 'font': {'size': 9, 'color': '#718096', 'name': 'Calibri'}})
+        chart4.set_plotarea({'border': {'none': True}, 'fill': {'color': '#FFFFFF'}})
+        chart4.set_chartarea({'border': {'none': True}, 'fill': {'color': '#FFFFFF'}})
+        chart4.set_size({'width': 1000, 'height': 400})
+
+        ws.insert_chart(BLOCK_ROW + CHARTS_HEIGHT_ROWS, 1, chart4, {'x_offset': 2, 'y_offset': 5})
+        CHARTS_HEIGHT_ROWS += 24
+
+    # ── TABLA DE PARÁMETROS ─────────────────────────────────────────────────
+    TABLE_COL = 1
+    TABLE_ROW = BLOCK_ROW + CHARTS_HEIGHT_ROWS
+
+    _TBL = dict(font_name='Calibri', font_size=11, valign='vcenter', indent=1)
 
     title_fmt = wb.add_format({**_TBL,
-        'bold': True, 'font_color': '#FFFFFF', 'bg_color': '#1A1A2E',
+        'bold': True, 'font_color': '#2D3436', 'bg_color': '#EDF2F7',
         'align': 'left',
-        'left': 5,   'left_color':   '#3A86FF',
-        'top': 5,    'top_color':    '#3A86FF',
-        'right': 5,  'right_color':  '#3A86FF',
-        'bottom': 1, 'bottom_color': '#E8EDF5',
+        'bottom': 2, 'bottom_color': '#A0AEC0',
+        'top': 0, 'left': 0, 'right': 0,
     })
 
     def _lbl_fmt(is_last=False):
         return wb.add_format({**_TBL,
-            'bold': True, 'font_color': '#1A1A2E', 'bg_color': '#E3EAF6',
+            'bold': False, 'font_color': '#718096', 'bg_color': '#FFFFFF',
             'align': 'left',
-            'left': 5,  'left_color':   '#3A86FF',
-            'top': 1,   'top_color':    '#E8EDF5',
-            'right': 1, 'right_color':  '#E8EDF5',
-            'bottom': 5 if is_last else 1,
-            'bottom_color': '#3A86FF' if is_last else '#E8EDF5',
+            'bottom': 1 if not is_last else 0,
+            'bottom_color': '#EDF2F7',
+            'top': 0, 'left': 0, 'right': 0,
         })
 
     def _val_fmt(num_fmt='#,##0.00', is_last=False):
         return wb.add_format({**_TBL,
-            'bold': True, 'font_color': '#0F3460', 'bg_color': '#FFFFFF',
+            'bold': True, 'font_color': '#2D3436', 'bg_color': '#FFFFFF',
             'align': 'right', 'num_format': num_fmt,
-            'left': 1,   'left_color':   '#E8EDF5',
-            'top': 1,    'top_color':    '#E8EDF5',
-            'right': 5,  'right_color':  '#3A86FF',
-            'bottom': 5 if is_last else 1,
-            'bottom_color': '#3A86FF' if is_last else '#E8EDF5',
+            'bottom': 1 if not is_last else 0,
+            'bottom_color': '#EDF2F7',
+            'top': 0, 'left': 0, 'right': 0,
         })
 
     items = [
-        ("SALDO USADO",    val_saldo,   '#,##0.00 $', False),
-        ("VOLUMEN MÁX.",   val_volumen, '#,##0.00 $', False),
-        ("APALANCAMIENTO", val_apal,    '0.00"x"',    True),
+        ("Saldo Usado",    val_saldo,   '#,##0.00 $', False),
+        ("Volumen Máx.",   val_volumen, '#,##0.00 $', False),
+        ("Apalancamiento", val_apal,    '0.00"x"',    True),
     ]
 
-    # Título de la tarjeta (fusionado 2 columnas)
-    ws.set_row(TABLE_ROW, 32)
+    ws.set_row(TABLE_ROW, 28)
     ws.merge_range(TABLE_ROW, TABLE_COL, TABLE_ROW, TABLE_COL + 1,
-                   '⬛  PARÁMETROS DEL TRIAL', title_fmt)
+                   'Parámetros', title_fmt)
 
-    # Filas de datos
     for i, (label, value, num_fmt, is_last) in enumerate(items):
         r = TABLE_ROW + i + 1
-        ws.set_row(r, 30)   # 30 px → visible grande
+        ws.set_row(r, 24)
         ws.write(r, TABLE_COL,     label, _lbl_fmt(is_last))
         ws.write(r, TABLE_COL + 1, value, _val_fmt(num_fmt, is_last))
 
-    # Ancho de columnas de la tabla
-    ws.set_column(TABLE_COL,     TABLE_COL,     26)   # etiqueta
-    ws.set_column(TABLE_COL + 1, TABLE_COL + 1, 20)   # valor
+    ws.set_column(TABLE_COL,     TABLE_COL,     22)
+    ws.set_column(TABLE_COL + 1, TABLE_COL + 1, 18)
 
     wb.close()
 
@@ -757,6 +1085,106 @@ def _escribir_trades_openpyxl_fallback(
 # FUNCIÓN PRINCIPAL (CSV → DASHBOARD RESUMEN)
 # ==============================================================================
 
+def _load_price_series(
+    activo: str,
+    datos_dir: str,
+    fecha_inicio: Optional[str],
+    fecha_fin: Optional[str],
+    formato_datos: str,
+    n_points: int,
+) -> Optional[List[float]]:
+    """
+    Carga precios de cierre del activo desde el archivo de datos OHLCV y los
+    remuestrea a exactamente n_points valores con espaciado uniforme.
+
+    Retorna None si el archivo no existe o hay algún error.
+    """
+    try:
+        import glob as _glob
+        import polars as _pl
+
+        activo_up = str(activo).strip().upper()
+        base_dir  = datos_dir or "datos"
+
+        # Candidatos en orden de preferencia
+        candidates = [
+            os.path.join(base_dir, f"{activo_up}_ohlcv_1m.feather"),
+            os.path.join(base_dir, f"{activo_up}_ohlcv_1m.fthr"),
+            os.path.join(base_dir, f"{activo_up}_ohlcv_1m.parquet"),
+            os.path.join(base_dir, f"{activo_up}_ohlcv_1m.pq"),
+            os.path.join(base_dir, f"{activo_up.lower()}_ohlcv_1m.feather"),
+            os.path.join(base_dir, f"{activo_up.lower()}_ohlcv_1m.parquet"),
+        ]
+
+        filepath = next((p for p in candidates if os.path.exists(p)), None)
+        if filepath is None:
+            # Búsqueda glob como fallback
+            for pat in [f"{activo_up}_ohlcv_1m.*", f"{activo_up.lower()}_ohlcv_1m.*"]:
+                hits = _glob.glob(os.path.join(base_dir, pat))
+                if hits:
+                    filepath = hits[0]
+                    break
+
+        if filepath is None:
+            return None
+
+        ext = os.path.splitext(filepath)[1].lower()
+        cols = ["timestamp", "close"]
+        if ext in (".feather", ".fthr"):
+            df_raw = _pl.read_ipc(filepath, columns=cols)
+        elif ext in (".parquet", ".pq"):
+            df_raw = _pl.read_parquet(filepath, columns=cols)
+        else:
+            return None
+
+        # Normalizar timestamp a datetime[μs] naive para evitar errores de comparación
+        ts_col = df_raw.get_column("timestamp")
+        if ts_col.dtype == _pl.Datetime("ns", "UTC") or str(ts_col.dtype).startswith("Datetime"):
+            try:
+                df_raw = df_raw.with_columns(
+                    _pl.col("timestamp").cast(_pl.Datetime("us")).alias("timestamp")
+                )
+            except Exception:
+                try:
+                    df_raw = df_raw.with_columns(
+                        _pl.col("timestamp").dt.replace_time_zone(None).cast(_pl.Datetime("us")).alias("timestamp")
+                    )
+                except Exception:
+                    pass
+
+        # Filtrado por rango de fechas
+        if fecha_inicio:
+            try:
+                dt_start = _pl.Series([fecha_inicio]).str.to_datetime(format="%Y-%m-%d", strict=False).item()
+                df_raw = df_raw.filter(_pl.col("timestamp") >= dt_start)
+            except Exception:
+                pass
+        if fecha_fin:
+            try:
+                dt_end = _pl.Series([fecha_fin]).str.to_datetime(format="%Y-%m-%d", strict=False).item()
+                df_raw = df_raw.filter(_pl.col("timestamp") <= dt_end)
+            except Exception:
+                pass
+
+        if df_raw.height < 2:
+            return None
+
+        prices = df_raw.get_column("close").to_list()
+        n_src  = len(prices)
+
+        if n_points <= 1:
+            return [prices[0]]
+
+        # Remuestreo: selección de índices equidistantes
+        indices  = [int(round(i * (n_src - 1) / (n_points - 1))) for i in range(n_points)]
+        resampled = [prices[i] for i in indices]
+        return resampled
+
+    except Exception as _e:
+        logger.debug(f"_load_price_series: {_e}")
+        return None
+
+
 def convertir_resumen_csv_a_excel(
     *,
     csv_path: str,
@@ -766,6 +1194,11 @@ def convertir_resumen_csv_a_excel(
     saldo_inicial: float = 300.0,
     excel_path: Optional[str] = None,
     output_dir: Optional[str] = None,
+    # Datos de precio para la gráfica
+    datos_dir: str = "datos",
+    fecha_inicio: Optional[str] = None,
+    fecha_fin: Optional[str] = None,
+    formato_datos: str = "feather",
 ) -> str:
     if not os.path.exists(csv_path):
         raise FileNotFoundError(f"No existe el CSV: {csv_path}")
@@ -787,7 +1220,9 @@ def convertir_resumen_csv_a_excel(
     with pd.ExcelWriter(final_excel_path, engine='openpyxl') as writer:
         df_final.to_excel(writer, index=False, startrow=1)
 
-    _aplicar_estilo_avanzado(final_excel_path, df_final, cols_metrics, cols_params, saldo_inicial)
+    _aplicar_estilo_avanzado(
+        final_excel_path, df_final, cols_metrics, cols_params, saldo_inicial,
+    )
 
     path_to_return = final_excel_path
     if excel_path:
@@ -865,6 +1300,11 @@ def _normalizar_nombres(df: pd.DataFrame, strategy_name: str) -> tuple:
         "EXIT_TP_PCT": "TP", "P_TP": "TP", "TP_PCT": "TP",
         "EXIT_TRAIL_ACT_PCT": "ACT", "TRAIL_ACT": "ACT",
         "EXIT_TRAIL_DIST_PCT": "DIST", "TRAIL_DIST": "DIST", "DISTANCE": "DIST",
+        # --- Mapeos para las métricas del nuevo resumen ---
+        "NET_PNL": "PNL_NETO",
+        "SALDO_BRUTO": "SALDO_SIN_COMISIONES",
+        "COMISIONES": "COMISIONES_TOTAL",
+        "COMISION_TOTAL": "COMISIONES_TOTAL",
     }
 
     for old, new in rename_map.items():
@@ -964,7 +1404,7 @@ def _organizar_y_filtrar_columnas(df: pd.DataFrame, known_param_names: set = Non
                 break
     current_metrics = list(dict.fromkeys(current_metrics))
 
-    excluded = set(current_ids + current_metrics)
+    excluded = set(current_ids + current_metrics) | ALL_KNOWN_METRICS
     candidates = [c for c in cols if c not in excluded]
 
     exit_cols = {"SL", "TP", "ACT", "DIST"}
@@ -1070,7 +1510,13 @@ def _col_widths_fast_op(ws, max_col: int, max_row: int, header_row: int = 1, sam
 # ESTILOS DASHBOARD RESUMEN
 # ==============================================================================
 
-def _aplicar_estilo_avanzado(filepath, df, metrics_cols, params_cols, saldo_ini):
+def _aplicar_estilo_avanzado(
+    filepath, df, metrics_cols, params_cols, saldo_ini,
+):
+    from openpyxl.chart import LineChart, Reference
+    from openpyxl.utils import column_index_from_string
+    from openpyxl.formatting.rule import CellIsRule
+
     wb = load_workbook(filepath)
     ws = wb.active
     ws.sheet_view.showGridLines = False
@@ -1086,80 +1532,126 @@ def _aplicar_estilo_avanzado(filepath, df, metrics_cols, params_cols, saldo_ini)
     start_params  = end_metrics + 1
     end_params    = start_params + n_params - 1
 
-    border   = _make_border_op(COLORS["border_color"])
-    fill_id  = PatternFill("solid", fgColor=COLORS["header_bg_id"])
-    fill_met = PatternFill("solid", fgColor=COLORS["header_bg_metrics"])
-    fill_par = PatternFill("solid", fgColor=COLORS["header_bg_params"])
-    fill_alt = PatternFill("solid", fgColor=COLORS["row_alt"])
-    fill_w   = PatternFill("solid", fgColor="FFFFFF")
+    # ── Colores minimalistas ────────────────────────────────────────────────
+    C_HDR      = "F7FAFC"   # fondo cabecera (gris muy claro)
+    C_HDR_FONT = "718096"   # texto cabecera (gris medio)
 
-    font_grp  = Font(name=FONT_TITLE, size=11, bold=True, color="FFFFFF")
-    font_hdr  = Font(name=FONT_TITLE, size=11, bold=True, color="FFFFFF")
-    font_body = Font(name=FONT_BODY,  size=10, color=COLORS["text_dark"])
-    align_c   = Alignment(horizontal='center', vertical='center')
-    align_cw  = Alignment(horizontal='center', vertical='center', wrap_text=True)
+    border_thin = _make_border_op("E2E8F0", style='thin')
+    border_bot  = Border(
+        bottom=Side(style='medium', color='A0AEC0'),
+        left=Side(style=None),
+        right=Side(style=None),
+        top=Side(style=None),
+    )
+
+    fill_hdr     = PatternFill("solid", fgColor=C_HDR)
+    fill_section = PatternFill("solid", fgColor="EDF2F7")
+    fill_alt     = PatternFill("solid", fgColor=COLORS["row_alt"])
+    fill_w       = PatternFill("solid", fgColor="FFFFFF")
+
+    font_section = Font(name=FONT_TITLE, size=9, bold=True, color="A0AEC0")
+    font_hdr     = Font(name=FONT_TITLE, size=10, bold=True, color=C_HDR_FONT)
+    font_body    = Font(name=FONT_BODY,  size=10, color=COLORS["text_dark"])
+    font_id      = Font(name=FONT_BODY,  size=10, bold=True, color=COLORS["text_dark"])
+    align_c      = Alignment(horizontal='center', vertical='center')
+    align_l      = Alignment(horizontal='left',   vertical='center', indent=1)
+    align_cw     = Alignment(horizontal='center', vertical='center', wrap_text=True)
+
+    # ── Fila 1: Encabezados de sección (texto gris sutil) ───────────────────
+    ws.row_dimensions[1].height = 20
 
     def _section(c_start, c_end, label, fill):
         c = ws.cell(row=1, column=c_start)
-        c.value = label; c.fill = fill; c.font = font_grp; c.alignment = align_c
+        c.value = label; c.fill = fill; c.font = font_section; c.alignment = align_c
         if c_end > c_start:
             ws.merge_cells(start_row=1, start_column=c_start, end_row=1, end_column=c_end)
 
     if n_ids > 0:
-        _section(1, n_ids, "DATOS", fill_id)
+        _section(1, n_ids, "DATOS", fill_section)
     if n_metrics > 0:
-        _section(start_metrics, end_metrics, "MÉTRICAS", fill_met)
+        _section(start_metrics, end_metrics, "MÉTRICAS", fill_section)
     if n_params > 0:
-        _section(start_params, end_params, "PARÁMETROS", fill_par)
+        _section(start_params, end_params, "PARÁMETROS", fill_section)
 
-    ws.row_dimensions[1].height = 20
-    ws.row_dimensions[2].height = 30
+    # ── Fila 2: Nombres de columna ──────────────────────────────────────────
+    ws.row_dimensions[2].height = 32
 
     for col in range(1, max_col + 1):
         cell = ws.cell(row=2, column=col)
-        cell.font = font_hdr; cell.alignment = align_cw; cell.border = border
-        cell.fill = fill_id if col < start_metrics else (fill_met if col <= end_metrics else fill_par)
+        cell.font = font_hdr; cell.alignment = align_cw
+        cell.border = border_bot
+        cell.fill = fill_hdr
 
-    col_hdrs = {c: str(ws.cell(2, c).value or "").upper() for c in range(1, max_col + 1)}
+    # ── Aplicar nombres de display en fila 2 ────────────────────────────────
+    for col in range(1, max_col + 1):
+        cell = ws.cell(row=2, column=col)
+        orig = str(cell.value or "").strip()
+        if orig in METRIC_DISPLAY_NAMES:
+            cell.value = METRIC_DISPLAY_NAMES[orig]
+
+    # Leer cabeceras ya con display names
+    col_hdrs = {c: str(ws.cell(2, c).value or "").strip() for c in range(1, max_col + 1)}
+
+    # ── Filas de datos ───────────────────────────────────────────────────────
+    # Columnas monetarias y porcentuales (tras renombrar)
+    MONEY_HDRS = {"BEN BRUTO", "BEN NETO", "SALDO ACTUAL", "COMISIONES"}
+    PCT_HDRS   = {"ROI", "MAX DD"}
+    INT_HDRS   = {"LONG", "SHORT", "TRIAL"}
 
     for r in range(3, max_row + 1):
         rf = fill_alt if r % 2 == 0 else fill_w
+        ws.row_dimensions[r].height = 22
+
         for c in range(1, max_col + 1):
             cell = ws.cell(row=r, column=c)
-            cell.font = font_body; cell.alignment = align_c
-            cell.border = border; cell.fill = rf
-            hdr = col_hdrs[c]
-            if "DIA" in hdr and "TRADES" in hdr:
+            hdr  = col_hdrs[c]
+            is_id_col = (c < start_metrics)
+
+            cell.font      = font_id if is_id_col else font_body
+            cell.alignment = align_l if (hdr == "ESTRATEGIA") else align_c
+            cell.border    = border_thin
+            cell.fill      = rf
+
+            if hdr == "TRADES DIA":
                 cell.number_format = "0.00"
-            elif "TRADES" in hdr:
+            elif hdr in INT_HDRS:
                 cell.number_format = "0"
-            elif any(k in hdr for k in ("%", "PCT", "WINRATE", "ROI")):
+            elif hdr in PCT_HDRS:
                 cell.number_format = "0.00%"
                 try:
                     cell.value = float(cell.value) / 100.0
                 except Exception:
                     pass
-            elif any(k in hdr for k in ("SCORE", "SHARPE", "FACTOR", "SQN")):
+            elif hdr == "PROFIT FACTOR":
+                cell.number_format = "0.00"
+            elif hdr == "EXPECTATIVA":
+                cell.number_format = "#,##0.00"
+            elif hdr in MONEY_HDRS:
+                cell.number_format = "#,##0.00"
+            elif hdr == "SCORE":
                 cell.number_format = "0.00"
 
     _col_widths_fast_op(ws, max_col, max_row, header_row=2, sample=20)
 
-    col_map = {str(ws.cell(2, c).value or "").strip(): get_column_letter(c)
-               for c in range(1, max_col + 1)}
+    # ── Mapa columna-display-name → letra Excel ──────────────────────────────
+    col_map = {col_hdrs[c]: get_column_letter(c) for c in range(1, max_col + 1)}
 
-    if "ROI%" in col_map:
-        ws.conditional_formatting.add(
-            f"{col_map['ROI%']}3:{col_map['ROI%']}{max_row}",
-            DataBarRule(start_type='min', end_type='max', color="3A86FF", showValue=True))
+    # ── Formato condicional ──────────────────────────────────────────────────
+    data_start = f"3:{max_row}"
 
-    if "SCORE" in col_map:
-        ws.conditional_formatting.add(
-            f"{col_map['SCORE']}3:{col_map['SCORE']}{max_row}",
-            ColorScaleRule(start_type='min', start_color='FFFFFF',
-                           mid_type='percentile', mid_value=50, mid_color='E3EAF6',
-                           end_type='max', end_color='B3C9F7'))
+    if "BEN NETO" in col_map:
+        rng = f"{col_map['BEN NETO']}3:{col_map['BEN NETO']}{max_row}"
+        ws.conditional_formatting.add(rng, CellIsRule(
+            operator='greaterThan', formula=['0'],
+            font=Font(name=FONT_BODY, size=10, color=COLORS["accent_green"], bold=True)))
+        ws.conditional_formatting.add(rng, CellIsRule(
+            operator='lessThan', formula=['0'],
+            font=Font(name=FONT_BODY, size=10, color=COLORS["accent_red"], bold=True)))
 
     ws.freeze_panes = ws.cell(row=3, column=start_metrics)
+
+    # ── SIN GRÁFICO EN RESUMEN — La gráfica comparativa está en los trials ──
+
     wb.save(filepath)
 
 

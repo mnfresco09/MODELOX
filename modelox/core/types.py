@@ -1,30 +1,7 @@
-"""
-================================================================================
-MODELOX/CORE/TYPES.PY — TIPOS, PROTOCOLOS Y UTILIDADES BASE
-================================================================================
+"""modelox.core.types — Tipos, protocolos y utilidades base del sistema.
 
-PROPÓSITO:
-    Define TODOS los tipos, protocolos y dataclasses que el sistema necesita.
-    Es la BASE de la que dependen todos los demás módulos del core.
-
-CONTENIDO:
-    1. TIPOS UNIFICADOS           — TradesDF (Polars | Pandas)
-    2. IMPORTACIÓN DE DEFAULTS    — Acceso a exits.py sin circular imports
-    3. CONFIGURACIÓN DE BACKTEST  — BacktestConfig (frozen dataclass)
-    4. ARTEFACTOS DE TRIAL        — ExitDecision, TrialArtifacts
-    5. PROTOCOLOS                 — Reporter, Strategy (interfaces)
-    6. UTILIDADES DE FECHAS       — filter_by_date, ensure_utc_index
-    7. UTILIDADES DE TIMEFRAME    — normalize_timeframe_to_suffix, suffix_to_minutes
-    8. ALINEACIÓN DE SEÑALES      — align_signals_to_base (join_asof anti-lookahead)
-    9. GESTIÓN DE MEMORIA         — nuclear_cleanup, full_system_cleanup
-   10. MANTENIMIENTO              — purge_pycache, HealthGuard
-
-DEPENDENCIAS:
-    → Este módulo NO importa de ningún otro módulo del core (excepto exits.py
-      de forma diferida, para evitar ciclos).
-    ← Todos los demás módulos del core importan de aquí.
-
-================================================================================
+Base del core: todos los demás módulos del core importan de aquí.
+Solo importa de exits.py de forma diferida para evitar ciclos.
 """
 
 from __future__ import annotations
@@ -53,12 +30,7 @@ TradesDF = Union[pd.DataFrame, pl.DataFrame]
 # Esta función permite acceder a ellos sin crear import circular.
 
 def _get_exit_defaults() -> dict:
-    """
-    OBTIENE LOS DEFAULTS DE SALIDA DESDE EXITS.PY (FUENTE ÚNICA DE VERDAD).
-
-    Returns:
-        Diccionario con todos los valores por defecto de salida.
-    """
+    """Obtiene defaults de salida desde exits.py (evita import circular)."""
     from modelox.core.exits import (
         DEFAULT_EXIT_TYPE, DEFAULT_EXIT_SL_PCT, DEFAULT_EXIT_TP_PCT,
         DEFAULT_EXIT_TRAIL_ACT_PCT, DEFAULT_EXIT_TRAIL_DIST_PCT,
@@ -93,20 +65,7 @@ _EXIT_DEFAULTS = _get_exit_defaults()
 
 @dataclass(frozen=True)
 class BacktestConfig:
-    """
-    CONFIGURACIÓN COMPLETA PARA UN BACKTEST.
-
-    NOTA IMPORTANTE SOBRE SALIDAS:
-        Los parámetros de salida (exit_*) tienen valores por defecto que se
-        sincronizan automáticamente desde modelox/core/exits.py.
-
-        La fuente ÚNICA de verdad para defaults de salida es exits.py.
-        Cualquier modificación de valores por defecto debe hacerse allí.
-
-        Para usar valores personalizados en tiempo de ejecución:
-        1. Modificar configuracion.py (que importa de exits.py).
-        2. Los valores se propagan automáticamente vía runner.py.
-    """
+    """Configuración completa de un backtest. Defaults de exit sincronizados desde exits.py."""
 
     # ─── CAPITAL ─────────────────────────────────────────────────────────
     saldo_inicial: float                         # Saldo de partida ($)
@@ -146,11 +105,7 @@ class BacktestConfig:
 
 @dataclass(frozen=True)
 class ExitDecision:
-    """
-    DECISIÓN DE SALIDA GENERADA POR UNA ESTRATEGIA PERSONALIZADA.
-
-    Solo se usa cuando la estrategia tiene SALIDAS_PERSONALIZADAS = True.
-    """
+    """Decisión de salida de una estrategia personalizada (SALIDAS_PERSONALIZADAS=True)."""
     exit_idx: int                                # Índice de la barra de salida
     reason: str = ""                             # Razón de la salida ("sl", "tp", etc.)
     exit_price: float | None = None              # Precio de salida (None = close)
@@ -158,11 +113,7 @@ class ExitDecision:
 
 @dataclass(frozen=True)
 class TrialArtifacts:
-    """
-    ARTEFACTOS GENERADOS POR CADA TRIAL DE OPTIMIZACIÓN.
-
-    Contiene todo lo necesario para reporting, plots y análisis post-trial.
-    """
+    """Artefactos generados por cada trial: métricas, trades, equity, parámetros."""
     # ─── IDENTIFICACIÓN ──────────────────────────────────────────────────
     strategy_name: str                           # Nombre de la estrategia
     trial_number: int                            # Número de trial en Optuna
@@ -190,25 +141,13 @@ class TrialArtifacts:
 # =============================================================================
 
 class Reporter(Protocol):
-    """
-    PROTOCOLO PARA REPORTERS (EXCEL, RICH, TELEGRAM, ETC.).
-
-    Todo reporter debe implementar estos dos métodos.
-    """
+    """Protocolo para reporters (Excel, Rich, Telegram, etc.)."""
     def on_trial_end(self, artifacts: TrialArtifacts) -> None: ...
     def on_strategy_end(self, strategy_name: str, study: Any) -> None: ...
 
 
 class Strategy(Protocol):
-    """
-    PROTOCOLO PARA ESTRATEGIAS DE TRADING.
-
-    Toda estrategia debe tener:
-        - combinacion_id: Identificador único (corresponde al nombre del archivo)
-        - name: Nombre descriptivo
-        - suggest_params(): Define el espacio de búsqueda de Optuna
-        - generate_signals(): Genera señales long/short sobre un DataFrame
-    """
+    """Protocolo para estrategias: combinacion_id, name, suggest_params(), generate_signals()."""
     combinacion_id: int
     name: str
 
@@ -223,20 +162,7 @@ class Strategy(Protocol):
 # =============================================================================
 
 def filter_by_date(df: pl.DataFrame, start: str, end: str) -> pl.DataFrame:
-    """
-    FILTRO DE FECHAS INTELIGENTE CON ALINEACIÓN DE PRECISIÓN Y ZONA HORARIA.
-
-    Resuelve el error de supertipo al comparar datetime[ns, UTC] con datetime[us].
-    La columna 'timestamp' ya está normalizada a UTC en data.py.
-
-    Args:
-        df:     DataFrame Polars con columna 'timestamp'.
-        start:  Fecha de inicio como string ("YYYY-MM-DD").
-        end:    Fecha de fin como string ("YYYY-MM-DD").
-
-    Returns:
-        DataFrame filtrado por rango de fechas [start, end].
-    """
+    """Filtra df por rango de fechas [start, end] con alineación UTC."""
     start_expr = (
         pl.lit(start)
         .str.to_datetime()
@@ -252,49 +178,12 @@ def filter_by_date(df: pl.DataFrame, start: str, end: str) -> pl.DataFrame:
     return df.filter(pl.col("timestamp").is_between(start_expr, end_expr))
 
 
-def ensure_utc_index(df: pd.DataFrame) -> pd.DataFrame:
-    """
-    CONVIERTE UN DATAFRAME PANDAS A ÍNDICE DATETIME UTC.
-
-    Mantenido para compatibilidad con procesos que aún usen Pandas.
-
-    Args:
-        df: DataFrame Pandas con columna de timestamp.
-
-    Returns:
-        DataFrame con índice DatetimeIndex en UTC, ordenado.
-    """
-    df = df.copy()
-    col_time = next(
-        (c for c in ["timestamp", "date", "time", "datetime"] if c in df.columns), None
-    )
-    if col_time is not None:
-        df[col_time] = pd.to_datetime(df[col_time], utc=True, errors="coerce")
-        df = df.set_index(col_time)
-    if not isinstance(df.index, pd.DatetimeIndex):
-        df.index = pd.to_datetime(df.index, utc=True, errors="coerce")
-    elif df.index.tz is None:
-        df.index = df.index.tz_localize("UTC")
-    df = df.sort_index()
-    return df
-
-
 # =============================================================================
 # 7. UTILIDADES DE TIMEFRAME
 # =============================================================================
 
 def normalize_timeframe_to_suffix(timeframe: Any) -> str:
-    """
-    NORMALIZA CUALQUIER FORMATO DE TIMEFRAME A SUFIJO ESTÁNDAR.
-
-    Acepta:
-        - int/float (minutos): 1, 5, 15, 60, 120, 720, 1440...
-        - str: "1", "1m", "5m", "15m", "1h", "2h", "12h", "1d"...
-
-    Returns:
-        Sufijo normalizado: "1m", "5m", "15m", "1h", "2h", "12h", "1d".
-        Default: "1m" si no se puede parsear.
-    """
+    """Normaliza int/str de timeframe a sufijo estándar ("1m", "5m", "1h", "1d"). Default: "1m"."""
     if timeframe is None:
         return "1m"
 
@@ -350,15 +239,7 @@ def normalize_timeframe_to_suffix(timeframe: Any) -> str:
 
 
 def suffix_to_minutes(suffix: str) -> int:
-    """
-    CONVIERTE UN SUFIJO DE TIMEFRAME A MINUTOS.
-
-    Args:
-        suffix: Sufijo como "1m", "5m", "1h", "1d", etc.
-
-    Returns:
-        Número entero de minutos.
-    """
+    """Convierte sufijo de TF a minutos ("1h" → 60, "1d" → 1440)."""
     s = str(suffix).strip().lower()
     if s.endswith("d"):
         try:
@@ -378,20 +259,7 @@ def suffix_to_minutes(suffix: str) -> int:
 
 
 def convert_warmup_bars_to_base(*, warmup_bars: int, from_tf: str, to_tf: str) -> int:
-    """
-    CONVIERTE WARMUP EXPRESADO EN BARRAS DE UN TF A BARRAS DE OTRO TF.
-
-    Ejemplo:
-        warmup=50 en 15m → base=5m → 150 barras.
-
-    Args:
-        warmup_bars: Número de barras de warmup en el TF origen.
-        from_tf:     Timeframe origen (ej: "15m").
-        to_tf:       Timeframe destino (ej: "5m").
-
-    Returns:
-        Número de barras equivalentes en el TF destino.
-    """
+    """Convierte warmup en barras de from_tf a barras equivalentes en to_tf."""
     wb = int(warmup_bars)
     if wb <= 0:
         return 0
@@ -412,24 +280,7 @@ def align_signals_to_base(
     df_base: pl.DataFrame,
     df_signals: pl.DataFrame,
 ) -> pl.DataFrame:
-    """
-    ALINEA SEÑALES/INDICADORES AL DATAFRAME BASE SIN LOOKAHEAD.
-
-    Usa join_asof con estrategia "backward": cada fila del base recibe
-    el último valor de señal cuyo timestamp <= timestamp del base.
-
-    Reglas:
-        - Conserva OHLCV del base timeframe (no se sobreescriben).
-        - Copia columnas no-OHLCV desde df_signals.
-        - signal_long / signal_short se rellenan con False si son null.
-
-    Args:
-        df_base:    DataFrame con datos OHLCV del TF de operación.
-        df_signals: DataFrame con señales e indicadores.
-
-    Returns:
-        DataFrame base enriquecido con señales alineadas.
-    """
+    """Une señales al base vía join_asof backward (anti-lookahead)."""
     if "timestamp" not in df_base.columns:
         raise ValueError("df_base must contain 'timestamp'")
     if "timestamp" not in df_signals.columns:
@@ -461,14 +312,7 @@ import sys
 
 
 def nuclear_cleanup() -> None:
-    """
-    LIMPIEZA AGRESIVA DE MEMORIA (COMPATIBLE macOS / Linux).
-
-    Pasos:
-        1. Fuerza la recolección de basura de Python (Generaciones 0, 1 y 2).
-        2. En Linux, fuerza a la librería C (malloc) a devolver RAM al SO.
-        3. En macOS, libera caché de tipos internos de Python.
-    """
+    """GC triple + malloc_trim (Linux) o _clear_type_cache (macOS)."""
     # Triple GC para asegurar limpieza completa de referencias cíclicas
     for _ in range(3):
         gc.collect()
@@ -490,11 +334,7 @@ def nuclear_cleanup() -> None:
 
 
 def full_system_cleanup() -> None:
-    """
-    LIMPIEZA COMPLETA DEL SISTEMA AL FINALIZAR EJECUCIÓN.
-
-    Libera RAM, cierra figuras matplotlib, limpia cachés de módulos.
-    """
+    """Limpieza completa al finalizar: cachés, matplotlib, GC agresivo."""
     # ─── 1. LIMPIAR CACHÉS DE MÓDULOS NUMÉRICOS ─────────────────────────
     modules_to_clear = ['numpy', 'pandas', 'polars', 'torch', 'numba']
 
@@ -547,41 +387,20 @@ def full_system_cleanup() -> None:
             pass
 
 
-def clean_trial_variables(*vars_to_delete) -> None:
-    """
-    BORRA VARIABLES ESPECÍFICAS Y EJECUTA LIMPIEZA.
-
-    Uso:
-        clean_trial_variables(df, signals, trades)
-    """
-    for v in vars_to_delete:
-        try:
-            del v
-        except (UnboundLocalError, NameError):
-            pass
-    nuclear_cleanup()
-
-
 # =============================================================================
 # 10. MANTENIMIENTO — PYCACHE Y HEALTHGUARD
 # =============================================================================
 import shutil
-import os as _os_module
+import os
 
 
 def purge_pycache(*, root, exclude: set = None) -> None:
-    """
-    ELIMINA CARPETAS __pycache__ Y ARCHIVOS .pyc RECURSIVAMENTE.
-
-    Args:
-        root:    Path raíz desde donde buscar.
-        exclude: Set de nombres de carpetas a excluir (ej: {".git", ".venv"}).
-    """
+    """Elimina __pycache__ y .pyc recursivamente desde root."""
     from pathlib import Path
     exclude = exclude or set()
 
     try:
-        for dirpath, dirnames, filenames in _os_module.walk(root):
+        for dirpath, dirnames, filenames in os.walk(root):
             p = Path(dirpath)
             if any(part in exclude for part in p.parts):
                 dirnames[:] = []
@@ -601,28 +420,17 @@ def purge_pycache(*, root, exclude: set = None) -> None:
 
 
 class HealthGuard:
-    """
-    GESTOR DE LIMPIEZA AL CIERRE DEL SISTEMA.
-
-    Uso:
-        import atexit
-        from modelox.core.types import HealthGuard
-
-        HealthGuard.configure(project_root=Path(__file__).parent, purge_pycache=True)
-        atexit.register(HealthGuard.final_cleanup)
-    """
+    """Gestor de limpieza al cierre. Configurar + atexit.register(HealthGuard.final_cleanup)."""
     _project_root = None
     _purge_pycache_on_exit = False
 
     @classmethod
     def configure(cls, *, project_root, purge_pycache: bool = False):
-        """CONFIGURA EL HEALTHGUARD ANTES DE REGISTRARLO."""
         cls._project_root = project_root
         cls._purge_pycache_on_exit = purge_pycache
 
     @staticmethod
     def final_cleanup():
-        """LIMPIEZA FINAL AL CERRAR EL PROGRAMA."""
         nuclear_cleanup()
         if HealthGuard._purge_pycache_on_exit and HealthGuard._project_root:
             purge_pycache(
