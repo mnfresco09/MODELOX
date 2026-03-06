@@ -626,22 +626,17 @@ def racha_maxima(trades: TradesDF) -> Tuple[int, int]:
     pnl = _to_numpy(trades, "pnl_neto")
 
     def max_streak_np(arr: np.ndarray) -> int:
-        """Calcula racha máxima usando numpy puro."""
-        if len(arr) == 0:
+        """Calcula racha máxima usando numpy vectorizado (sin loops Python)."""
+        if len(arr) == 0 or arr.sum() == 0:
             return 0
-        # Encontrar cambios
-        changes = np.diff(arr, prepend=0)
-        # Grupos de 1's consecutivos
-        groups = np.cumsum(changes != 0)
-        # Contar dentro de cada grupo
-        counts = np.zeros_like(arr)
-        for i, (g, v) in enumerate(zip(groups, arr)):
-            if v:
-                if i == 0 or groups[i-1] != g:
-                    counts[i] = 1
-                else:
-                    counts[i] = counts[i-1] + 1
-        return int(counts.max()) if len(counts) > 0 else 0
+        # Detectar inicios de grupos de 1's (rising edges)
+        padded = np.concatenate(([0], arr, [0]))
+        diffs = np.diff(padded)
+        starts = np.where(diffs == 1)[0]
+        ends = np.where(diffs == -1)[0]
+        if len(starts) == 0:
+            return 0
+        return int(np.max(ends - starts))
 
     gan = (pnl > 0).astype(int)
     per = (pnl < 0).astype(int)

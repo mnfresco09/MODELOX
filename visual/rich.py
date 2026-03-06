@@ -634,6 +634,10 @@ def mostrar_cabecera_inicio(
     synthetic_mode: bool = False,
     synthetic_years: int = 0,
     perturbacion: bool = False,
+    regimen_activo: bool = False,
+    regimen_tipo: str = "ALCISTA",
+    regimen_dias_operables: int = 0,
+    regimen_dias_totales: int = 0,
 ) -> None:
     """Display elegant startup header with comprehensive info - centered, white text."""
     os.system('cls' if os.name == 'nt' else 'clear')
@@ -680,6 +684,18 @@ def mostrar_cabecera_inicio(
     # Sin color para ON/OFF de perturbación (solicitado)
     pert_status = "ON" if perturbacion else "OFF"
     info_grid.add_row("PERTURBACION", pert_status)
+
+    # Régimen de mercado — ON ALCISTA X/Y (Z%) / OFF
+    if regimen_activo:
+        reg_label = regimen_tipo.upper()
+        if regimen_dias_totales > 0:
+            pct = 100.0 * regimen_dias_operables / regimen_dias_totales
+            reg_status = f"ON {reg_label} {regimen_dias_operables}/{regimen_dias_totales} ({pct:.0f}%)"
+        else:
+            reg_status = f"ON {reg_label}"
+    else:
+        reg_status = "OFF"
+    info_grid.add_row("REGIMEN", reg_status)
 
     
     if indicadores:

@@ -118,7 +118,6 @@ class BacktestParams:
     exit_trail_act_pct: float
     exit_trail_dist_pct: float
     exit_time_bars: int
-    block_velas_after_exit: int
     time_stop_bars: int
     # ── ATR adaptive ──
     exit_atr_period:   int   = DEFAULT_EXIT_ATR_PERIOD
@@ -141,7 +140,6 @@ class BacktestParams:
             exit_trail_act_pct=float(params.get("__exit_trail_act_pct", getattr(config, "exit_trail_act_pct", 0.0))),
             exit_trail_dist_pct=float(params.get("__exit_trail_dist_pct", getattr(config, "exit_trail_dist_pct", 0.0))),
             exit_time_bars=int(params.get("__exit_time_bars", getattr(config, "exit_time_bars", 0))),
-            block_velas_after_exit=int(params.get("block_velas_after_exit", 0)),
             time_stop_bars=int(params.get("time_stop_bars", params.get("__exit_time_bars", 0))),
             exit_atr_period=int(params.get("__exit_atr_period", getattr(config, "exit_atr_period", DEFAULT_EXIT_ATR_PERIOD))),
             exit_atr_min_pct=float(params.get("__exit_atr_min_pct", getattr(config, "exit_atr_min_pct", DEFAULT_EXIT_ATR_MIN_PCT))),
@@ -196,8 +194,6 @@ def _compute_atr_adaptive_distances(
         (sl_dists, tp_dists): arrays float64 de longitud len(entry_indices),
         en unidades de precio (distancia absoluta SL/TP desde el precio de entrada).
     """
-    import pandas as pd
-
     n = len(close)
 
     # ── True Range (vectorizado) ──────────────────────────────────────────────
@@ -210,17 +206,28 @@ def _compute_atr_adaptive_distances(
         np.maximum(np.abs(high - prev_close), np.abs(low - prev_close))
     )
 
-    # ── ATR Wilder via pandas EWM (com = period-1) ───────────────────────────
-    atr = pd.Series(tr).ewm(com=atr_period - 1, adjust=False).mean().to_numpy()
+    # ── ATR Wilder EWM (puro numpy, sin pandas) ─────────────────────────────
+    # Equivalente a pd.Series(tr).ewm(com=period-1, adjust=False).mean()
+    # alpha = 1 / period  (Wilder smoothing)
+    alpha = 1.0 / atr_period
+    atr = np.empty(n, dtype=np.float64)
+    atr[0] = tr[0]
+    for i in range(1, n):
+        atr[i] = alpha * tr[i] + (1.0 - alpha) * atr[i - 1]
 
     # ── ATR relativo: normaliza volatilidad por nivel de precio ──────────────
     close_safe = np.where(np.abs(close) > 1e-10, close, 1.0)
     atr_pct = atr / close_safe
 
-    # ── Rolling min/max → ranking de volatilidad relativa ────────────────────
-    s = pd.Series(atr_pct)
-    roll_min = s.rolling(atr_lookback, min_periods=1).min().to_numpy()
-    roll_max = s.rolling(atr_lookback, min_periods=1).max().to_numpy()
+    # ── Rolling min/max (puro numpy, sin pandas) ─────────────────────────────
+    # Equivalente a pd.Series(atr_pct).rolling(lookback, min_periods=1).min()/max()
+    roll_min = np.empty(n, dtype=np.float64)
+    roll_max = np.empty(n, dtype=np.float64)
+    for i in range(n):
+        start = max(0, i - atr_lookback + 1)
+        window = atr_pct[start:i + 1]
+        roll_min[i] = np.min(window)
+        roll_max[i] = np.max(window)
 
     rng = roll_max - roll_min
     safe_rng = np.where(rng > 1e-10, rng, 1.0)   # evita división por cero
@@ -237,306 +244,6 @@ def _compute_atr_adaptive_distances(
 
     return dists, dists.copy()
 
-
-# =============================================================================
-# 4. KERNEL NUMBA: SALIDAS (SL/TP/TRAILING) - KERNEL ESTÁNDAR (MISMO TF)
-# =============================================================================
-
-@nb.njit(cache=True, fastmath=True)
-def find_exits_numba(
-    entry_indices,
-    entry_prices,
-    entry_types,  # 1=Long, -1=Short
-    entry_qty,    # qty por trade
-    entry_stake,  # stake (saldo usado) por trade
-    close_prices,
-    high_prices,
-    low_prices,
-    is_trailing,
-    sl_pct,
-    tp_pct,
-    trail_act_pct,
-    trail_dist_pct,
-    time_stop_bars,
-):
-    """Kernel Numba para encontrar salidas con SL/TP basados en % sobre STAKE.
-
-    Los porcentajes (sl_pct, tp_pct, etc.) son sobre el STAKE (margen/saldo usado),
-    NO sobre el precio de entrada.
-
-    Fórmulas:
-    - LONG:
-      - SL_price = entry_price - (stake × sl_pct / 100) / qty
-      - TP_price = entry_price + (stake × tp_pct / 100) / qty
-    - SHORT:
-      - SL_price = entry_price + (stake × sl_pct / 100) / qty
-      - TP_price = entry_price - (stake × tp_pct / 100) / qty
-
-    Esto garantiza que al llegar al SL, el PNL sea exactamente -stake × sl_pct%.
-    """
-    n_entries = len(entry_indices)
-    n_bars = len(close_prices)
-
-    exit_indices = np.full(n_entries, -1, dtype=np.int64)
-    exit_prices = np.full(n_entries, np.nan, dtype=np.float64)
-    exit_reasons = np.zeros(n_entries, dtype=np.int32)  # 1=SL, 2=TP, 3=Trail, 4=Time
-
-    for i in range(n_entries):
-        entry_idx = entry_indices[i]
-        entry_price = entry_prices[i]
-        side = entry_types[i]
-        qty = entry_qty[i]
-        stake = entry_stake[i]
-
-        if qty <= 0 or stake <= 0:
-            continue
-
-        # Calcular precios de SL/TP basados en % sobre stake
-        # sl_pct% de pérdida sobre stake = (stake × sl_pct / 100)
-        # eso corresponde a un movimiento de precio de (stake × sl_pct / 100) / qty
-        sl_distance = (stake * sl_pct / 100.0) / qty
-        tp_distance = (stake * tp_pct / 100.0) / qty
-        trail_act_distance = (stake * trail_act_pct / 100.0) / qty
-        trail_dist_distance = (stake * trail_dist_pct / 100.0) / qty
-
-        if side == 1:  # LONG
-            sl_price = entry_price - sl_distance
-            tp_price = entry_price + tp_distance
-            activation_price = entry_price + trail_act_distance
-        else:  # SHORT
-            sl_price = entry_price + sl_distance
-            tp_price = entry_price - tp_distance
-            activation_price = entry_price - trail_act_distance
-
-        trailing_active = False
-        trailing_level = 0.0
-
-        search_limit = n_bars
-        if time_stop_bars > 0:
-            limit = entry_idx + time_stop_bars + 1
-            if limit < search_limit:
-                search_limit = limit
-
-        for curr in range(entry_idx + 1, search_limit):
-            h = high_prices[curr]
-            low_val = low_prices[curr]
-            c = close_prices[curr]
-            just_activated = False
-
-            if is_trailing:
-                # Trailing mode: SL inicial + trailing activation
-                if not trailing_active:
-                    # Check SL inicial primero
-                    if side == 1 and low_val <= sl_price:
-                        exit_indices[i] = curr
-                        exit_prices[i] = sl_price
-                        exit_reasons[i] = 1  # SL
-                        break
-                    if side == -1 and h >= sl_price:
-                        exit_indices[i] = curr
-                        exit_prices[i] = sl_price
-                        exit_reasons[i] = 1  # SL
-                        break
-
-                    # Check activación del trailing
-                    if (side == 1 and h >= activation_price) or (side == -1 and low_val <= activation_price):
-                        trailing_active = True
-                        just_activated = True
-                        if side == 1:
-                            # Trailing level = high - trailing_distance
-                            trailing_level = h - trail_dist_distance
-                        else:
-                            trailing_level = low_val + trail_dist_distance
-
-                if trailing_active:
-                    if side == 1:
-                        # Actualizar trailing level hacia arriba
-                        new_level = h - trail_dist_distance
-                        if new_level > trailing_level:
-                            trailing_level = new_level
-                        
-                        # Prevent phantom exit on activation bar by checking Close instead of Low
-                        check_val = c if just_activated else low_val
-
-                        # Check hit del trailing
-                        if check_val <= trailing_level:
-                            exit_indices[i] = curr
-                            exit_prices[i] = trailing_level
-                            exit_reasons[i] = 3  # Trail
-                            break
-                    else:
-                        # Actualizar trailing level hacia abajo
-                        new_level = low_val + trail_dist_distance
-                        if new_level < trailing_level:
-                            trailing_level = new_level
-                        
-                        # Prevent phantom exit on activation bar by checking Close instead of High
-                        check_val = c if just_activated else h
-                        
-                        # Check hit del trailing
-                        if check_val >= trailing_level:
-                            exit_indices[i] = curr
-                            exit_prices[i] = trailing_level
-                            exit_reasons[i] = 3  # Trail
-                            break
-            else:
-                # Fixed SL/TP mode
-                if side == 1:
-                    if low_val <= sl_price:
-                        exit_indices[i] = curr
-                        exit_prices[i] = sl_price
-                        exit_reasons[i] = 1  # SL
-                        break
-                    if tp_pct > 0 and h >= tp_price:
-                        exit_indices[i] = curr
-                        exit_prices[i] = tp_price
-                        exit_reasons[i] = 2  # TP
-                        break
-                else:
-                    if h >= sl_price:
-                        exit_indices[i] = curr
-                        exit_prices[i] = sl_price
-                        exit_reasons[i] = 1  # SL
-                        break
-                    if tp_pct > 0 and low_val <= tp_price:
-                        exit_indices[i] = curr
-                        exit_prices[i] = tp_price
-                        exit_reasons[i] = 2  # TP
-                        break
-
-        # Time stop fallback
-        if exit_indices[i] == -1 and time_stop_bars > 0:
-            final_idx = entry_idx + time_stop_bars
-            if final_idx >= n_bars:
-                final_idx = n_bars - 1
-            if final_idx > entry_idx:
-                exit_indices[i] = final_idx
-                exit_prices[i] = close_prices[final_idx]
-                exit_reasons[i] = 4  # Time
-
-    return exit_indices, exit_prices, exit_reasons
-
-
-@nb.njit(cache=True, fastmath=True)
-def find_single_exit_numba(
-    entry_idx: int,
-    entry_price: float,
-    side: int,  # 1=Long, -1=Short
-    qty: float,
-    stake: float,
-    close_prices,
-    high_prices,
-    low_prices,
-    is_trailing: bool,
-    sl_pct: float,
-    tp_pct: float,
-    trail_act_pct: float,
-    trail_dist_pct: float,
-    time_stop_bars: int,
-) -> Tuple[int, float, int]:
-    """Encuentra la salida para un trade individual con SL/TP basados en % sobre STAKE.
-
-    Returns: (exit_idx, exit_price, exit_reason)
-        exit_reason: 1=SL, 2=TP, 3=Trail, 4=Time, 0=EndOfData
-    """
-    n_bars = len(close_prices)
-
-    if qty <= 0 or stake <= 0:
-        return -1, np.nan, 0
-
-    # Calcular distancias de precio basadas en % sobre stake
-    sl_distance = (stake * sl_pct / 100.0) / qty
-    tp_distance = (stake * tp_pct / 100.0) / qty
-    trail_act_distance = (stake * trail_act_pct / 100.0) / qty
-    trail_dist_distance = (stake * trail_dist_pct / 100.0) / qty
-
-    if side == 1:  # LONG
-        sl_price = entry_price - sl_distance
-        tp_price = entry_price + tp_distance
-        activation_price = entry_price + trail_act_distance
-    else:  # SHORT
-        sl_price = entry_price + sl_distance
-        tp_price = entry_price - tp_distance
-        activation_price = entry_price - trail_act_distance
-
-    trailing_active = False
-    trailing_level = 0.0
-
-    search_limit = n_bars
-    if time_stop_bars > 0:
-        limit = entry_idx + time_stop_bars + 1
-        if limit < search_limit:
-            search_limit = limit
-
-    for curr in range(entry_idx + 1, search_limit):
-        h = high_prices[curr]
-        low_val = low_prices[curr]
-        c = close_prices[curr]
-        just_activated = False
-
-        if is_trailing:
-            # Trailing mode: SL inicial + trailing activation
-            if not trailing_active:
-                # Check SL inicial primero
-                if side == 1 and low_val <= sl_price:
-                    return curr, sl_price, 1  # SL
-                if side == -1 and h >= sl_price:
-                    return curr, sl_price, 1  # SL
-
-                # Check activación del trailing
-                if (side == 1 and h >= activation_price) or (side == -1 and low_val <= activation_price):
-                    trailing_active = True
-                    just_activated = True
-                    if side == 1:
-                        trailing_level = h - trail_dist_distance
-                    else:
-                        trailing_level = low_val + trail_dist_distance
-
-        if trailing_active:
-            if side == 1:
-                new_level = h - trail_dist_distance
-                if new_level > trailing_level:
-                    trailing_level = new_level
-                
-                # Prevent phantom exit on activation bar by checking Close instead of Low
-                check_val = c if just_activated else low_val
-
-                if check_val <= trailing_level:
-                    return curr, trailing_level, 3  # Trail
-            else:
-                new_level = low_val + trail_dist_distance
-                if new_level < trailing_level:
-                    trailing_level = new_level
-                
-                # Prevent phantom exit on activation bar by checking Close instead of High
-                check_val = c if just_activated else h
-                
-                if check_val >= trailing_level:
-                    return curr, trailing_level, 3  # Trail
-        else:
-            # Fixed SL/TP mode
-            if side == 1:
-                if low_val <= sl_price:
-                    return curr, sl_price, 1  # SL
-                if tp_pct > 0 and h >= tp_price:
-                    return curr, tp_price, 2  # TP
-            else:
-                if h >= sl_price:
-                    return curr, sl_price, 1  # SL
-                if tp_pct > 0 and low_val <= tp_price:
-                    return curr, tp_price, 2  # TP
-
-    # Time stop fallback
-    if time_stop_bars > 0:
-        final_idx = entry_idx + time_stop_bars
-        if final_idx >= n_bars:
-            final_idx = n_bars - 1
-        if final_idx > entry_idx:
-            return final_idx, close_prices[final_idx], 4  # Time
-
-    # End of data
-    final_idx = n_bars - 1
-    return final_idx, close_prices[final_idx], 0  # EndOfData
 
 
 # =============================================================================
@@ -1454,12 +1161,14 @@ def _warmup_jit() -> None:
     # Warmup _simulate_trades_sequential
     try:
         dummy_bool = np.zeros(20, dtype=np.bool_)
+        dummy_atr = np.empty(0, dtype=np.float64)  # ATR arrays vacíos (modo no-ATR)
         _simulate_trades_sequential(
             dummy_entries, dummy_prices, dummy_types,
             dummy_close, dummy_high, dummy_low,
             1000.0, 0.001, 100.0, 10.0, 75.0,
             False, 5.0, 10.0, 0.0, 0.0, 0, 2,
-            dummy_bool, dummy_bool
+            dummy_bool, dummy_bool,
+            dummy_atr, dummy_atr
         )
     except Exception:
         pass
@@ -1471,12 +1180,14 @@ def _warmup_jit() -> None:
         dummy_high_1m = dummy_close_1m * 1.01
         dummy_low_1m = dummy_close_1m * 0.99
         dummy_ts_1m = np.arange(100, dtype=np.int64)
+        dummy_atr_1m = np.empty(0, dtype=np.float64)  # ATR arrays vacíos (modo no-ATR)
         _simulate_trades_with_1m_exits(
             dummy_entries, dummy_prices, dummy_types, dummy_ts,
             dummy_close_1m, dummy_high_1m, dummy_low_1m, dummy_ts_1m,
             1000.0, 0.001, 100.0, 10.0, 75.0,
             False, 5.0, 10.0, 0.0, 0.0, 0, 2,
-            dummy_bool_1m, dummy_bool_1m, 5
+            dummy_bool_1m, dummy_bool_1m, 5,
+            dummy_atr_1m, dummy_atr_1m
         )
     except Exception:
         pass

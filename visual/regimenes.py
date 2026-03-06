@@ -80,7 +80,7 @@ def cargar_datos(ruta: str) -> pl.DataFrame:
             infer_schema_length=10_000,
         )
     elif ext in (".feather", ".arrow", ".ipc"):
-        df = pl.read_ipc(path)
+        df = pl.read_ipc(path, memory_map=False)
     elif ext == ".parquet":
         df = pl.read_parquet(path)
     else:

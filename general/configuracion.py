@@ -11,7 +11,7 @@ from modelox.core.types import normalize_timeframe_to_suffix
 # =============================================================================
 # CAPITAL (colateral & apalancamiento)
 # =============================================================================
-SALDO_USADO        = 75    # Colateral por operación ($)
+SALDO_USADO        = 500    # Colateral por operación ($)
 APALANCAMIENTO_MAX = 20    # Apalancamiento máximo
 
 # =============================================================================
@@ -22,7 +22,7 @@ COMBINACION_A_EJECUTAR = [2]   # IDs de estrategias en modelox/strategies/
 # =============================================================================
 # OPTIMIZACIÓN (OPTUNA)
 # =============================================================================
-N_TRIALS                 = 25     # Trials (potencias de 2 para QMC: 32,64,128,256…)
+N_TRIALS                 = 32     # Trials (potencias de 2 para QMC: 32,64,128,256,512,1024,2048…)
 OPTUNA_SAMPLER           = "HYBRID" # HYBRID | QMC | TPE | CMA | GT | ML
 
 # =============================================================================
@@ -33,8 +33,8 @@ ACTIVO = "BTC"  # BTC | ETH | GOLD | SILVER | SP500 | NASDAQ | BIST100
 # =============================================================================
 # RANGO DE FECHAS
 # =============================================================================
-FECHA_INICIO = "2021-10-01"
-FECHA_FIN    = "2023-11-01"
+FECHA_INICIO = "2018-01-01"
+FECHA_FIN    = "2025-06-01"
 
 USAR_RANGOS_POR_TRIAL = False  # False = rango fijo | True = sub-ventana aleatoria por trial
 MESES_POR_TRIAL       = 7     # Duración de la ventana (solo si USAR_RANGOS_POR_TRIAL=True)
@@ -46,6 +46,12 @@ TIMEFRAME_BASE = "60"           # 1|5|15|30|60|240|720|1440 (min) o "1m","5m","1
 TIMEFRAMES     = [TIMEFRAME_BASE]
 
 # =============================================================================
+# RÉGIMEN DE MERCADO (EMA 21/200 en 1D)
+# =============================================================================
+REGIMEN_ACTIVO = True          # True = filtrar por régimen | False = operar siempre
+REGIMEN_TIPO   = "BAJISTA"      # ALCISTA (EMA21>EMA200) | BAJISTA (EMA21<EMA200)
+
+# =============================================================================
 # PERTURBACIONES (anti-overfitting — Leashed Brownian Motion)
 # =============================================================================
 ENTRENAMIENTO_ROBUSTO_ACTIVAR = False    # Mutar OHLCV por trial
@@ -54,12 +60,20 @@ DRIFT_STEP_VOLATILITY         = 0.0050  # Volatilidad browniana por vela
 RUIDO_MECHAS_PCT              = 0.10    # Ruido en mechas
 RUIDO_VOLUMEN_PCT             = 0.08    # Ruido en volumen
 
+
 # =============================================================================
 # GRÁFICA
 # =============================================================================
 GRAFICA_RANGO_PERSONALIZADO = False         # False = últimos 2 meses auto | True = fechas manuales
-GRAFICA_FECHA_INICIO        = "2024-11-01"  # Solo si GRAFICA_RANGO_PERSONALIZADO=True
-GRAFICA_FECHA_FIN           = "2025-02-10"
+GRAFICA_FECHA_INICIO        = "2022-01-01"  # Solo si GRAFICA_RANGO_PERSONALIZADO=True
+GRAFICA_FECHA_FIN           = "2025-06-10"
+
+# =============================================================================
+# COMPARATIVA POR PERÍODOS (gráfica en Excel Trial)
+# =============================================================================
+COMPARATIVA_PERIODOS_ACTIVAR = True    # True = añadir gráfica periódica | False = desactivar
+COMPARATIVA_PERIODO          = "1mes"  # Ejemplos: "1mes" | "3 semanas" | "2 meses" | "1 año"
+                                       # Unidades: dia/dias | semana/semanas | mes/meses | año/años
 
 # =============================================================================
 # SALIDAS & RESULTADOS
@@ -76,8 +90,8 @@ FORMATO_DATOS         = "feather" # feather | parquet
 # =============================================================================
 # CAPITAL (resto)
 # =============================================================================
-SALDO_INICIAL          = 1000.0  # Saldo de inicio ($)
-SALDO_OPERATIVO_MAX    = 1000.0  # Tope máximo (sin reinversión)
+SALDO_INICIAL          = 10000.0  # Saldo de inicio ($)
+SALDO_OPERATIVO_MAX    = 10000.0  # Tope máximo (sin reinversión)
 SALDO_MINIMO_OPERATIVO = 300.0   # Parar si cae por debajo
 COMISION_PCT           = 0.0003  # Comisión por operación (0.03%)
 COMISION_SIDES         = 2       # 1=solo apertura | 2=apertura+cierre
@@ -174,8 +188,11 @@ CONFIG = {
     "USAR_EXCEL": USAR_EXCEL, "PURGE_PYCACHE_ON_EXIT": PURGE_PYCACHE_ON_EXIT,
     "GRAFICA_RANGO_PERSONALIZADO": GRAFICA_RANGO_PERSONALIZADO,
     "GRAFICA_FECHA_INICIO": GRAFICA_FECHA_INICIO, "GRAFICA_FECHA_FIN": GRAFICA_FECHA_FIN,
+    "COMPARATIVA_PERIODOS_ACTIVAR": COMPARATIVA_PERIODOS_ACTIVAR,
+    "COMPARATIVA_PERIODO": COMPARATIVA_PERIODO,
     "TELEGRAM": TELEGRAM,
     "ENTRENAMIENTO_ROBUSTO_ACTIVAR": ENTRENAMIENTO_ROBUSTO_ACTIVAR,
     "MAX_DRIFT_PCT": MAX_DRIFT_PCT, "DRIFT_STEP_VOLATILITY": DRIFT_STEP_VOLATILITY,
     "RUIDO_MECHAS_PCT": RUIDO_MECHAS_PCT, "RUIDO_VOLUMEN_PCT": RUIDO_VOLUMEN_PCT,
+    "REGIMEN_ACTIVO": REGIMEN_ACTIVO, "REGIMEN_TIPO": REGIMEN_TIPO,
 }

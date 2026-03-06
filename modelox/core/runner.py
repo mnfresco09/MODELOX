@@ -11,7 +11,7 @@ CONTENIDO:
      1. CACHÉ DE SEÑALES          — Reutilización entre trials vecinos
      2. CONFIGURACIÓN             — OptunaConfig
      4. HELPERS                   — create_study_for_strategy
-     5. PIPELINE                  — DataLoader, SignalGenerator, BacktestEngine
+     5. PIPELINE                  — SignalGenerator, BacktestEngine
      6. RUNNER PRINCIPAL          — OptimizationRunner (optimize_strategies)
 
 MODO DE OPERACIÓN:
@@ -201,29 +201,6 @@ def create_study_for_strategy(
 # 5. COMPONENTES DEL PIPELINE
 # =============================================================================
 
-@dataclass
-class DataLoader:
-    """Maneja la carga de datos."""
-    
-    @staticmethod
-    def load_data(file_path: str) -> pl.DataFrame:
-        if file_path.endswith(".parquet"):
-            df = pl.read_parquet(file_path)
-        elif file_path.endswith(".csv"):
-            df = pl.read_csv(file_path)
-        elif file_path.endswith(".feather") or file_path.endswith(".arrow"):
-            df = pl.read_ipc(file_path, memory_map=False)
-        else:
-            raise ValueError(f"Formato no soportado: {file_path}")
-        
-        if "timestamp" not in df.columns and "datetime" in df.columns:
-            df = df.rename({"datetime": "timestamp"})
-        
-        if "timestamp" not in df.columns:
-            raise ValueError("DataFrame debe tener columna 'timestamp' o 'datetime'")
-        
-        return df
-
 
 @dataclass
 class SignalGenerator:
@@ -369,6 +346,12 @@ class OptimizationRunner:
     
     # Data Augmentation (entrenamiento robusto)
     augmenter: Optional[Any] = None
+    
+    # Régimen de mercado (filtro EMA 21/200 en 1D)
+    regimen_activo: bool = False
+    regimen_tipo: str = "ALCISTA"
+    regimen_df: Optional[pl.DataFrame] = None  # Pre-computado: timestamp, regime, regime_bullish
+    regimen_dias_operables: int = 0
     
     # Estado interno
     _last_study: Optional[optuna.study.Study] = None
@@ -767,6 +750,23 @@ class OptimizationRunner:
                 t2_signals = time.perf_counter()
                 
                 # ================================================================
+                # FILTRO DE RÉGIMEN DE MERCADO (EMA 21/200 en 1D)
+                # ================================================================
+                # Régimen se recalcula PER-TRIAL desde df_trial (DESPUÉS de 
+                # perturbaciones), para que reflejen el precio perturbado.
+                # Resamplear TF→1D + EMA 21/200 es ultra rápido (~μs para ~750 días).
+                if self.regimen_activo:
+                    try:
+                        from modelox.core.regime import compute_regime_mask_1d, apply_precomputed_regime_filter
+                        regime_df_trial = compute_regime_mask_1d(df_trial)
+                        signals_df, _dias_op = apply_precomputed_regime_filter(
+                            signals_df, df_trial, regime_df_trial,
+                            regimen_tipo=self.regimen_tipo,
+                        )
+                    except Exception:
+                        pass  # Fallback silencioso: operar sin filtro
+                
+                # ================================================================
                 # GENERAR SEÑALES DE SALIDA EN 1M (Tick a Tick precise exits)
                 # ================================================================
                 signals_1m_for_exits = None
@@ -786,6 +786,11 @@ class OptimizationRunner:
                     signals_1m=signals_1m_for_exits,
                 )
                 t2_backtest = time.perf_counter()
+                
+                # AJUSTAR trades_por_dia al régimen operable
+                if self.regimen_activo and self.regimen_dias_operables > 0 and not trades_df.is_empty():
+                    _n_trades = metrics.get("n_trades", 0) or metrics.get("total_trades", len(trades_df))
+                    metrics["trades_por_dia"] = float(_n_trades) / float(self.regimen_dias_operables)
                 
                 if trades_df.is_empty():
                     # Handle empty trades as valid result but poor score
@@ -819,6 +824,12 @@ class OptimizationRunner:
                             _total_days = max(1.0, float(_delta["d"][0]))
                         except Exception:
                             _total_days = 1.0
+
+                    # AJUSTE DE TOTAL_DAYS POR RÉGIMEN:
+                    # Cuando el régimen está activo, usar solo los días operables
+                    # para calcular trades_por_dia correctamente.
+                    if self.regimen_activo and self.regimen_dias_operables > 0:
+                        _total_days = max(1.0, float(self.regimen_dias_operables))
 
                     # Usar scoring correspondiente al sampler elegido
                     score_func = self._get_score_func()
@@ -1051,6 +1062,54 @@ def run_single_exit_type(
     except ImportError:
         ENTRENAMIENTO_ROBUSTO_ACTIVAR = False
 
+    try:
+        from general.configuracion import REGIMEN_ACTIVO, REGIMEN_TIPO
+    except ImportError:
+        REGIMEN_ACTIVO = False
+        REGIMEN_TIPO = "ALCISTA"
+
+    # Pre-computar estadísticas del régimen (días operables / total)
+    _regimen_dias_operables = 0
+    _regimen_dias_totales = 0
+    _regimen_df = None  # DataFrame del régimen pre-computado (para reutilizar en objective)
+    if REGIMEN_ACTIVO:
+        try:
+            from modelox.core.regime import compute_regime_mask_1d
+            # Cargar datos 1m COMPLETOS (sin filtro de fecha) para warmup de EMA200
+            _df_1m_full = None
+            if resolve_archivo_data_tf_func:
+                from .data import load_data as _ld_regime
+                _path_1m = resolve_archivo_data_tf_func(activo, "1m")
+                if os.path.exists(_path_1m):
+                    _df_1m_full = _ld_regime(_path_1m)
+            
+            if _df_1m_full is not None and len(_df_1m_full) > 0:
+                # Computar régimen con todos los datos (EMA200 necesita warmup)
+                _regimen_df = compute_regime_mask_1d(_df_1m_full)
+                
+                # Filtrar al periodo del backtest para contar stats
+                if fecha_inicio and fecha_fin:
+                    from .types import filter_by_date as _fbd_reg
+                    _regimen_period = _fbd_reg(_regimen_df, fecha_inicio, fecha_fin)
+                else:
+                    _regimen_period = _regimen_df
+                
+                _regimen_dias_totales = len(_regimen_period)
+                _regimen_dias_operables = _regimen_period.filter(
+                    pl.col("regime") == REGIMEN_TIPO.upper()
+                ).height
+                
+                # Asegurar 1m en cache para el backtest
+                if "1m" not in tf_cache:
+                    _df_1m_for_cache = tf_cache.get("1m")
+                    if _df_1m_for_cache is None and fecha_inicio and fecha_fin:
+                        _df_1m_for_cache = _fbd_reg(_df_1m_full, fecha_inicio, fecha_fin)
+                    tf_cache["1m"] = _df_1m_for_cache if _df_1m_for_cache is not None else _df_1m_full
+                
+                del _df_1m_full  # Liberar memoria
+        except Exception as _e:
+            logger.warning(f"⚠ No se pudo computar régimen: {_e}")
+
     if mostrar_cabecera_func:
         # time_bars: salidas en el mismo TF de entrada (cuenta barras, no usa 1m)
         _tf_exit_display = tf_display if str(exit_type).upper() == "BARS" else "1m"
@@ -1071,6 +1130,10 @@ def run_single_exit_type(
             synthetic_mode=synthetic_mode,
             synthetic_years=synthetic_years,
             perturbacion=ENTRENAMIENTO_ROBUSTO_ACTIVAR,
+            regimen_activo=REGIMEN_ACTIVO,
+            regimen_tipo=REGIMEN_TIPO,
+            regimen_dias_operables=_regimen_dias_operables,
+            regimen_dias_totales=_regimen_dias_totales,
         )
 
     # 4. REPORTEROS
@@ -1090,10 +1153,12 @@ def run_single_exit_type(
             try:
                 from general.configuracion import (
                     FECHA_INICIO as _FI, FECHA_FIN as _FF,
+                    COMPARATIVA_PERIODOS_ACTIVAR as _CPA, COMPARATIVA_PERIODO as _CP,
                     CARPETA_DATOS as _CDAT, FORMATO_DATOS as _FMT,
                 )
             except Exception:
                 _FI = _FF = None; _CDAT = "datos"; _FMT = "feather"
+                _CPA = True; _CP = "1mes"
             reporters.append(ExcelReporter(
                 resumen_path=f"{excel_dir}/RESUMEN ID{strategy.combinacion_id}.xlsx",
                 trades_base_dir=excel_dir,
@@ -1102,6 +1167,8 @@ def run_single_exit_type(
                 fecha_fin=_FF,
                 datos_dir=_CDAT,
                 formato_datos=_FMT,
+                comparativa_periodos_activar=_CPA,
+                comparativa_periodo=_CP,
             ))
 
         if generar_plots and graficos_dir:
@@ -1171,6 +1238,12 @@ def run_single_exit_type(
     )
 
     runner.activo = activo
+
+    # 5c. CONFIGURAR RÉGIMEN DE MERCADO
+    runner.regimen_activo = REGIMEN_ACTIVO
+    runner.regimen_tipo = REGIMEN_TIPO
+    runner.regimen_df = _regimen_df
+    runner.regimen_dias_operables = _regimen_dias_operables
 
     try:
         from modelox.core.types import suffix_to_minutes

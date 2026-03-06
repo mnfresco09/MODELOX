@@ -17,7 +17,7 @@ import datetime
 import logging
 from copy import deepcopy
 from dataclasses import dataclass, field
-from typing import Any, Dict, List, Optional, Protocol
+from typing import Any, Dict, List, Optional, Protocol, Tuple
 import csv
 
 import pandas as pd
@@ -164,6 +164,9 @@ class ExcelReporter:
     fecha_fin: Optional[str] = None
     formato_datos: str = "feather"
 
+    comparativa_periodos_activar: bool = True
+    comparativa_periodo: str = "1mes"
+
     _csv_resumen_path: Optional[str] = field(default=None, init=False, repr=False)
     _resumen_rows: List[Dict[str, Any]] = field(default_factory=list, init=False, repr=False)
     _trade_candidates: List[Dict[str, Any]] = field(default_factory=list, init=False, repr=False)
@@ -232,6 +235,7 @@ class ExcelReporter:
     def on_strategy_end(self, strategy_name: str, study) -> None:
         if not self._resumen_rows:
             return
+        import time as _t
 
         activo   = self._activo
         base_dir = self.trades_base_dir
@@ -241,10 +245,31 @@ class ExcelReporter:
         csv_path    = os.path.join(base_dir, "RESUMEN.csv")
         self._write_resumen_csv(csv_path)
 
+        # Cargar precio continuo UNA SOLA VEZ (cache para todos los trials)
+        _t0 = _t.perf_counter()
+        _cached_prices, _cached_timestamps = None, None
+        try:
+            _cached_prices, _cached_timestamps = _load_price_with_timestamps(
+                activo=self._activo or "BTC",
+                datos_dir=self.datos_dir,
+                fecha_inicio=self.fecha_inicio,
+                fecha_fin=self.fecha_fin,
+                n_points=500,
+            )
+        except Exception:
+            pass
+        _t1 = _t.perf_counter()
+        logger.debug(f"[EXCEL DEBUG] Precio B&H cargado en {(_t1-_t0)*1000:.0f}ms ({len(_cached_prices) if _cached_prices else 0} pts)")
+
         self._trade_candidates.sort(key=lambda x: x["score"], reverse=True)
         for candidate in self._trade_candidates[:self.max_archivos]:
             try:
-                self._write_trades_excel(base_dir, candidate)
+                _t2 = _t.perf_counter()
+                self._write_trades_excel(base_dir, candidate,
+                                         cached_prices=_cached_prices,
+                                         cached_timestamps=_cached_timestamps)
+                _t3 = _t.perf_counter()
+                logger.debug(f"[EXCEL DEBUG] Trial {candidate['trial_number']} Excel en {(_t3-_t2)*1000:.0f}ms")
             except Exception as e:
                 logger.warning(f"Error guardando trades trial {candidate['trial_number']}: {e}")
 
@@ -260,6 +285,7 @@ class ExcelReporter:
                 pass
 
         try:
+            _t4 = _t.perf_counter()
             self._final_excel_path = convertir_resumen_csv_a_excel(
                 csv_path=csv_path,
                 strategy_name=strategy_name,
@@ -271,6 +297,8 @@ class ExcelReporter:
                 fecha_fin=_fecha_fin,
                 formato_datos=self.formato_datos,
             )
+            _t5 = _t.perf_counter()
+            logger.debug(f"[EXCEL DEBUG] Resumen Excel en {(_t5-_t4)*1000:.0f}ms")
         except Exception as e:
             logger.warning(f"Error generando Dashboard Excel: {e}")
 
@@ -303,11 +331,14 @@ class ExcelReporter:
                     csv_row.update({f"param_{k}": v for k, v in row["params"].items()})
                 writer.writerow(csv_row)
 
-    def _write_trades_excel(self, trades_dir: str, candidate: Dict[str, Any]):
+    def _write_trades_excel(self, trades_dir: str, candidate: Dict[str, Any],
+                            cached_prices=None, cached_timestamps=None):
+        import time as _t
         trades = candidate["trades"]
         if trades is None or (hasattr(trades, "empty") and trades.empty):
             return
 
+        _t0 = _t.perf_counter()
         df_trades = trades.to_pandas() if hasattr(trades, "to_pandas") else trades
 
         # --- Limpiar timezone ---
@@ -334,23 +365,47 @@ class ExcelReporter:
                     continue
         except Exception:
             pass
+        _t1 = _t.perf_counter()
 
         exit_type = str(candidate["params"].get("__exit_type", candidate["params"].get("exit_type", "FIXED"))).upper()
         df_export = _preparar_df_trades(df_trades, exit_type)
+        _t2 = _t.perf_counter()
 
         saldo = candidate['params'].get('__saldo_usado') or 0
-
         apal  = candidate['params'].get('__apalancamiento_max') or 0
         vol   = saldo * apal
 
         filename = f"TRIAL {candidate['trial_number']} - {int(candidate['score'])}.xlsx"
         filepath = os.path.join(trades_dir, filename)
 
+        # ── Comparativa por períodos (opcional) ──────────────────────────────
+        period_data = None
+        if self.comparativa_periodos_activar:
+            try:
+                period_data = _calcular_comparativa_periodos(
+                    df=df_export,  # df_export tiene las columnas renombradas: BALANCE, EXIT_TIME, PNL NETO
+                    activo=self._activo or "BTC",
+                    datos_dir=self.datos_dir,
+                    fecha_inicio=self.fecha_inicio,
+                    fecha_fin=self.fecha_fin,
+                    periodo_str=self.comparativa_periodo,
+                )
+            except Exception:
+                pass
+
         try:
-            _escribir_trades_xlsxwriter(filepath, df_export, saldo, vol, apal)
+            _escribir_trades_xlsxwriter(
+                filepath, df_export, saldo, vol, apal,
+                price_series=cached_prices,
+                price_timestamps=cached_timestamps,
+                period_data=period_data,
+                activo_name=str(self._activo or "Activo").upper(),
+            )
         except Exception as e:
             logger.warning(f"Error xlsxwriter, fallback openpyxl: {e}")
             _escribir_trades_openpyxl_fallback(filepath, df_export, saldo, vol, apal)
+        _t3 = _t.perf_counter()
+        logger.debug(f"[EXCEL DEBUG]   prep={(_t1-_t0)*1000:.0f}ms  df={(_t2-_t1)*1000:.0f}ms  write={(_t3-_t2)*1000:.0f}ms  rows={len(df_export)}")
 
 
 # ==============================================================================
@@ -430,6 +485,201 @@ def _nice_major_unit(data_range: float, target_ticks: int = 6) -> float:
 
 
 # ==============================================================================
+# COMPARATIVA POR PERÍODOS — helpers
+# ==============================================================================
+
+def _parse_periodo_offset(periodo_str: str):
+    """Parsea "1mes", "3 semanas", "2 años", "1 día" → pandas DateOffset."""
+    import re
+    from pandas.tseries.offsets import DateOffset
+
+    s = str(periodo_str).strip().lower()
+    m = re.match(
+        r'(\d+)\s*'
+        r'(dia|dias|day|days|semana|semanas|week|weeks|mes|meses|month|months|año|años|anos|year|years)',
+        s
+    )
+    if not m:
+        return DateOffset(months=1)
+
+    n    = int(m.group(1))
+    unit = m.group(2)
+
+    if   unit in ('dia', 'dias', 'day', 'days'):
+        return DateOffset(days=n)
+    elif unit in ('semana', 'semanas', 'week', 'weeks'):
+        return DateOffset(weeks=n)
+    elif unit in ('mes', 'meses', 'month', 'months'):
+        return DateOffset(months=n)
+    elif unit in ('año', 'años', 'anos', 'year', 'years'):
+        return DateOffset(years=n)
+    return DateOffset(months=1)
+
+
+def _periodo_label(t_start: "pd.Timestamp", offset) -> str:
+    """Genera etiqueta legible para un período según su duración."""
+    import pandas as pd
+    from pandas.tseries.offsets import DateOffset
+
+    # Detectar magnitud aproximada del offset en días
+    try:
+        delta_days = (t_start + offset - t_start).days
+    except Exception:
+        delta_days = 30
+
+    MESES_ES = ["Ene","Feb","Mar","Abr","May","Jun","Jul","Ago","Sep","Oct","Nov","Dic"]
+    if delta_days >= 300:          # ~1 año o más
+        return str(t_start.year)
+    elif delta_days >= 25:         # ~1 mes o más
+        return f"{MESES_ES[t_start.month - 1]} {str(t_start.year)[2:]}"
+    else:                          # semanas o días
+        return t_start.strftime("%d/%m/%y")
+
+
+def _calcular_comparativa_periodos(
+    df: "pd.DataFrame",
+    activo: str,
+    datos_dir: str,
+    fecha_inicio: Optional[str],
+    fecha_fin: Optional[str],
+    periodo_str: str,
+) -> Optional[Tuple[List[str], List[float], List[float]]]:
+    """
+    Divide el rango de la estrategia en períodos y calcula la variación % de:
+      - La estrategia (balance al cierre del período)
+      - El activo subyacente (precio de cierre del período)
+
+    Retorna (labels, strat_pct_list, asset_pct_list) o None si no hay datos.
+    """
+    try:
+        def _to_naive_ts(v):
+            ts = pd.Timestamp(v)
+            try:
+                if ts.tzinfo is not None:
+                    ts = ts.tz_convert(None)
+            except Exception:
+                try:
+                    if getattr(ts, "tzinfo", None) is not None:
+                        ts = ts.tz_localize(None)
+                except Exception:
+                    pass
+            return ts
+
+        if df is None or df.empty:
+            return None
+
+        # ── 1. Detectar columnas ─────────────────────────────────────────────
+        cols_up   = {c.upper(): c for c in df.columns}
+        exit_col  = cols_up.get("EXIT_TIME")  or cols_up.get("ENTRY_TIME")
+        bal_col   = cols_up.get("BALANCE")
+        pnl_col   = cols_up.get("PNL NETO")   or cols_up.get("PNL_NETO")
+
+        if exit_col is None or bal_col is None or pnl_col is None:
+            return None
+
+        # ── 2. Construir curva de balance ordenada por tiempo ────────────────
+        df_sorted = df[[exit_col, bal_col, pnl_col]].copy()
+        df_sorted[exit_col] = pd.to_datetime(df_sorted[exit_col], errors='coerce')
+        df_sorted = df_sorted.dropna(subset=[exit_col]).sort_values(exit_col)
+        df_sorted = df_sorted[pd.to_numeric(df_sorted[bal_col], errors='coerce').notna()]
+        df_sorted = df_sorted[pd.to_numeric(df_sorted[pnl_col], errors='coerce').notna()]
+
+        if df_sorted.empty:
+            return None
+
+        # Saldo inicial = primer balance - primer pnl
+        try:
+            first_pnl = float(df_sorted[pnl_col].iloc[0])
+            first_bal = float(df_sorted[bal_col].iloc[0])
+            saldo_ini = first_bal - first_pnl
+        except Exception:
+            return None
+        if saldo_ini <= 0:
+            return None
+
+        times_ser   = df_sorted[exit_col].map(_to_naive_ts)  # pd.Series de Timestamps naive
+        balance_arr = df_sorted[bal_col].astype(float).values
+
+        def _balance_at(t_pd: "pd.Timestamp") -> float:
+            """Retorna el balance de la estrategia justo antes o en t_pd."""
+            t_pd = pd.Timestamp(t_pd)
+            idx = int((times_ser <= t_pd).sum()) - 1
+            return float(balance_arr[idx]) if idx >= 0 else saldo_ini
+
+        # ── 3. Rango de fechas del rango completo ────────────────────────────
+        t_first = pd.Timestamp(times_ser.iloc[0])
+        t_last  = pd.Timestamp(times_ser.iloc[-1])
+
+        offset = _parse_periodo_offset(periodo_str)
+
+        # ── 4. Cargar precios diarios completos para el activo ───────────────
+        price_vals, price_ts = _load_price_with_timestamps(
+            activo=activo or "BTC",
+            datos_dir=datos_dir or "datos",
+            fecha_inicio=fecha_inicio,
+            fecha_fin=fecha_fin,
+            n_points=5000,
+        )
+        if not price_ts or len(price_ts) < 2:
+            return None
+
+        price_ts_pd   = [_to_naive_ts(t) for t in price_ts]
+        price_vals_arr = list(price_vals)
+
+        # Limitar el rango al solape real entre trades y precio del activo.
+        t_first = max(t_first, price_ts_pd[0])
+        t_last  = min(t_last, price_ts_pd[-1])
+        if t_first >= t_last:
+            return None
+
+        def _price_at(t_pd: "pd.Timestamp") -> Optional[float]:
+            """Precio más cercano en el tiempo (bisección)."""
+            import bisect
+            idx = bisect.bisect_right(price_ts_pd, t_pd) - 1
+            if idx < 0:
+                idx = 0
+            if idx >= len(price_vals_arr):
+                idx = len(price_vals_arr) - 1
+            return float(price_vals_arr[idx])
+
+        # ── 5. Iterar períodos ───────────────────────────────────────────────
+        labels:     List[str]   = []
+        strat_pcts: List[float] = []
+        asset_pcts: List[float] = []
+
+        t_cur = t_first.normalize()   # alinear al inicio del día
+        while t_cur < t_last:
+            t_next = t_cur + offset
+            if t_next > t_last:
+                t_next = t_last
+
+            bal_start = _balance_at(t_cur)
+            bal_end   = _balance_at(t_next)
+
+            p_start = _price_at(t_cur)
+            p_end   = _price_at(t_next)
+
+            if bal_start > 0 and p_start and p_start > 0:
+                strat_pct = round((bal_end / bal_start - 1.0) * 100.0, 2)
+                asset_pct = round((p_end   / p_start - 1.0) * 100.0, 2)
+
+                labels.append(_periodo_label(t_cur, offset))
+                strat_pcts.append(strat_pct)
+                asset_pcts.append(asset_pct)
+
+            t_cur = t_next
+
+        if len(labels) < 2:
+            return None
+
+        return labels, strat_pcts, asset_pcts
+
+    except Exception as _e:
+        logger.debug(f"_calcular_comparativa_periodos: {_e}")
+        return None
+
+
+# ==============================================================================
 # ESCRITURA ULTRA RÁPIDA CON XLSXWRITER  (v7 — posición y escalado corregidos)
 # ==============================================================================
 
@@ -439,6 +689,10 @@ def _escribir_trades_xlsxwriter(
     val_saldo: float = 0,
     val_volumen: float = 0,
     val_apal: float = 0,
+    price_series: Optional[List[float]] = None,
+    price_timestamps: Optional[List] = None,
+    period_data: Optional[Tuple[List[str], List[float], List[float]]] = None,
+    activo_name: str = "Activo",
 ):
     """
     Layout final:
@@ -517,8 +771,12 @@ def _escribir_trades_xlsxwriter(
 
     # ── Hoja auxiliar oculta para datos de gráficos ─────────────────────
     # Columnas: A=ENTRY_TIME, B=BAL_BRUTO, C=STRAT_ROI%, D=BH_ROI%
+    #           E=CUM_COMISIONES, F=CUM_PNL_NETO
+    #           G=BH_CONT_TIME, H=BH_CONT_ROI% (B&H continuo, independiente de trades)
     has_bruto_data = False
     has_roi_data   = False
+    has_continuous_bh = False
+    n_bh_points = 0
     if n_rows > 0:
         ws_aux = wb.add_worksheet('_ChartData')
         ws_aux.hide()
@@ -528,10 +786,12 @@ def _escribir_trades_xlsxwriter(
         ws_aux.write_string(0, 3, 'BH_IDX')
         ws_aux.write_string(0, 4, 'CUM_COMISIONES')
         ws_aux.write_string(0, 5, 'CUM_PNL_NETO')
+        ws_aux.write_string(0, 6, 'BH_CONT_TIME')
+        ws_aux.write_string(0, 7, 'BH_CONT_ROI')
 
         dt_fmt = wb.add_format({'num_format': 'dd/mm/yy hh:mm'})
 
-        # Primer precio del activo (para Buy & Hold)
+        # Primer precio del activo (para Buy & Hold fallback)
         first_entry_price = None
         _saldo_ini = 0.0  # Se calcula en la primera iteración
         if entry_price_idx is not None:
@@ -573,7 +833,6 @@ def _escribir_trades_xlsxwriter(
                 has_bruto_data = True
 
             # Col C: Strategy ROI % (0% = punto de partida)
-            # saldo_inicial = BALANCE[0] - PNL_NETO[0] (balance antes del primer trade)
             if balance_idx is not None and pnl_neto_idx is not None:
                 try:
                     bal = float(df.iloc[r_idx, balance_idx])
@@ -591,22 +850,21 @@ def _escribir_trades_xlsxwriter(
                     ws_aux.write_number(r_idx + 1, 2, strat_roi)
                     has_roi_data = True
 
-            # Col D: Buy & Hold ROI %
-            if entry_price_idx is not None and first_entry_price and first_entry_price > 0:
-                # Usar exit_price del último trade, entry_price para el resto
-                if r_idx == n_rows - 1 and exit_price_idx is not None:
-                    try:
-                        price_now = float(df.iloc[r_idx, exit_price_idx])
-                    except (ValueError, TypeError):
-                        price_now = first_entry_price
-                else:
-                    try:
-                        price_now = float(df.iloc[r_idx, entry_price_idx])
-                    except (ValueError, TypeError):
-                        price_now = first_entry_price
-                # ROI % (0% = inicio)
-                bh_roi = (price_now / first_entry_price - 1.0) * 100.0
-                ws_aux.write_number(r_idx + 1, 3, bh_roi)
+            # Col D: Buy & Hold ROI % (fallback: basado en trades)
+            if not price_series:  # Solo si NO hay price_series continuo
+                if entry_price_idx is not None and first_entry_price and first_entry_price > 0:
+                    if r_idx == n_rows - 1 and exit_price_idx is not None:
+                        try:
+                            price_now = float(df.iloc[r_idx, exit_price_idx])
+                        except (ValueError, TypeError):
+                            price_now = first_entry_price
+                    else:
+                        try:
+                            price_now = float(df.iloc[r_idx, entry_price_idx])
+                        except (ValueError, TypeError):
+                            price_now = first_entry_price
+                    bh_roi = (price_now / first_entry_price - 1.0) * 100.0
+                    ws_aux.write_number(r_idx + 1, 3, bh_roi)
 
             # Col E: Comisiones acumuladas
             if comisiones_idx is not None:
@@ -614,8 +872,6 @@ def _escribir_trades_xlsxwriter(
                     com_val = float(df.iloc[r_idx, comisiones_idx])
                 except (ValueError, TypeError):
                     com_val = 0.0
-                # Solo sumar si no se sumó ya arriba (evitar doble suma)
-                # comisiones_acum ya fue actualizada en Col B
                 ws_aux.write_number(r_idx + 1, 4, comisiones_acum)
                 has_fee_data = True
 
@@ -627,6 +883,35 @@ def _escribir_trades_xlsxwriter(
                     pnl_val = 0.0
                 pnl_neto_acum += pnl_val
                 ws_aux.write_number(r_idx + 1, 5, pnl_neto_acum)
+
+        # ── Col G/H: Buy & Hold CONTINUO (precio real, independiente de trades) ──
+        if price_series and len(price_series) >= 2:
+            n_bh_points = len(price_series)
+            first_price = price_series[0]
+            has_continuous_bh = first_price > 0
+
+            if has_continuous_bh:
+                # Escribir timestamps continuos (col G) y ROI% (col H)
+                if price_timestamps and len(price_timestamps) == n_bh_points:
+                    for bi in range(n_bh_points):
+                        try:
+                            ts_val = price_timestamps[bi]
+                            if isinstance(ts_val, (pd.Timestamp, datetime.datetime)):
+                                dt_bh = ts_val.to_pydatetime() if hasattr(ts_val, 'to_pydatetime') else ts_val
+                                dt_bh = dt_bh.replace(tzinfo=None)
+                                ws_aux.write_datetime(bi + 1, 6, dt_bh, dt_fmt)
+                            else:
+                                ws_aux.write(bi + 1, 6, str(ts_val))
+                        except Exception:
+                            ws_aux.write_number(bi + 1, 6, bi)
+                        bh_roi_cont = (price_series[bi] / first_price - 1.0) * 100.0
+                        ws_aux.write_number(bi + 1, 7, bh_roi_cont)
+                else:
+                    # Sin timestamps — usar índices
+                    for bi in range(n_bh_points):
+                        ws_aux.write_number(bi + 1, 6, bi)
+                        bh_roi_cont = (price_series[bi] / first_price - 1.0) * 100.0
+                        ws_aux.write_number(bi + 1, 7, bh_roi_cont)
 
     # ── Anchos de columna: muestrea 20 filas, O(cols) ───────────────────────
     for i, col_name in enumerate(cols):
@@ -815,11 +1100,12 @@ def _escribir_trades_xlsxwriter(
         ws.insert_chart(BLOCK_ROW + CHARTS_HEIGHT_ROWS, 1, chart2, {'x_offset': 2, 'y_offset': 5})
         CHARTS_HEIGHT_ROWS += 24
 
-    # ── GRÁFICO 3: ESTRATEGIA vs BUY & HOLD (índice base 100, escala log) ───
-    if has_roi_data and entry_price_idx is not None and n_rows > 0:
-        chart3 = wb.add_chart({'type': 'line'})
+    # ── GRÁFICO 3: ESTRATEGIA vs BUY & HOLD (scatter XY para eje continuo) ──
+    # Scatter chart permite series con distinto nº de puntos sin gaps.
+    if has_roi_data and n_rows > 0:
+        chart3 = wb.add_chart({'type': 'scatter', 'subtype': 'straight'})
 
-        # Serie 1 — Estrategia (gris oscuro)
+        # Serie 1 — Estrategia (gris oscuro) — basada en trades
         series_strat = {
             'name':       'Estrategia',
             'values':     f"='_ChartData'!$C$2:$C${n_rows + 1}",
@@ -829,14 +1115,23 @@ def _escribir_trades_xlsxwriter(
         }
         chart3.add_series(series_strat)
 
-        # Serie 2 — Buy & Hold (gris claro)
-        series_bh = {
-            'name':       'Buy & Hold',
-            'values':     f"='_ChartData'!$D$2:$D${n_rows + 1}",
-            'categories': f"='_ChartData'!$A$2:$A${n_rows + 1}",
-            'line':       {'color': '#CBD5E0', 'width': 1.5},
-            'marker':     {'type': 'none'},
-        }
+        # Serie 2 — Buy & Hold: SIEMPRE continuo e independiente de trades
+        if has_continuous_bh and n_bh_points > 0:
+            series_bh = {
+                'name':       'Buy & Hold',
+                'values':     f"='_ChartData'!$H$2:$H${n_bh_points + 1}",
+                'categories': f"='_ChartData'!$G$2:$G${n_bh_points + 1}",
+                'line':       {'color': '#CBD5E0', 'width': 1.5},
+                'marker':     {'type': 'none'},
+            }
+        else:
+            series_bh = {
+                'name':       'Buy & Hold',
+                'values':     f"='_ChartData'!$D$2:$D${n_rows + 1}",
+                'categories': f"='_ChartData'!$A$2:$A${n_rows + 1}",
+                'line':       {'color': '#CBD5E0', 'width': 1.5},
+                'marker':     {'type': 'none'},
+            }
         chart3.add_series(series_bh)
 
         chart3.set_title({'name': 'Estrategia vs Buy & Hold', 'name_font': {'size': 11, 'bold': True, 'color': '#2D3436', 'name': 'Calibri'}})
@@ -911,6 +1206,156 @@ def _escribir_trades_xlsxwriter(
 
         ws.insert_chart(BLOCK_ROW + CHARTS_HEIGHT_ROWS, 1, chart4, {'x_offset': 2, 'y_offset': 5})
         CHARTS_HEIGHT_ROWS += 24
+
+    # ── GRÁFICO 5: COMPARATIVA POR PERÍODOS (estrategia vs activo, barras) ──
+    if period_data is not None:
+        p_labels, p_strat, p_asset = period_data
+        n_periods = len(p_labels)
+
+        if n_periods >= 2:
+            # Escribir datos en hoja auxiliar oculta _PeriodData
+            ws_pd = wb.add_worksheet('_PeriodData')
+            ws_pd.hide()
+            ws_pd.write_string(0, 0, 'PERIODO')
+            ws_pd.write_string(0, 1, 'ESTRATEGIA_%')
+            ws_pd.write_string(0, 2, f'{activo_name}_%')
+
+            for pi in range(n_periods):
+                ws_pd.write_string(pi + 1, 0, p_labels[pi])
+                ws_pd.write_number(pi + 1, 1, p_strat[pi])
+                ws_pd.write_number(pi + 1, 2, p_asset[pi])
+
+            chart5 = wb.add_chart({'type': 'column'})
+
+            # Estrategia = gris claro (cerca de blanco), Activo = gris oscuro (cerca de negro)
+            _STRAT_COLOR = '#C8CDD3'
+            _ASSET_COLOR = '#4A5058'
+
+            chart5.add_series({
+                'name':       'Estrategia',
+                'categories': f"='_PeriodData'!$A$2:$A${n_periods + 1}",
+                'values':     f"='_PeriodData'!$B$2:$B${n_periods + 1}",
+                'fill':       {'color': _STRAT_COLOR},
+                'border':     {'none': True},
+                'gap':        80,
+            })
+            chart5.add_series({
+                'name':       activo_name,
+                'categories': f"='_PeriodData'!$A$2:$A${n_periods + 1}",
+                'values':     f"='_PeriodData'!$C$2:$C${n_periods + 1}",
+                'fill':       {'color': _ASSET_COLOR},
+                'border':     {'none': True},
+            })
+
+            chart5.set_title({
+                'name': f'Estrategia vs {activo_name} — variación % por período',
+                'name_font': {'size': 11, 'bold': True, 'color': '#2D3436', 'name': 'Calibri'},
+            })
+            chart5.set_y_axis({
+                'num_format':      '0.00"%"',
+                'num_font':        {'size': 8, 'color': '#718096', 'name': 'Calibri'},
+                'major_gridlines': {'visible': True, 'line': {'color': '#EDF2F7', 'width': 0.5}},
+                'minor_gridlines': {'visible': False},
+                'line':            {'none': True},
+            })
+            chart5.set_x_axis({
+                'num_font':        {'size': 7, 'color': '#A0AEC0', 'name': 'Calibri'},
+                'major_gridlines': {'visible': False},
+                'major_tick_mark': 'none',
+                'minor_tick_mark': 'none',
+                'line':            {'color': '#E2E8F0', 'width': 0.5},
+                'label_position':  'low',
+            })
+            chart5.set_legend({
+                'position': 'bottom',
+                'font': {'size': 9, 'color': '#718096', 'name': 'Calibri'},
+            })
+            chart5.set_plotarea({'border': {'none': True}, 'fill': {'color': '#FFFFFF'}})
+            chart5.set_chartarea({'border': {'none': True}, 'fill': {'color': '#FFFFFF'}})
+            chart5.set_size({'width': 1000, 'height': 400})
+
+            ws.insert_chart(BLOCK_ROW + CHARTS_HEIGHT_ROWS, 1, chart5, {'x_offset': 2, 'y_offset': 5})
+
+            # ── TABLA RESUMEN junto al chart5 (a la derecha) ────────────────
+            _tbl_row = BLOCK_ROW + CHARTS_HEIGHT_ROWS + 1  # un poco abajo del borde superior del chart
+            _tbl_col = 15  # columna P (a la derecha del chart de ~14 cols)
+
+            # Calcular victorias por período
+            _wins_strat = sum(1 for s, a in zip(p_strat, p_asset) if s > a)
+            _wins_asset = sum(1 for s, a in zip(p_strat, p_asset) if a > s)
+            _ties = n_periods - _wins_strat - _wins_asset
+            # Repartir empates proporcionalmente, o asignar 50/50
+            _total_decisive = _wins_strat + _wins_asset if (_wins_strat + _wins_asset) > 0 else 1
+            _pct_strat = round(_wins_strat / n_periods * 100, 1)
+            _pct_asset = round(_wins_asset / n_periods * 100, 1)
+            _pct_ties  = round(100.0 - _pct_strat - _pct_asset, 1)
+
+            # Formatos
+            _hdr_fmt = wb.add_format({
+                'font_name': 'Calibri', 'font_size': 10, 'bold': True,
+                'font_color': '#2D3748', 'bg_color': '#F7FAFC',
+                'border': 1, 'border_color': '#E2E8F0',
+                'align': 'center', 'valign': 'vcenter',
+            })
+            _lbl_fmt = wb.add_format({
+                'font_name': 'Calibri', 'font_size': 9,
+                'font_color': '#718096',
+                'border': 1, 'border_color': '#E2E8F0',
+                'align': 'left', 'valign': 'vcenter', 'indent': 1,
+            })
+            _val_fmt = wb.add_format({
+                'font_name': 'Calibri', 'font_size': 10, 'bold': True,
+                'font_color': '#2D3748',
+                'border': 1, 'border_color': '#E2E8F0',
+                'align': 'center', 'valign': 'vcenter',
+            })
+            _pct_fmt = wb.add_format({
+                'font_name': 'Calibri', 'font_size': 10, 'bold': True,
+                'font_color': '#2D3748',
+                'border': 1, 'border_color': '#E2E8F0',
+                'align': 'center', 'valign': 'vcenter',
+                'num_format': '0.0"%"',
+            })
+
+            # Encabezados
+            r = _tbl_row
+            ws.write_blank(r, _tbl_col, None, _hdr_fmt)
+            ws.write_string(r, _tbl_col + 1, 'Estrategia', _hdr_fmt)
+            ws.write_string(r, _tbl_col + 2, activo_name, _hdr_fmt)
+
+            # Fila: Períodos ganados
+            r += 1
+            ws.write_string(r, _tbl_col, 'Períodos ganados', _lbl_fmt)
+            ws.write_number(r, _tbl_col + 1, _wins_strat, _val_fmt)
+            ws.write_number(r, _tbl_col + 2, _wins_asset, _val_fmt)
+
+            # Fila: Empates (si los hay)
+            if _ties > 0:
+                r += 1
+                ws.write_string(r, _tbl_col, 'Empates', _lbl_fmt)
+                ws.write_number(r, _tbl_col + 1, _ties, _val_fmt)
+                ws.write_number(r, _tbl_col + 2, _ties, _val_fmt)
+
+            # Fila: % de victoria
+            r += 1
+            ws.write_string(r, _tbl_col, '% victoria', _lbl_fmt)
+            ws.write_number(r, _tbl_col + 1, _pct_strat, _pct_fmt)
+            ws.write_number(r, _tbl_col + 2, _pct_asset, _pct_fmt)
+
+            # Fila: Variación acumulada (retorno compuesto)
+            import math
+            _cum_strat = (math.prod(1 + v / 100 for v in p_strat) - 1) * 100
+            _cum_asset = (math.prod(1 + v / 100 for v in p_asset) - 1) * 100
+            r += 1
+            ws.write_string(r, _tbl_col, 'Var. acumulada', _lbl_fmt)
+            ws.write_number(r, _tbl_col + 1, round(_cum_strat, 2), _pct_fmt)
+            ws.write_number(r, _tbl_col + 2, round(_cum_asset, 2), _pct_fmt)
+
+            # Ajustar ancho columnas de la tabla
+            ws.set_column(_tbl_col, _tbl_col, 16)
+            ws.set_column(_tbl_col + 1, _tbl_col + 2, 13)
+
+            CHARTS_HEIGHT_ROWS += 24
 
     # ── TABLA DE PARÁMETROS ─────────────────────────────────────────────────
     TABLE_COL = 1
@@ -1080,10 +1525,121 @@ def _escribir_trades_openpyxl_fallback(
 
     wb.save(filepath)
 
-
 # ==============================================================================
 # FUNCIÓN PRINCIPAL (CSV → DASHBOARD RESUMEN)
 # ==============================================================================
+
+def _load_price_with_timestamps(
+    activo: str,
+    datos_dir: str,
+    fecha_inicio: Optional[str],
+    fecha_fin: Optional[str],
+    n_points: int = 200,
+) -> Tuple[Optional[List[float]], Optional[List]]:
+    """Carga precios + timestamps del activo para gráfica B&H continua.
+    
+    Usa resampling diario para reducir millones de velas 1m a ~1500 filas,
+    y luego selecciona n_points equidistantes. Ultra rápido (~200ms).
+    """
+    try:
+        import glob as _glob
+        import polars as _pl
+
+        activo_up = str(activo).strip().upper()
+        base_dir  = datos_dir or "datos"
+
+        candidates = [
+            os.path.join(base_dir, f"{activo_up}_ohlcv_1m.feather"),
+            os.path.join(base_dir, f"{activo_up}_ohlcv_1m.fthr"),
+            os.path.join(base_dir, f"{activo_up}_ohlcv_1m.parquet"),
+            os.path.join(base_dir, f"{activo_up.lower()}_ohlcv_1m.feather"),
+            os.path.join(base_dir, f"{activo_up.lower()}_ohlcv_1m.parquet"),
+        ]
+
+        filepath = next((p for p in candidates if os.path.exists(p)), None)
+        if filepath is None:
+            for pat in [f"{activo_up}_ohlcv_1m.*", f"{activo_up.lower()}_ohlcv_1m.*"]:
+                hits = _glob.glob(os.path.join(base_dir, pat))
+                if hits:
+                    filepath = hits[0]
+                    break
+        if filepath is None:
+            return None, None
+
+        ext = os.path.splitext(filepath)[1].lower()
+
+        # Lazy scan para no cargar todo en memoria
+        if ext in (".feather", ".fthr"):
+            # Feather no soporta scan_ipc bien con compresión → leer solo columnas necesarias
+            df_raw = _pl.read_ipc(filepath, columns=["timestamp", "close"], memory_map=False)
+        elif ext in (".parquet", ".pq"):
+            df_raw = _pl.scan_parquet(filepath).select(["timestamp", "close"]).collect()
+        else:
+            return None, None
+
+        # Normalizar timestamp a Datetime[us] naive
+        ts_col = df_raw.get_column("timestamp")
+        if str(ts_col.dtype).startswith("Datetime"):
+            try:
+                df_raw = df_raw.with_columns(
+                    _pl.col("timestamp").cast(_pl.Datetime("us")).alias("timestamp")
+                )
+            except Exception:
+                try:
+                    df_raw = df_raw.with_columns(
+                        _pl.col("timestamp").dt.replace_time_zone(None).cast(_pl.Datetime("us")).alias("timestamp")
+                    )
+                except Exception:
+                    pass
+
+        # Filtrar por rango de fechas
+        if fecha_inicio:
+            try:
+                dt_start = _pl.Series([fecha_inicio]).str.to_datetime(format="%Y-%m-%d", strict=False).item()
+                df_raw = df_raw.filter(_pl.col("timestamp") >= dt_start)
+            except Exception:
+                pass
+        if fecha_fin:
+            try:
+                dt_end = _pl.Series([fecha_fin]).str.to_datetime(format="%Y-%m-%d", strict=False).item()
+                df_raw = df_raw.filter(_pl.col("timestamp") <= dt_end)
+            except Exception:
+                pass
+
+        if df_raw.height < 2:
+            return None, None
+
+        # Resamplear a 1D para reducir de ~2M filas a ~1500 filas
+        df_daily = (
+            df_raw
+            .sort("timestamp")
+            .group_by_dynamic("timestamp", every="1d")
+            .agg(_pl.col("close").last())
+            .drop_nulls()
+        )
+
+        if df_daily.height < 2:
+            return None, None
+
+        prices_all = df_daily.get_column("close").to_list()
+        ts_all     = df_daily.get_column("timestamp").to_list()
+        n_src = len(prices_all)
+
+        if n_points <= 1:
+            return [prices_all[0]], [ts_all[0]]
+
+        # Seleccionar n_points equidistantes
+        if n_src <= n_points:
+            return prices_all, ts_all
+
+        indices     = [int(round(i * (n_src - 1) / (n_points - 1))) for i in range(n_points)]
+        resampled_p = [prices_all[i] for i in indices]
+        resampled_t = [ts_all[i]     for i in indices]
+        return resampled_p, resampled_t
+
+    except Exception as _e:
+        logger.debug(f"_load_price_with_timestamps: {_e}")
+        return None, None
 
 def _load_price_series(
     activo: str,
@@ -1131,7 +1687,7 @@ def _load_price_series(
         ext = os.path.splitext(filepath)[1].lower()
         cols = ["timestamp", "close"]
         if ext in (".feather", ".fthr"):
-            df_raw = _pl.read_ipc(filepath, columns=cols)
+            df_raw = _pl.read_ipc(filepath, columns=cols, memory_map=False)
         elif ext in (".parquet", ".pq"):
             df_raw = _pl.read_parquet(filepath, columns=cols)
         else:
@@ -1169,11 +1725,26 @@ def _load_price_series(
         if df_raw.height < 2:
             return None
 
-        prices = df_raw.get_column("close").to_list()
+        # Resamplear a 1D para reducir de ~2M filas a ~1500 filas (ultra rápido)
+        df_daily = (
+            df_raw
+            .sort("timestamp")
+            .group_by_dynamic("timestamp", every="1d")
+            .agg(_pl.col("close").last())
+            .drop_nulls()
+        )
+
+        if df_daily.height < 2:
+            return None
+
+        prices = df_daily.get_column("close").to_list()
         n_src  = len(prices)
 
         if n_points <= 1:
             return [prices[0]]
+
+        if n_src <= n_points:
+            return prices
 
         # Remuestreo: selección de índices equidistantes
         indices  = [int(round(i * (n_src - 1) / (n_points - 1))) for i in range(n_points)]

@@ -15,7 +15,7 @@ from typing import Any, Dict
 # =============================================================================
 
 # ─── TIPO DE SALIDA ──────────────────────────────────────────────────────────
-DEFAULT_EXIT_TYPE = "ATR"  # FIXED | TRAILING | BARS | ATR
+DEFAULT_EXIT_TYPE = "BARS"  # FIXED | TRAILING | BARS | ATR
 
 # ─── PARÁMETROS DE SL/TP (% SOBRE STAKE) ────────────────────────────────────
 DEFAULT_EXIT_SL_PCT = 25.0                    # Stop Loss
@@ -45,7 +45,7 @@ DEFAULT_EXIT_TP_PCT_RANGE = (55.0, 55.0, 1.0)
 DEFAULT_EXIT_TRAIL_ACT_PCT_RANGE = (35.0, 60.0, 5.0)
 DEFAULT_EXIT_TRAIL_DIST_PCT_RANGE = (8.0, 16.0, 2.0)
 
-DEFAULT_EXIT_TIME_BARS_RANGE = (6, 18, 6)
+DEFAULT_EXIT_TIME_BARS_RANGE = (8, 8, 6)
 
 
 # =============================================================================
@@ -171,6 +171,10 @@ def resolve_exit_settings_for_trial(*, trial: Any, config: Any) -> ExitSettings:
     if exit_type == "TRAILING":
         tp_pct = 0.0
 
+    # SI NO ES BARS (o ALL), TIME STOP NO APLICA
+    if exit_type not in {"BARS", "ALL"}:
+        time_stop_bars = 0
+
     # ─── OPTIMIZACIÓN TIME BARS ─────────────────────────────────────────
     time_bars_rng = tuple(getattr(config, "exit_time_bars_range", DEFAULT_EXIT_TIME_BARS_RANGE))
 
@@ -284,6 +288,9 @@ def exit_settings_from_params(params: Dict[str, Any]) -> ExitSettings:
     sl_pct, tp_pct, trail_act, trail_dist = _normalize_exit_values(
         exit_type, sl_pct, tp_pct, trail_act, trail_dist
     )
+
+    if exit_type not in {"BARS", "ALL"}:
+        time_stop_bars = 0
 
     return ExitSettings(
         exit_type=exit_type,

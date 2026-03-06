@@ -154,43 +154,51 @@ def _get_indicator_bounds(params: Optional[Dict[str, Any]]) -> Dict[str, Any]:
 
 
 def _is_overlay_heuristic(series: "pd.Series", price_range: tuple) -> bool:
-  """Heurística mejorada: overlay sólo si el indicador claramente está en escala precio.
-  
-  Indicadores normalizados, z-scores, osciladores, etc. NO son overlay.
-  Un overlay real (MA, ALMA, bandas) debe:
-    - Tener valores en el mismo orden de magnitud que el precio.
-    - Tener un mínimo > 0 para activos como BTC/GOLD (precio siempre positivo).
+  """Heurística robusta: overlay solo si el indicador está claramente en escala precio.
+
+  Usa percentiles (P2/P98) para evitar que outliers den falsos positivos.
+  Un overlay real (MA, ALMA, bandas Bollinger) debe:
+    - Tener magnitud similar al precio.
+    - No ser negativo cuando el precio es positivo y alto.
+    - Tener un rango proporcional al rango de precio.
   """
   try:
     s = series.dropna()
-    if s.empty:
+    if len(s) < 5:
       return False
     min_p, max_p = float(price_range[0]), float(price_range[1])
     if not (np.isfinite(min_p) and np.isfinite(max_p) and max_p > min_p):
       return False
-    ind_min = float(s.min())
-    ind_max = float(s.max())
-    if not (np.isfinite(ind_min) and np.isfinite(ind_max)):
+
+    # Usar percentiles para robustez ante outliers
+    ind_p2  = float(np.percentile(s, 2))
+    ind_p98 = float(np.percentile(s, 98))
+    if not (np.isfinite(ind_p2) and np.isfinite(ind_p98)):
       return False
 
-    # REGLA 1: Si el indicador puede ser negativo y el precio mínimo es > 100,
-    # es muy probable que sea un oscilador/z-score, NO overlay.
-    if ind_min < 0 and min_p > 100:
+    # REGLA 1: Negativo con precio alto → oscilador, no overlay
+    if ind_p2 < 0 and min_p > 50:
       return False
 
-    # REGLA 2: Si el rango del indicador es pequeño (ej: -3 a +3 para z-score),
-    # y el precio está en miles/cientos, no es overlay.
-    ind_span = ind_max - ind_min
-    if ind_span < 20 and min_p > 50:
-      return False
-
-    # REGLA 3: Overlay real debe estar dentro del rango de precio.
+    ind_span   = ind_p98 - ind_p2
     price_span = max_p - min_p
-    within_min = (ind_min >= (min_p - 0.15 * price_span))
-    within_max = (ind_max <= (max_p + 0.15 * price_span))
-    span_ok = ind_span >= 0.1 * price_span and ind_span <= 1.5 * price_span
 
-    return within_min and within_max and span_ok
+    # REGLA 2: Rango demasiado pequeño relativo al precio → no overlay
+    # (z-score -3..+3 con BTC en 30k sería ind_span=6, price_span=5000 → ratio 0.001)
+    span_ratio = ind_span / price_span if price_span > 0 else 0
+    if span_ratio < 0.03:
+      return False
+
+    # REGLA 3: Overlay real no debe exceder mucho el rango de precio
+    if span_ratio > 3.0:
+      return False
+
+    # REGLA 4: Los valores deben estar sustancialmente dentro del rango de precio
+    margin = 0.25 * price_span
+    within_min = ind_p2  >= min_p - margin
+    within_max = ind_p98 <= max_p + margin
+
+    return within_min and within_max
   except Exception:
     return False
 
@@ -232,20 +240,24 @@ def _detect_indicators(
     "ma", "ema", "sma", "zlema", "alma", "wma", "hma", "kama", "dema", "tema",
     "vwma", "vwap", "pivot", "support", "resistance", "band", "upper", "lower",
     "bb_", "boll", "keltner", "donchian", "atr_band", "supertrend",
+    "ichimoku", "tenkan", "kijun", "chikou", "span", "cloud",
+    "hull", "lsma", "linreg", "lwma", "smma", "tma", "zlsma",
   )
 
   # Sufijos/patrones que indican indicadores derivados → NUNCA son overlay
-  # (aceleración, velocidad, diferencia, señal, histograma, z-score, ratio, etc.)
   NON_OVERLAY_SUFFIXES = (
     "_acc", "_vel", "_diff", "_roc", "_signal", "_sig", "_hist",
     "_zscore", "_z", "_norm", "_pct", "_ratio", "_slope", "_delta",
-    "_momentum", "_mom", "_osc", "_divergence", "_div",
+    "_momentum", "_mom", "_osc", "_divergence", "_div", "_pct_rank",
+    "_percentile", "_rank", "_score", "_raw",
   )
   # Nombres que NUNCA son overlay (osciladores conocidos)
   NON_OVERLAY_NAMES = (
     "fisher", "rsi", "mfi", "cci", "stoch", "macd", "adx", "atr",
     "obv", "cmf", "willr", "dpo", "trix", "roc", "momentum",
-    "zscore", "z_score",
+    "zscore", "z_score", "psar", "ppo", "kst", "aroon", "chop",
+    "bbw", "bbp", "squeeze", "regime", "trend_strength",
+    "hist", "oscillator", "divergence",
   )
 
   def _normalize_panel(panel_value: Any) -> Any:
@@ -907,13 +919,14 @@ def _write_html_streaming(
     candle_data: dict,
     indicators: dict,
     trades: dict,
-    config: dict
+    config: dict,
+    equity_data: Optional[dict] = None,
 ) -> None:
     """
-    STREAMING HTML GENERATOR (v9.0 - MINIMALIST NEUTRAL)
-    
+    STREAMING HTML GENERATOR (v10.0 - PROFESSIONAL TV-LIKE)
+
     Writes HTML directly to disk in chunks.
-    Style: Minimalist, Neutral, "Nord/Notion" aesthetic.
+    Features: interactive legend, panel toggle, equity panel, professional resizer.
     """
 
     activo = str(config.get("activo", ""))
@@ -925,8 +938,16 @@ def _write_html_streaming(
     trial = str(config.get("trial", ""))
     score = float(config.get("score", 0))
 
+    # Métricas extra para el stats panel
+    max_dd   = float(config.get("max_dd", 0))
+    pf       = float(config.get("profit_factor", 0))
+    roi      = float(config.get("roi", 0))
+    roi_class = "pos" if roi >= 0 else "neg"
+
     with open(filepath, "wb") as f:
-        # ============ CHUNK 1: HTML Header + CSS (Minimalist Style) ============
+        # ============ CHUNK 1: HTML Header + CSS ============
+        has_equity = equity_data is not None and equity_data.get("v")
+        eq_btn_cls = "" if has_equity else " disabled"
         header = f'''<!DOCTYPE html>
 <html lang="en">
 <head>
@@ -935,176 +956,117 @@ def _write_html_streaming(
 <title>MODELOX | {activo}</title>
 <script src="https://unpkg.com/lightweight-charts@4.1.0/dist/lightweight-charts.standalone.production.js"></script>
 <link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500;600&family=Inter:wght@400;500;600&display=swap" rel="stylesheet">
-<script>
-window.addEventListener('DOMContentLoaded', function() {{
-  if (typeof LightweightCharts === 'undefined') {{
-    document.body.innerHTML = '<div style="color:#666;padding:40px;font-family:sans-serif;text-align:center;">Could not load chart library (lightweight-charts)</div>';
-  }}
-}});
-</script>
 <style>
-/* MINIMALIST NEUTRAL THEME */
-:root {{
-  --bg-app: #121212;
-  --bg-panel: #181818;
-  --bg-header: #181818;
-  --border-subtle: #2A2A2A;
-  --text-main: #C9D1D9;
-  --text-muted: #6E7681;
-  --accent-blue: #79C0FF;
-  --accent-green: #7EE787;
-  --accent-red: #FF7B72;
-  --accent-gold: #D29922;
+:root{{
+  --bg:#121212;--bg-p:#181818;--bg-h:#181818;
+  --border:#2A2A2A;--text:#C9D1D9;--muted:#6E7681;
+  --blue:#79C0FF;--green:#7EE787;--red:#FF7B72;--gold:#D29922;
 }}
-
 *{{margin:0;padding:0;box-sizing:border-box}}
-html,body{{width:100%;height:100%;background:var(--bg-app);font-family:'Inter',sans-serif;overflow:hidden;touch-action:none;color:var(--text-main)}}
-
-/* LAYOUT */
-.c{{display:flex;flex-direction:column;height:100vh;padding:0}}
-
-/* HEADER - CLEAN & FLAT */
-.h{{
-    display:flex;
-    justify-content:space-between;
-    align-items:center;
-    padding:0 24px;
-    height: 54px;
-    background:var(--bg-header);
-    border-bottom:1px solid var(--border-subtle);
-}}
-
-.h .left{{display:flex;align-items:center;gap:16px}}
-.h .a{{font-family:'IBM Plex Mono',monospace;font-size:16px;font-weight:600;color:var(--text-main);letter-spacing:-0.5px}}
-.h .t{{font-size:12px;font-weight:400;color:var(--text-muted);background:rgba(255,255,255,0.05);padding:4px 8px;border-radius:4px}}
-
-.h .info{{display:flex;gap:24px;align-items:center}}
-.h .stat{{display:flex;align-items:baseline;gap:8px}}
-.h .stat-label{{color:var(--text-muted);font-size:11px;font-weight:500;text-transform:uppercase;letter-spacing:0.5px}}
-.h .stat-val{{color:var(--text-main);font-size:14px;font-weight:600;font-family:'IBM Plex Mono',monospace}}
-.h .stat-val.pos{{color:var(--accent-green)}}
-.h .stat-val.neg{{color:var(--accent-red)}}
-
-/* CHARTS AREA */
-.p{{flex:1;display:flex;flex-direction:column;min-height:0;position:relative}}
-.m{{position:relative;margin-bottom:0;border-bottom:1px solid var(--border-subtle)}}
-.sub{{position:relative;margin-bottom:0;border-bottom:1px solid var(--border-subtle);flex:1 1 0;min-height:60px;overflow:hidden}}
-
-/* PANEL LABELS - SUBTLE */
-.l{{
-    position:absolute;
-    top:12px;
-    left:16px;
-    z-index:20;
-    font-size:10px;
-    font-weight:600;
-    color:var(--text-muted);
-    pointer-events:none;
-    text-transform:uppercase;
-    letter-spacing:1px;
-    opacity:0.7;
-}}
-
-/* TOOLTIP - FLOATING & MINIMAL */
-#tt{{
-    position:fixed;
-    display:none;
-    background:rgba(24,24,24,0.95);
-    border:1px solid var(--border-subtle);
-    border-radius:6px;
-    padding:12px;
-    color:var(--text-main);
-    font-size:12px;
-    z-index:100;
-    pointer-events:none;
-    box-shadow:0 8px 24px rgba(0,0,0,0.5);
-    backdrop-filter:blur(4px);
-    width: 200px;
-}}
-.tt-row{{display:flex;justify-content:space-between;margin-bottom:4px}}
-.tt-label{{color:var(--text-muted)}}
-.tt-val{{font-family:'IBM Plex Mono',monospace;font-weight:500}}
-.tt-val.pos{{color:var(--accent-green)}}
-.tt-val.neg{{color:var(--accent-red)}}
-.tt-badge{{padding:2px 6px;border-radius:4px;font-size:10px;font-weight:700;text-transform:uppercase}}
-.tt-badge.win{{background:rgba(126,231,135,0.1);color:var(--accent-green);border:1px solid rgba(126,231,135,0.2)}}
-.tt-badge.loss{{background:rgba(255,123,114,0.1);color:var(--accent-red);border:1px solid rgba(255,123,114,0.2)}}
-
-
-/* OHLC FLOATING LEGEND */
-#ohlc{{
-    position:absolute;
-    top:12px;
-    right:100px;
-    z-index:20;
-    display:flex;
-    gap:16px;
-    font-family:'IBM Plex Mono',monospace;
-    font-size:11px;
-    color:var(--text-muted);
-    pointer-events:none;
-}}
-.ohlc-val{{color:var(--text-main)}}
-.ohlc-val.up{{color:var(--accent-green)}}
-.ohlc-val.down{{color:var(--accent-red)}}
-
-/* ZOOM CONTROLS */
-.tv-zoom-container{{position:absolute;bottom:20px;left:50%;transform:translateX(-50%);z-index:30;display:flex;gap:8px;opacity:0;transition:opacity 0.2s}}
-.p:hover .tv-zoom-container{{opacity:1}}
-.tv-zoom-btn{{
-    width:32px;height:32px;
-    background:#2A2A2A;
-    color:#fff;
-    border:none;
-    border-radius:4px;
-    cursor:pointer;
-    font-size:16px;
-    display:flex;align-items:center;justify-content:center;
-}}
-.tv-zoom-btn:hover{{background:#3A3A3A}}
-
-/* CROSSHAIR */
-#globalCrosshair{{position:absolute;top:0;bottom:0;width:1px;background:rgba(255,255,255,0.1);pointer-events:none;z-index:10;display:none}}
-#globalCrosshairLabel{{
-    position:absolute;
-    bottom:0;
-    transform:translateX(-50%);
-    background:#2A2A2A;
-    color:#fff;
-    font-size:10px;
-    padding:2px 6px;
-    border-radius:4px;
-    pointer-events:none;
-    z-index:30;
-    display:none;
-    font-family:'IBM Plex Mono',monospace;
-}}
-
-.smh{{position:absolute;left:0;right:0;height:10px;z-index:40;cursor:ns-resize}}
-.smh.top{{top:0}}
-.smh.bottom{{bottom:0}}
-
+html,body{{width:100%;height:100%;background:var(--bg);font-family:'Inter',sans-serif;overflow:hidden;touch-action:none;color:var(--text)}}
+/* ── LAYOUT ── */
+.c{{display:flex;flex-direction:column;height:100vh}}
+/* ── HEADER ── */
+.h{{display:flex;justify-content:space-between;align-items:center;padding:0 16px;height:48px;background:var(--bg-h);border-bottom:1px solid var(--border);flex-shrink:0;gap:12px}}
+.h-left{{display:flex;align-items:center;gap:10px;overflow:hidden}}
+.h-asset{{font-family:'IBM Plex Mono',monospace;font-size:15px;font-weight:600;letter-spacing:-.5px;white-space:nowrap}}
+.h-badge{{font-size:11px;color:var(--muted);background:rgba(255,255,255,.05);padding:3px 7px;border-radius:3px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;max-width:280px}}
+.h-right{{display:flex;align-items:center;gap:10px;flex-shrink:0}}
+.h-stat{{display:flex;align-items:baseline;gap:5px}}
+.h-lbl{{color:var(--muted);font-size:10px;font-weight:500;text-transform:uppercase;letter-spacing:.5px}}
+.h-val{{font-family:'IBM Plex Mono',monospace;font-size:13px;font-weight:600}}
+.h-val.pos{{color:var(--green)}}.h-val.neg{{color:var(--red)}}
+.h-sep{{width:1px;height:20px;background:var(--border)}}
+/* ── HEADER BUTTONS ── */
+.hbtn{{display:flex;align-items:center;gap:4px;padding:4px 9px;border-radius:4px;border:1px solid var(--border);background:transparent;color:var(--muted);font-size:10px;font-weight:600;letter-spacing:.5px;cursor:pointer;transition:all .15s;text-transform:uppercase;white-space:nowrap}}
+.hbtn:hover{{border-color:#555;color:var(--text)}}
+.hbtn.active{{border-color:var(--blue);color:var(--blue);background:rgba(121,192,255,.08)}}
+.hbtn.disabled{{opacity:.35;pointer-events:none;cursor:default}}
+/* ── CHARTS CONTAINER ── */
+.p{{flex:1;display:flex;flex-direction:column;min-height:0;overflow:hidden}}
+/* ── PANEL ── */
+.m{{position:relative;overflow:hidden;border-bottom:1px solid var(--border)}}
+.sub{{position:relative;overflow:hidden;border-bottom:1px solid var(--border);min-height:30px}}
+.sub.collapsed{{flex:0 0 28px!important;height:28px!important;min-height:28px!important}}
+.sub.collapsed .chart-inner{{display:none}}
+/* ── RESIZER ── */
+.rsz{{height:4px;flex:0 0 4px;background:transparent;cursor:row-resize;transition:background .15s;z-index:20;position:relative}}
+.rsz:hover,.rsz.active{{background:var(--blue)}}
+/* ── LEGEND ── */
+.lgnd{{position:absolute;top:8px;left:10px;z-index:25;display:flex;flex-wrap:wrap;align-items:center;gap:5px;pointer-events:auto;max-width:70%}}
+.lg-item{{display:flex;align-items:center;gap:4px;padding:2px 6px;border-radius:3px;background:rgba(18,18,18,.75);border:1px solid transparent;cursor:pointer;transition:border-color .15s,opacity .15s;user-select:none}}
+.lg-item:hover{{border-color:#444}}
+.lg-item.off{{opacity:.35}}
+.lg-item.off .lg-name{{text-decoration:line-through}}
+.lg-dot{{width:12px;height:2px;border-radius:1px;flex-shrink:0}}
+.lg-name{{font-size:9px;font-weight:600;color:var(--muted);text-transform:uppercase;letter-spacing:.5px}}
+.lg-val{{font-size:9px;font-family:'IBM Plex Mono',monospace;color:var(--text);margin-left:2px}}
+/* ── PANEL CONTROLS ── */
+.pctrl{{position:absolute;top:6px;right:6px;z-index:26;display:flex;gap:3px}}
+.pbtn{{width:18px;height:18px;background:rgba(42,42,42,.8);border:none;border-radius:3px;color:var(--muted);cursor:pointer;font-size:11px;display:flex;align-items:center;justify-content:center;transition:color .15s,background .15s}}
+.pbtn:hover{{color:var(--text);background:#3a3a3a}}
+/* ── OHLC BAR ── */
+#ohlc{{position:absolute;top:8px;right:100px;z-index:24;display:flex;gap:12px;font-family:'IBM Plex Mono',monospace;font-size:10px;color:var(--muted);pointer-events:none}}
+.ov{{color:var(--text)}}.ov.up{{color:var(--green)}}.ov.dn{{color:var(--red)}}
+/* ── ZOOM ── */
+.zc{{position:absolute;bottom:10px;left:50%;transform:translateX(-50%);z-index:30;display:flex;gap:6px;opacity:0;transition:opacity .2s}}
+.p:hover .zc{{opacity:1}}
+.zbtn{{width:28px;height:28px;background:#2A2A2A;color:#fff;border:none;border-radius:3px;cursor:pointer;font-size:15px;display:flex;align-items:center;justify-content:center}}
+.zbtn:hover{{background:#3A3A3A}}
+/* ── TOOLTIP ── */
+#tt{{position:fixed;display:none;background:rgba(22,22,22,.97);border:1px solid var(--border);border-radius:6px;padding:10px;color:var(--text);font-size:11px;z-index:100;pointer-events:none;box-shadow:0 8px 24px rgba(0,0,0,.6);backdrop-filter:blur(4px);min-width:190px}}
+.tt-row{{display:flex;justify-content:space-between;margin-bottom:3px;gap:8px}}
+.tt-lbl{{color:var(--muted);white-space:nowrap}}
+.tt-val{{font-family:'IBM Plex Mono',monospace;font-weight:500;text-align:right}}
+.tt-val.pos{{color:var(--green)}}.tt-val.neg{{color:var(--red)}}
+.tt-badge{{padding:2px 5px;border-radius:3px;font-size:9px;font-weight:700;text-transform:uppercase;margin-left:6px}}
+.tt-badge.win{{background:rgba(126,231,135,.1);color:var(--green);border:1px solid rgba(126,231,135,.2)}}
+.tt-badge.loss{{background:rgba(255,123,114,.1);color:var(--red);border:1px solid rgba(255,123,114,.2)}}
+/* ── STATS PANEL ── */
+#sp{{position:fixed;top:58px;right:8px;z-index:50;background:rgba(22,22,22,.97);border:1px solid var(--border);border-radius:6px;padding:14px;min-width:190px;font-size:11px;backdrop-filter:blur(4px);transform-origin:top right;transition:transform .15s,opacity .15s}}
+#sp.hidden{{transform:scale(.85);opacity:0;pointer-events:none}}
+#sp h3{{font-size:10px;font-weight:600;color:var(--muted);text-transform:uppercase;letter-spacing:.8px;margin-bottom:10px;border-bottom:1px solid var(--border);padding-bottom:6px}}
+.sp-row{{display:flex;justify-content:space-between;gap:16px;margin-bottom:5px}}
+.sp-lbl{{color:var(--muted)}}
+.sp-val{{font-family:'IBM Plex Mono',monospace;font-weight:600;color:var(--text)}}
+.sp-val.pos{{color:var(--green)}}.sp-val.neg{{color:var(--red)}}
+/* ── GLOBAL CROSSHAIR ── */
+#gc{{position:absolute;top:0;bottom:0;width:1px;background:rgba(255,255,255,.08);pointer-events:none;z-index:10;display:none}}
+#gcl{{position:absolute;bottom:0;transform:translateX(-50%);background:#2A2A2A;color:#fff;font-size:10px;padding:2px 5px;border-radius:3px;pointer-events:none;z-index:30;display:none;font-family:'IBM Plex Mono',monospace}}
 </style>
 </head>
 <body>
 <div class="c">
 <div class="h">
-    <div class="left">
-        <span class="a">{activo}</span>
-        <span class="t">{combo}</span>
-        <span class="t">TRIAL: {trial}</span>
-    </div>
-    <div class="info">
-        <div class="stat"><span class="stat-label">Trades</span><span class="stat-val">{total_trades}</span></div>
-        <div class="stat"><span class="stat-label">WinRate</span><span class="stat-val">{round(winrate, 1)}%</span></div>
-        <div class="stat"><span class="stat-label">PnL</span><span class="stat-val {pnl_class}">${round(pnl_neto, 2)}</span></div>
-        <div class="stat"><span class="stat-label">Score</span><span class="stat-val">{round(score, 2)}</span></div>
-    </div>
+  <div class="h-left">
+    <span class="h-asset">{activo}</span>
+    <span class="h-badge">{combo}</span>
+    <span class="h-badge" style="color:var(--muted)">#{trial}</span>
+  </div>
+  <div class="h-right">
+    <div class="h-stat"><span class="h-lbl">Trades</span><span class="h-val">{total_trades}</span></div>
+    <div class="h-sep"></div>
+    <div class="h-stat"><span class="h-lbl">Win</span><span class="h-val">{round(winrate,1)}%</span></div>
+    <div class="h-stat"><span class="h-lbl">PnL</span><span class="h-val {pnl_class}">${round(pnl_neto,0):,.0f}</span></div>
+    <div class="h-stat"><span class="h-lbl">Score</span><span class="h-val">{round(score,1)}</span></div>
+    <div class="h-sep"></div>
+    <button class="hbtn{eq_btn_cls}" id="eq-toggle" title="Mostrar/ocultar curva de equity">&#9654; EQUITY</button>
+    <button class="hbtn" id="stats-toggle" title="Estadísticas detalladas">&#9776; STATS</button>
+  </div>
 </div>
-<div class="p" id="ct"><div id="globalCrosshair"></div><div id="globalCrosshairLabel"></div></div>
+<div class="p" id="ct"><div id="gc"></div><div id="gcl"></div></div>
 </div>
 <div id="tt"></div>
-
+<div id="sp" class="hidden">
+  <h3>Estadísticas</h3>
+  <div class="sp-row"><span class="sp-lbl">Trades</span><span class="sp-val">{total_trades}</span></div>
+  <div class="sp-row"><span class="sp-lbl">Win Rate</span><span class="sp-val">{round(winrate,1)}%</span></div>
+  <div class="sp-row"><span class="sp-lbl">PnL Neto</span><span class="sp-val {pnl_class}">${round(pnl_neto,2):,.2f}</span></div>
+  <div class="sp-row"><span class="sp-lbl">ROI</span><span class="sp-val {roi_class}">{round(roi,2)}%</span></div>
+  <div class="sp-row"><span class="sp-lbl">Max DD</span><span class="sp-val neg">{round(max_dd,2)}%</span></div>
+  <div class="sp-row"><span class="sp-lbl">Profit Factor</span><span class="sp-val">{round(pf,2)}</span></div>
+  <div class="sp-row"><span class="sp-lbl">Score</span><span class="sp-val">{round(score,2)}</span></div>
+</div>
 <script>
 (function(){{
 'use strict';
@@ -1123,11 +1085,15 @@ const D='''.encode('utf-8')
         f.write(b';\nconst T=')
         f.write(_dumps_bytes(trades))
 
-        # ============ CHUNK 5: JavaScript Logic ============
+        # ============ CHUNK 5: Equity JSON ============
+        f.write(b';\nconst E=')
+        f.write(_dumps_bytes(equity_data if equity_data else {"v": [], "t": [], "si": 0}))
+
+        # ============ CHUNK 6: JavaScript Logic ============
         js_logic = _get_chart_js_logic()
         f.write(js_logic.encode('utf-8'))
 
-        # ============ CHUNK 6: Footer (Close Tags) ============
+        # ============ CHUNK 7: Footer (Close Tags) ============
         footer = b"""
 } catch(e) {
     console.error(e);
@@ -1142,12 +1108,12 @@ const D='''.encode('utf-8')
 
 
 def _get_chart_js_logic() -> str:
-    """Return the JavaScript chart logic as a string (static, cacheable)."""
+    """Return the JavaScript chart logic (v10.0 — interactive legend, panel toggle, equity)."""
 
     return '''
 
 // ============================================================================
-// MODELOX CHART v9.0 - NEUTRAL MINIMALIST
+// MODELOX CHART v10.0 — PROFESSIONAL TV-LIKE
 // ============================================================================
 
 if (!D || !D.t || D.t.length === 0) {
@@ -1155,658 +1121,518 @@ if (!D || !D.t || D.t.length === 0) {
   return;
 }
 
-const dq=(v,f)=>v/f;
-const ct=document.getElementById('ct');
-const charts=[];
-let syncingCharts=false;
-const _scaleMarginsByChart = new WeakMap();
+const dq = (v, f) => v / f;
+const ct = document.getElementById('ct');
+const charts = [];
+let syncingCharts = false;
 
-// HELPERS
-function _clamp(v, lo, hi){ return Math.max(lo, Math.min(hi, v)); }
+// ── HELPERS ──────────────────────────────────────────────────────────────────
+function _clamp(v, lo, hi) { return Math.max(lo, Math.min(hi, v)); }
 function _findDataAt(s, t) {
-    if (!s) return null;
+    if (!s || typeof s.data !== 'function') return null;
     const d = s.data();
     let l = 0, r = d.length - 1;
     while (l <= r) {
         const m = (l + r) >>> 1;
         const v = d[m];
         if (v.time === t) return v;
-        if (v.time < t) l = m + 1;
-        else r = m - 1;
+        if (v.time < t) l = m + 1; else r = m - 1;
     }
     return null;
 }
-function _getOrInitMargins(ch){
-  if(_scaleMarginsByChart.has(ch)) return _scaleMarginsByChart.get(ch);
-  const m = { top: 0.1, bottom: 0.1 };
-  _scaleMarginsByChart.set(ch, m);
-  return m;
-}
-function _applyMargins(ch, top, bottom){
-  top = _clamp(top, 0.05, 0.45);
-  bottom = _clamp(bottom, 0.05, 0.45);
-  _scaleMarginsByChart.set(ch, { top, bottom });
-  try{ ch.applyOptions({ rightPriceScale: { scaleMargins: { top, bottom } } }); }catch(e){}
-}
-function _attachScaleMarginHandles(panelEl, ch){
-  if(!panelEl || !ch) return;
-  const hTop = document.createElement('div'); hTop.className = 'smh top';
-  const hBot = document.createElement('div'); hBot.className = 'smh bottom';
-  panelEl.appendChild(hTop); panelEl.appendChild(hBot);
-  
-  const startDrag = (which, ev) => {
-    ev.preventDefault(); ev.stopPropagation();
-    const rect = panelEl.getBoundingClientRect();
-    const startY = ev.clientY;
-    const startMargins = _getOrInitMargins(ch);
-    const onMove = (e) => {
-      const dy = e.clientY - startY;
-      const df = dy / rect.height;
-      if(which === 'top') _applyMargins(ch, startMargins.top + df, startMargins.bottom);
-      else _applyMargins(ch, startMargins.top, startMargins.bottom - df);
-    };
-    const onUp = () => {
-      window.removeEventListener('pointermove', onMove);
-      window.removeEventListener('pointerup', onUp);
-    };
-    window.addEventListener('pointermove', onMove);
-    window.addEventListener('pointerup', onUp);
-  };
-  hTop.addEventListener('pointerdown', (ev)=>startDrag('top', ev));
-  hBot.addEventListener('pointerdown', (ev)=>startDrag('bottom', ev));
-}
 
-// CHART OPTIONS - NEUTRAL
-const baseOpts={
-layout:{background:{type:'solid',color:'#121212'},textColor:'#6E7681',fontSize:11,fontFamily:"'Inter',sans-serif"},
-grid:{vertLines:{visible:false},horzLines:{color:'#1e1e1e',style:0}},
-crosshair:{mode:0,vertLine:{visible:false,labelVisible:false},horzLine:{visible:true,color:'#333',labelBackgroundColor:'#333'}},
-timeScale:{
-    borderColor:'#2A2A2A',
-    rightOffset:5,
-    barSpacing:6,
-    minBarSpacing:1,
-    fixLeftEdge:false,
-    fixRightEdge:false,
-    lockVisibleTimeRangeOnResize:true,
-    visible:false,
-    tickMarkFormatter: (time, tickMarkType, locale) => {
-        const d = new Date(time * 1000);
-        if (d.getUTCMinutes() !== 0) return '';
-        const h = d.getUTCHours();
-        return h === 0 ? '00' : h.toString();
+// ── BASE CHART OPTIONS ────────────────────────────────────────────────────────
+const baseOpts = {
+  layout: { background: { type: 'solid', color: '#121212' }, textColor: '#6E7681', fontSize: 11, fontFamily: "'Inter',sans-serif" },
+  grid: { vertLines: { visible: false }, horzLines: { color: '#1e1e1e', style: 0 } },
+  crosshair: { mode: 0, vertLine: { visible: false, labelVisible: false }, horzLine: { visible: true, color: '#333', labelBackgroundColor: '#333' } },
+  timeScale: {
+    borderColor: '#2A2A2A', rightOffset: 5, barSpacing: 6, minBarSpacing: 1,
+    fixLeftEdge: false, fixRightEdge: false, lockVisibleTimeRangeOnResize: true, visible: false,
+    tickMarkFormatter: (time) => {
+      const d = new Date(time * 1000);
+      if (d.getUTCMinutes() !== 0) return '';
+      const h = d.getUTCHours();
+      return h === 0 ? '00' : h.toString();
     }
-},
-rightPriceScale:{borderColor:'#2A2A2A',scaleMargins:{top:.15,bottom:.15},autoScale:true,alignLabels:true,borderVisible:false},
-handleScale:{axisPressedMouseMove:false,mouseWheel:false,pinch:false},
-handleScroll:{mouseWheel:true,pressedMouseMove:true,horzTouchDrag:true,vertTouchDrag:false},
-kineticScroll:{touch:true,mouse:true},
-localization:{
-  timeFormatter:(ts)=>{
-    const d=new Date(ts*1000);
-    return d.toISOString().slice(5,16).replace('T',' ');
   },
-}
+  rightPriceScale: { borderColor: '#2A2A2A', scaleMargins: { top: .12, bottom: .08 }, autoScale: true, alignLabels: true, borderVisible: false },
+  handleScale: { axisPressedMouseMove: false, mouseWheel: false, pinch: false },
+  handleScroll: { mouseWheel: true, pressedMouseMove: true, horzTouchDrag: true, vertTouchDrag: false },
+  kineticScroll: { touch: true, mouse: true },
+  localization: { timeFormatter: (ts) => new Date(ts * 1000).toISOString().slice(5, 16).replace('T', ' ') }
 };
 
-function mkPanel(id,lbl,isMain){
-  const p=document.createElement('div');
-  p.className=isMain?'m':'sub';
-  p.id=id;
-  p.style.flex=isMain?'3':'1';
-  
-  const l=document.createElement('div');
-  l.className='l';
-  l.textContent=lbl;
-  p.appendChild(l);
+// ── RESIZER between two panels ────────────────────────────────────────────────
+function _addResizer(panelAbove, panelBelow) {
+  const rsz = document.createElement('div');
+  rsz.className = 'rsz';
+  ct.insertBefore(rsz, panelBelow);
 
-  if(isMain){
-    const ohlc=document.createElement('div');
-    ohlc.id='ohlc';
-    ohlc.innerHTML='<span id="tv" style="margin-right:8px"></span>O <span id="ov" class="ohlc-val">-</span> H <span id="hv" class="ohlc-val">-</span> L <span id="lv" class="ohlc-val">-</span> C <span id="cv" class="ohlc-val">-</span>';
+  let active = false, startY = 0, startAbove = 0, startBelow = 0;
+  rsz.addEventListener('pointerdown', e => {
+    e.preventDefault();
+    active = true;
+    startY = e.clientY;
+    startAbove = panelAbove.getBoundingClientRect().height;
+    startBelow = panelBelow.getBoundingClientRect().height;
+    rsz.classList.add('active');
+    rsz.setPointerCapture(e.pointerId);
+  });
+  rsz.addEventListener('pointermove', e => {
+    if (!active) return;
+    const dy = e.clientY - startY;
+    const minH = 40;
+    let na = Math.max(minH, startAbove + dy);
+    let nb = Math.max(minH, startBelow - dy);
+    panelAbove.style.flex = 'none';
+    panelAbove.style.height = na + 'px';
+    panelBelow.style.flex = 'none';
+    panelBelow.style.height = nb + 'px';
+    // Sync charts
+    charts.forEach(c => {
+      if (c.p === panelAbove || c.p === panelBelow)
+        c.ch.resize(c.p.clientWidth, c.p.clientHeight);
+    });
+  });
+  rsz.addEventListener('pointerup', () => {
+    if (active) { active = false; rsz.classList.remove('active'); }
+  });
+}
+
+// ── LEGEND ITEM ───────────────────────────────────────────────────────────────
+function _mkLegendItem(name, color, seriesObj, legendEl) {
+  const item = document.createElement('div');
+  item.className = 'lg-item';
+  item.innerHTML = `<span class="lg-dot" style="background:${color}"></span><span class="lg-name">${name}</span><span class="lg-val" id="lgv_${name.replace(/\W/g,'_')}"></span>`;
+  item.addEventListener('click', () => {
+    const isOff = item.classList.toggle('off');
+    try { seriesObj.applyOptions({ visible: !isOff }); } catch(e) {}
+  });
+  legendEl.appendChild(item);
+  return item;
+}
+
+// ── PANEL FACTORY ─────────────────────────────────────────────────────────────
+function mkPanel(id, lbl, isMain) {
+  const prevPanel = charts.length > 0 ? charts[charts.length - 1].p : null;
+
+  const p = document.createElement('div');
+  p.className = isMain ? 'm' : 'sub';
+  p.id = id;
+  p.style.flex = isMain ? '3 1 0' : '1 1 0';
+
+  // ── Legend container (replaces the old '.l' label)
+  const lgnd = document.createElement('div');
+  lgnd.className = 'lgnd';
+  lgnd.id = 'lgnd_' + id;
+  p.appendChild(lgnd);
+
+  // ── Panel label in legend (non-clickable title)
+  const lbl_el = document.createElement('span');
+  lbl_el.style.cssText = 'font-size:9px;font-weight:700;color:#555;text-transform:uppercase;letter-spacing:1px;pointer-events:none;padding:2px 4px';
+  lbl_el.textContent = lbl;
+  lgnd.appendChild(lbl_el);
+
+  if (isMain) {
+    // OHLC bar
+    const ohlc = document.createElement('div');
+    ohlc.id = 'ohlc';
+    ohlc.innerHTML = '<span id="tv" style="margin-right:8px;color:#6E7681"></span>O <span id="ov" class="ov">-</span> H <span id="hv" class="ov">-</span> L <span id="lv" class="ov">-</span> C <span id="cv" class="ov">-</span>';
     p.appendChild(ohlc);
-    
     // Zoom buttons
-    const z=document.createElement('div');
-    z.className='tv-zoom-container';
-    z.innerHTML='<button class="tv-zoom-btn" id="zoomIn">+</button><button class="tv-zoom-btn" id="zoomOut">-</button>';
+    const z = document.createElement('div');
+    z.className = 'zc';
+    z.innerHTML = '<button class="zbtn" id="zoomIn">+</button><button class="zbtn" id="zoomOut">-</button>';
     p.appendChild(z);
   }
-  
+
+  // ── Panel controls (collapse button)
+  const ctrl = document.createElement('div');
+  ctrl.className = 'pctrl';
+  const btnCollapse = document.createElement('button');
+  btnCollapse.className = 'pbtn';
+  btnCollapse.innerHTML = '&#8722;';
+  btnCollapse.title = 'Mostrar/ocultar panel';
+  let collapsed = false;
+  const chartInner = document.createElement('div');
+  chartInner.className = 'chart-inner';
+  chartInner.style.cssText = 'position:absolute;inset:0;';
+  p.appendChild(chartInner);
+  btnCollapse.addEventListener('click', () => {
+    collapsed = !collapsed;
+    if (collapsed) {
+      p.classList.add('collapsed');
+      btnCollapse.innerHTML = '&#43;';
+      const ch = charts.find(c => c.id === id);
+      if (ch) ch.ch.resize(p.clientWidth, 0);
+    } else {
+      p.classList.remove('collapsed');
+      btnCollapse.innerHTML = '&#8722;';
+      p.style.flex = '1 1 0';
+      p.style.height = '';
+      setTimeout(() => {
+        const ch = charts.find(c => c.id === id);
+        if (ch) ch.ch.resize(p.clientWidth, p.clientHeight);
+      }, 20);
+    }
+  });
+  ctrl.appendChild(btnCollapse);
+  p.appendChild(ctrl);
+
   ct.appendChild(p);
 
-  // === RESIZER LOGIC ===
-  if(isMain){
-      // Ensure CSS exists
-      if(!document.getElementById('resizer-style')){
-          const s = document.createElement('style');
-          s.id = 'resizer-style';
-          s.innerHTML = `.resizer { height: 6px; flex: 0 0 6px; background: #333; cursor: row-resize; width: 100%; transition: background 0.2s; z-index: 10; } .resizer:hover, .resizer.active { background: #2962FF; }`;
-          document.head.appendChild(s);
-      }
+  // ── Resizer between previous panel and this one
+  if (prevPanel) _addResizer(prevPanel, p);
 
-      const resizer = document.createElement('div');
-      resizer.className = 'resizer';
-      ct.appendChild(resizer);
-
-      let isResizing = false;
-      let startY, startHeight;
-
-      resizer.addEventListener('mousedown', (e) => {
-          isResizing = true;
-          startY = e.clientY;
-          startHeight = p.getBoundingClientRect().height;
-          resizer.classList.add('active');
-          document.body.style.cursor = 'row-resize';
-          p.style.flex = 'none'; // Disable flex grow to allow manual sizing
-          p.style.height = startHeight + 'px';
-      });
-
-      document.addEventListener('mousemove', (e) => {
-          if (!isResizing) return;
-          const dy = e.clientY - startY;
-          let newH = startHeight + dy;
-          if(newH < 100) newH = 100; // Min height for Main
-          
-          // Max height constraint (leave room for sub panels)
-          const totalH = ct.clientHeight;
-          const subPanelsCount = charts.length - 1; // logical count since 'mc' is main
-          const minSubH = 60 * subPanelsCount;
-          const maxH = totalH - minSubH - 20; // -20 buffer
-          
-          if(newH > maxH) newH = maxH;
-          
-          p.style.height = newH + 'px';
-          
-          // Force resize main chart immediately
-          charts.find(c=>c.id===id).ch.resize(p.clientWidth, newH);
-          
-          // Force resize others (flex will adjust them, but canvas needs update)
-          // We can just rely on the ResizeObserver if we added it, but let's be explicit for smoothness
-          requestAnimationFrame(() => {
-             charts.forEach(c => {
-                 if(c.id !== id) c.ch.resize(c.p.clientWidth, c.p.clientHeight);
-             });
-          });
-      });
-
-      document.addEventListener('mouseup', () => {
-          if(isResizing){
-            isResizing = false;
-            resizer.classList.remove('active');
-            document.body.style.cursor = '';
-            // Trigger resize for all to be safe
-            charts.forEach(c => c.ch.resize(c.p.clientWidth, c.p.clientHeight));
-          }
-      });
-  }
-
-  const opts={...baseOpts,width:p.clientWidth,height:p.clientHeight};
-  const ch=LightweightCharts.createChart(p,opts);
-  _getOrInitMargins(ch);
-  if(!isMain) _attachScaleMarginHandles(p, ch);
-  
-  charts.push({ch,p,id,label:lbl});
+  const opts = { ...baseOpts, autoSize: true };
+  const ch = LightweightCharts.createChart(chartInner, opts);
+  charts.push({ ch, p, id, label: lbl, series: null, lgnd });
   return ch;
 }
 
-// === MAIN CHART ===
-const mc=mkPanel('mc','PRICE',true);
-// Neutral Candle Colors
-const cs=mc.addCandlestickSeries({
-    upColor:'#2E8B57', // SeaGreen (Muted)
-    downColor:'#CD5C5C', // IndianRed (Muted)
-    borderUpColor:'#2E8B57',
-    borderDownColor:'#CD5C5C',
-    wickUpColor:'#2E8B57',
-    wickDownColor:'#CD5C5C',
-    priceFormat:{type:'price',precision:2},
-});
+// ─────────────────────────────────────────────────────────────────────────────
+// MAIN CHART
+// ─────────────────────────────────────────────────────────────────────────────
+const mc = mkPanel('mc', 'PRICE', true);
+const mainEntry = charts[0];
 
-// VISIBILITY & RESIZE FIX (Tab Open/Restore)
+const cs = mc.addCandlestickSeries({
+  upColor: '#2E8B57', downColor: '#CD5C5C',
+  borderUpColor: '#2E8B57', borderDownColor: '#CD5C5C',
+  wickUpColor: '#2E8B57', wickDownColor: '#CD5C5C',
+  priceFormat: { type: 'price', precision: 2 },
+});
+mainEntry.series = cs;
+
+// Add CANDLES item to main legend (always visible, non-toggle)
+const cLegItem = document.createElement('div');
+cLegItem.className = 'lg-item';
+cLegItem.innerHTML = '<span class="lg-dot" style="background:#888;height:10px;border-radius:2px"></span><span class="lg-name">Candles</span>';
+mainEntry.lgnd.appendChild(cLegItem);
+
+// ── VISIBILITY RESTORE ─────────────────────────────────────────────────────
+// autoSize: true handles resize automatically; we only need to handle tab switches
 document.addEventListener('visibilitychange', () => {
-    if(!document.hidden){
-        setTimeout(() => {
-            charts.forEach(c => {
-                if(c.ch && c.p) c.ch.resize(c.p.clientWidth, c.p.clientHeight);
-            });
-        }, 100);
-    }
+  if (!document.hidden) setTimeout(() => charts.forEach(c => {
+    if (c.ch && c.p.style.display !== 'none') c.ch.applyOptions({});
+  }), 100);
 });
-// Force initial resize check
-setTimeout(() => {
-    charts.forEach(c => {
-        if(c.ch && c.p && c.p.clientHeight < 50) {
-             c.p.style.flex = '1 1 0'; // Reset flex if squashed
-             c.ch.resize(c.p.clientWidth, c.p.clientHeight);
-        }
-    });
-}, 500);
 
-// RESIZE OBSERVER (Safari/Window Fix)
-const ro = new ResizeObserver(entries => {
-    window.requestAnimationFrame(() => {
-        if(!charts || charts.length===0) return;
-        charts.forEach(c => {
-            if(c.p && c.ch){
-                c.ch.resize(c.p.clientWidth, c.p.clientHeight);
-            }
-        });
-    });
-});
-if(ct) ro.observe(ct);
-
-const f=D.f;
-const cData=D.t.map((t,i)=>({time:t,open:dq(D.o[i],f),high:dq(D.h[i],f),low:dq(D.l[i],f),close:dq(D.c[i],f)}));
+// ── CANDLE DATA ────────────────────────────────────────────────────────────
+const f = D.f;
+const cData = D.t.map((t, i) => ({ time: t, open: dq(D.o[i], f), high: dq(D.h[i], f), low: dq(D.l[i], f), close: dq(D.c[i], f) }));
 cs.setData(cData);
-if(charts.length>0) charts[0].series = cs;
 
-// MARKERS & TOOLTIPS (Client-Side Generation)
-// Using Scatter LineSeries to place markers at exact prices
-const longEntrySeries = mc.addLineSeries({
-    color: '#2962FF', 
-    lineWidth: 0, 
-    pointMarkersVisible: true,
-    pointMarkersRadius: 6, 
-    crosshairMarkerVisible: false,
-    lineVisible: false,
-    lastValueVisible: false,
-    priceLineVisible: false
-});
+// ── TRADE MARKERS ─────────────────────────────────────────────────────────
+const mkSeries = (ch, color, r) => ch.addLineSeries({ color, lineWidth: 0, pointMarkersVisible: true, pointMarkersRadius: r, crosshairMarkerVisible: false, lineVisible: false, lastValueVisible: false, priceLineVisible: false });
 
-const shortEntrySeries = mc.addLineSeries({
-    color: '#FF6D00',
-    lineWidth: 0,
-    pointMarkersVisible: true,
-    pointMarkersRadius: 6, 
-    crosshairMarkerVisible: false,
-    lineVisible: false,
-    lastValueVisible: false,
-    priceLineVisible: false
-});
+const longEntrySeries  = mkSeries(mc, '#2962FF', 6);
+const shortEntrySeries = mkSeries(mc, '#FF6D00', 6);
+const exitSeries       = mkSeries(mc, '#FFFFFF',  5);
+const trailingSeries   = mkSeries(mc, '#FFD700',  4);
 
-const exitSeries = mc.addLineSeries({
-    color: '#FFFFFF',
-    lineWidth: 0,
-    pointMarkersVisible: true,
-    pointMarkersRadius: 5, 
-    crosshairMarkerVisible: false,
-    lineVisible: false,
-    lastValueVisible: false,
-    priceLineVisible: false
-});
+// Add marker legend items with toggle
+_mkLegendItem('Long', '#2962FF', longEntrySeries, mainEntry.lgnd);
+_mkLegendItem('Short', '#FF6D00', shortEntrySeries, mainEntry.lgnd);
+_mkLegendItem('Exit', '#FFFFFF', exitSeries, mainEntry.lgnd);
 
-const trailingSeries = mc.addLineSeries({
-    color: '#FFFF00', // Yellow
-    lineWidth: 0,
-    pointMarkersVisible: true,
-    pointMarkersRadius: 4, 
-    crosshairMarkerVisible: false,
-    lineVisible: false,
-    lastValueVisible: false,
-    priceLineVisible: false
-});
-
-const leData = [];
-const seData = [];
-const exData = [];
-const taData = [];
+const leData = [], seData = [], exData = [], taData = [];
 const tooltipMap = new Map();
 
-if(T.list && Array.isArray(T.list)){
-    T.list.forEach(tr => {
-        // ENTRY
-        if(tr.entry_ts !== null) {
-            if(tr.type === 'LONG') {
-                leData.push({time: tr.entry_ts, value: tr.ep});
-            } else {
-                seData.push({time: tr.entry_ts, value: tr.ep});
-            }
-            // Add to tooltip map
-            tooltipMap.set(tr.entry_ts, tr);
-        }
-        
-        // EXIT
-        if(tr.exit_ts !== null) {
-            exData.push({time: tr.exit_ts, value: tr.xp});
-            
-            // Map exit time too (if different from entry). 
-            // Note: If multiple trades close at same candle, last one wins.
-            if(!tooltipMap.has(tr.exit_ts)) {
-                tooltipMap.set(tr.exit_ts, tr);
-            }
-        }
-
-        // TRAILING ACTIVATION
-        if(tr.ta_ts !== null && tr.ta_p !== null) {
-            taData.push({time: tr.ta_ts, value: tr.ta_p});
-        }
-    });
-    
-    // Sort required by Lightweight Charts
-    leData.sort((a,b) => a.time - b.time);
-    seData.sort((a,b) => a.time - b.time);
-    exData.sort((a,b) => a.time - b.time);
-    taData.sort((a,b) => a.time - b.time);
-
-    longEntrySeries.setData(leData);
-    shortEntrySeries.setData(seData);
-    exitSeries.setData(exData);
-    trailingSeries.setData(taData);
+if (T.list && Array.isArray(T.list)) {
+  T.list.forEach(tr => {
+    if (tr.entry_ts !== null) {
+      (tr.type === 'LONG' ? leData : seData).push({ time: tr.entry_ts, value: tr.ep });
+      tooltipMap.set(tr.entry_ts, tr);
+    }
+    if (tr.exit_ts !== null) {
+      exData.push({ time: tr.exit_ts, value: tr.xp });
+      if (!tooltipMap.has(tr.exit_ts)) tooltipMap.set(tr.exit_ts, tr);
+    }
+    if (tr.ta_ts !== null && tr.ta_p !== null) taData.push({ time: tr.ta_ts, value: tr.ta_p });
+  });
+  [leData, seData, exData, taData].forEach(a => a.sort((x, y) => x.time - y.time));
+  longEntrySeries.setData(leData);
+  shortEntrySeries.setData(seData);
+  exitSeries.setData(exData);
+  trailingSeries.setData(taData);
+  if (taData.length > 0) _mkLegendItem('Trail', '#FFD700', trailingSeries, mainEntry.lgnd);
 }
 
-// OVERLAYS (MA, Bands)
-if(I.overlays && Array.isArray(I.overlays)){
-    I.overlays.forEach(ov=>{
-        try{
-            if(ov.v && ov.v.length>0){
-                const ls=mc.addLineSeries({
-                    color:ov.color||'#1C86EE', // Rich Dodger Blue
-                    lineWidth:1,
-                    crosshairMarkerVisible:false,
-                    priceLineVisible:false,
-                    lastValueVisible:false
-                });
-                ls.setData(ov.v.map((v,i)=>({time:ov.t[i],value:v!==null?dq(v,ov.f):null})).filter(x=>x.value!==null));
-            }
-        }catch(e){}
-    });
+// ── OVERLAYS (MA, Bands, etc.) ─────────────────────────────────────────────
+if (I.overlays && Array.isArray(I.overlays)) {
+  I.overlays.forEach(ov => {
+    try {
+      if (ov.v && ov.v.length > 0) {
+        const ls = mc.addLineSeries({ color: ov.color || '#79C0FF', lineWidth: 1, crosshairMarkerVisible: false, priceLineVisible: false, lastValueVisible: false });
+        ls.setData(ov.v.map((v, i) => ({ time: ov.t[i], value: v !== null ? dq(v, ov.f) : null })).filter(x => x.value !== null));
+        _mkLegendItem(ov.name || 'IND', ov.color || '#79C0FF', ls, mainEntry.lgnd);
+      }
+    } catch(e) {}
+  });
 }
 
-// === VOLUME (Separate Panel) ===
-if(D.vol && D.vol.length>0){
-    const vc = mkPanel('vc', 'VOL', false);
-    
-    // Configurar márgenes para que ocupe bien su panel
-    vc.priceScale('right').applyOptions({
-        scaleMargins: { top: 0.1, bottom: 0 },
-        borderVisible: false,
-        autoScale: true,
-    });
-    
-    const vs = vc.addHistogramSeries({
-        color: '#4F94CD', // Rich Steel Blue
-        priceFormat: { type: 'volume' },
-        priceLineVisible: false,
-        lastValueVisible: true, // Mostrar valor actual en eje Y
-    });
-
-    vs.setData(D.t.map((t,i)=>({
-        time:t, 
-        value:D.vol[i], 
-        color: D.c[i] >= D.o[i] ? 'rgba(38, 166, 154, 0.5)' : 'rgba(239, 83, 80, 0.5)' // Green/Red muted
-    })));
-    
-    // Registrar para updates
-    const vi = charts.findIndex(x=>x.id==='vc');
-    if(vi>=0) charts[vi].series = vs;
+// ── VOLUME PANEL ───────────────────────────────────────────────────────────
+if (D.vol && D.vol.length > 0) {
+  const vc = mkPanel('vc', 'VOL', false);
+  vc.priceScale('right').applyOptions({ scaleMargins: { top: 0.1, bottom: 0 }, borderVisible: false, autoScale: true });
+  const vs = vc.addHistogramSeries({ color: '#4F94CD', priceFormat: { type: 'volume' }, priceLineVisible: false, lastValueVisible: true });
+  vs.setData(D.t.map((t, i) => ({ time: t, value: D.vol[i], color: D.c[i] >= D.o[i] ? 'rgba(38,166,154,.5)' : 'rgba(239,83,80,.5)' })));
+  const vi = charts.findIndex(x => x.id === 'vc');
+  if (vi >= 0) {
+    charts[vi].series = vs;
+    _mkLegendItem('VOL', '#4F94CD', vs, charts[vi].lgnd);
+  }
 }
 
-// === INDICATOR PANELS ===
-if(I.sub_panels){
-    I.sub_panels.forEach((grp,i)=>{
-        const pc=mkPanel('sp'+i, grp.title, false);
-        grp.series.forEach(ser => {
-            let s;
-            const data = ser.data.v.map((v,idx)=>({time:ser.data.t[idx],value:v!==null?dq(v,ser.data.f):null})).filter(x=>x.value!==null);
-            
-            if(ser.type==='histogram'){
-                s=pc.addHistogramSeries({color:ser.color,priceLineVisible:false,base:0});
-            }else{
-                s=pc.addLineSeries({color:ser.color,lineWidth:1,priceLineVisible:false,crosshairMarkerVisible:false});
-                
-                if(ser.bounds){
-                    const b=ser.bounds;
-                    
-                    // Helper to get color and style for bound
-                    const getBoundStyle = (key) => {
-                        const k = key.toLowerCase();
-                        if(k.includes('upper') || k.includes('hi')) return { c: 'rgba(255, 82, 82, 0.6)', s: 2 }; // Red for Short Entry Zone
-                        if(k.includes('lower') || k.includes('lo')) return { c: 'rgba(76, 175, 80, 0.6)', s: 2 }; // Green for Long Entry Zone
-                        return { c: 'rgba(255, 255, 255, 0.3)', s: 2 }; // Neutral/Mid
-                    };
+// ── INDICATOR SUB-PANELS ───────────────────────────────────────────────────
+if (I.sub_panels) {
+  I.sub_panels.forEach((grp, i) => {
+    const pc = mkPanel('sp' + i, grp.title, false);
+    const pi = charts.findIndex(x => x.id === 'sp' + i);
+    let firstSeries = null;
 
-                    // Iterate explicitly to assign correct colors
-                    [
-                        {k:'upper', v:b.upper}, 
-                        {k:'lower', v:b.lower}, 
-                        {k:'mid', v:b.mid}, 
-                        {k:'hi', v:b.hi}, 
-                        {k:'lo', v:b.lo}
-                    ].forEach(item => {
-                        if(item.v !== undefined && item.v !== null){
-                             const style = getBoundStyle(item.k);
-                             const bl=pc.addLineSeries({
-                                 color: style.c,
-                                 lineWidth: 1,
-                                 lineStyle: style.s,
-                                 priceLineVisible:false,
-                                 lastValueVisible:false,
-                                 crosshairMarkerVisible:false
-                             });
-                             bl.setData(ser.data.t.map(t=>({time:t, value:item.v})));
-                        }
-                    });
-                }
-                if(ser.zero_line){
-                     const zl=pc.addLineSeries({color:'rgba(255, 255, 255, 0.2)',lineWidth:1,lineStyle:2});
-                     zl.setData(ser.data.t.map(t=>({time:t,value:0})));
-                }
-            }
-            s.setData(data);
-            
-            // === ADD MARKERS TO INDICATOR SERIES ===
-            // Filter trades within this series timeframe
-            // We use the raw trade list T.list
-            if(T && T.list && T.list.length > 0){
-                const indMarkers = [];
-                const firstTs = ser.data.t[0];
-                const lastTs = ser.data.t[ser.data.t.length-1];
-                
-                // Map timestamps to values for precise placement if needed, 
-                // but setMarkers works relative to the checking visible range? 
-                // No, setMarkers is for the entire series.
-                
-                T.list.forEach(tr => {
-                    // Entry Marker - Blue (Long) / Orange (Short) Circles
-                    if(tr.entry_ts && tr.entry_ts >= firstTs && tr.entry_ts <= lastTs){
-                        indMarkers.push({
-                            time: tr.entry_ts,
-                            position: 'inBar', // Places it on the data point value
-                            color: tr.type === 'LONG' ? '#2962FF' : '#FF6D00',
-                            shape: 'circle',
-                            size: 1
-                        });
-                    }
-                    // Exit Marker - White Circle
-                    if(tr.exit_ts && tr.exit_ts >= firstTs && tr.exit_ts <= lastTs){
-                        indMarkers.push({
-                            time: tr.exit_ts,
-                            position: 'inBar',
-                            color: '#FFFFFF', 
-                            shape: 'circle',
-                            size: 1
-                        });
-                    }
-                });
-                s.setMarkers(indMarkers);
-            }
+    grp.series.forEach(ser => {
+      let s;
+      const data = ser.data.v.map((v, idx) => ({ time: ser.data.t[idx], value: v !== null ? dq(v, ser.data.f) : null })).filter(x => x.value !== null);
 
-            const pi = charts.findIndex(x=>x.id==='sp'+i);
-            if(pi>=0) charts[pi].series = s;
+      if (ser.type === 'histogram') {
+        s = pc.addHistogramSeries({ color: ser.color, priceLineVisible: false, base: 0 });
+      } else {
+        s = pc.addLineSeries({ color: ser.color, lineWidth: 1, priceLineVisible: false, crosshairMarkerVisible: false, lastValueVisible: false });
+        if (ser.bounds) {
+          const b = ser.bounds;
+          const bStyle = k => {
+            const kl = k.toLowerCase();
+            if (kl.includes('upper') || kl.includes('hi')) return { c: 'rgba(255,82,82,.5)', s: 2 };
+            if (kl.includes('lower') || kl.includes('lo')) return { c: 'rgba(76,175,80,.5)', s: 2 };
+            return { c: 'rgba(255,255,255,.2)', s: 2 };
+          };
+          [{ k: 'upper', v: b.upper }, { k: 'lower', v: b.lower }, { k: 'mid', v: b.mid }, { k: 'hi', v: b.hi }, { k: 'lo', v: b.lo }].forEach(item => {
+            if (item.v !== undefined && item.v !== null) {
+              const st = bStyle(item.k);
+              const bl = pc.addLineSeries({ color: st.c, lineWidth: 1, lineStyle: st.s, priceLineVisible: false, lastValueVisible: false, crosshairMarkerVisible: false });
+              bl.setData(ser.data.t.map(t => ({ time: t, value: item.v })));
+            }
+          });
+        }
+        if (ser.zero_line) {
+          const zl = pc.addLineSeries({ color: 'rgba(255,255,255,.15)', lineWidth: 1, lineStyle: 2, lastValueVisible: false, priceLineVisible: false });
+          zl.setData(ser.data.t.map(t => ({ time: t, value: 0 })));
+        }
+      }
+      s.setData(data);
+      if (!firstSeries) firstSeries = s;
+
+      // Trade markers on indicator
+      if (T && T.list && T.list.length > 0) {
+        const firstTs = ser.data.t[0], lastTs = ser.data.t[ser.data.t.length - 1];
+        const indMarkers = T.list.flatMap(tr => {
+          const m = [];
+          if (tr.entry_ts && tr.entry_ts >= firstTs && tr.entry_ts <= lastTs)
+            m.push({ time: tr.entry_ts, position: 'inBar', color: tr.type === 'LONG' ? '#2962FF' : '#FF6D00', shape: 'circle', size: 1 });
+          if (tr.exit_ts && tr.exit_ts >= firstTs && tr.exit_ts <= lastTs)
+            m.push({ time: tr.exit_ts, position: 'inBar', color: '#FFFFFF', shape: 'circle', size: 1 });
+          return m;
         });
+        if (indMarkers.length > 0) s.setMarkers(indMarkers);
+      }
+
+      if (pi >= 0) {
+        charts[pi].series = firstSeries;
+        _mkLegendItem(ser.name || 'IND', ser.color, s, charts[pi].lgnd);
+      }
     });
+  });
 }
 
-// === SYNC & RESIZE ===
-// TimeScale visible only on last chart
-if(charts.length>0) charts[charts.length-1].ch.timeScale().applyOptions({visible:true});
+// ── EQUITY PANEL (hidden by default) ──────────────────────────────────────
+let equityPanelId = null;
+if (E && E.v && E.v.length >= 2 && E.t && E.t.length >= 2) {
+  const eqCh = mkPanel('eq', 'EQUITY', false);
+  const eEntry = charts.find(x => x.id === 'eq');
+  const ep = eEntry.p; // DOM panel element
+  ep.style.display = 'none'; // hidden by default
 
-// Chart Sync
-charts.forEach(c1=>{
-    if(!c1.ch)return;
-    c1.ch.timeScale().subscribeVisibleTimeRangeChange(r=>{
-        if(syncingCharts || !r) return;
-        syncingCharts=true;
-        charts.forEach(c2=>{
-            if(c2!==c1 && c2.ch) c2.ch.timeScale().setVisibleRange(r);
-        });
-        syncingCharts=false;
-    });
+  // Equity as % change from saldo_inicial
+  const si = E.si > 0 ? E.si : E.v[0];
+  const eqData = E.t.map((t, i) => ({ time: t, value: ((E.v[i] / si) - 1) * 100 }));
+
+  eqCh.priceScale('right').applyOptions({ scaleMargins: { top: 0.1, bottom: 0.1 }, borderVisible: false, autoScale: true });
+  const eqLine = eqCh.addLineSeries({
+    color: '#79C0FF', lineWidth: 1.5,
+    priceLineVisible: false, lastValueVisible: true, crosshairMarkerVisible: false,
+    priceFormat: { type: 'custom', minMove: 0.01, formatter: v => v.toFixed(2) + '%' }
+  });
+  // Zero line
+  const eqZero = eqCh.addLineSeries({ color: 'rgba(255,255,255,.15)', lineWidth: 1, lineStyle: 2, lastValueVisible: false, priceLineVisible: false });
+  eqZero.setData(E.t.map(t => ({ time: t, value: 0 })));
+  eqLine.setData(eqData);
+
+  if (eEntry) {
+    eEntry.series = eqLine;
+    _mkLegendItem('Equity %', '#79C0FF', eqLine, eEntry.lgnd);
+  }
+  equityPanelId = 'eq';
+
+  // Resizer for equity panel — already added by mkPanel, but make sure it's also hidden
+  const rszEl = ep.previousElementSibling;
+  if (rszEl && rszEl.classList.contains('rsz')) rszEl.style.display = 'none';
+
+  // Equity toggle button
+  document.getElementById('eq-toggle').addEventListener('click', function() {
+    const isVisible = ep.style.display !== 'none';
+    if (isVisible) {
+      ep.style.display = 'none';
+      if (rszEl) rszEl.style.display = 'none';
+      this.classList.remove('active');
+    } else {
+      ep.style.display = '';
+      if (rszEl) rszEl.style.display = '';
+      this.classList.add('active');
+      setTimeout(() => {
+        ep.style.flex = '1 1 0';
+        eqLine && eqLine.applyOptions({});
+        const ec = charts.find(c => c.id === 'eq');
+        if (ec) ec.ch.resize(ep.clientWidth, ep.clientHeight);
+        // Sync time range
+        if (charts.length > 0) {
+          try { const r = charts[0].ch.timeScale().getVisibleRange(); if (r) ec.ch.timeScale().setVisibleRange(r); } catch(e) {}
+        }
+      }, 20);
+    }
+  });
+}
+
+// ── TIME SCALE: visible only on last VISIBLE panel ────────────────────────
+const lastVisibleChart = [...charts].reverse().find(c => c.id !== 'eq');
+if (lastVisibleChart) lastVisibleChart.ch.timeScale().applyOptions({ visible: true });
+
+// ── CHART SYNC ────────────────────────────────────────────────────────────
+charts.forEach(c1 => {
+  if (!c1.ch) return;
+  c1.ch.timeScale().subscribeVisibleTimeRangeChange(r => {
+    if (syncingCharts || !r) return;
+    syncingCharts = true;
+    charts.forEach(c2 => { if (c2 !== c1 && c2.ch && c2.p.style.display !== 'none') c2.ch.timeScale().setVisibleRange(r); });
+    syncingCharts = false;
+  });
 });
 
-// Resize
-// Resize observer handled earlier (lines ~1400)
-// Removed duplicate to prevent conflicts
+// ── ZOOM CONTROLS ──────────────────────────────────────────────────────────
+document.getElementById('zoomIn').onclick  = () => charts.forEach(c => c.ch.timeScale().applyOptions({ barSpacing: c.ch.timeScale().options().barSpacing * 1.2 }));
+document.getElementById('zoomOut').onclick = () => charts.forEach(c => c.ch.timeScale().applyOptions({ barSpacing: c.ch.timeScale().options().barSpacing * 0.8 }));
 
-// Initial Fit - START AT BEGINNING
-setTimeout(()=>{
-    charts.forEach(c=>{
-        if(c.ch) {
-            // Scroll to the start (left)
-            // Using logical range to show first ~100 bars
-            c.ch.timeScale().setVisibleLogicalRange({ from: 0, to: 150 });
-        }
-    });
-}, 100);
+// ── STATS PANEL TOGGLE ──────────────────────────────────────────────────────
+document.getElementById('stats-toggle').addEventListener('click', function() {
+  const sp = document.getElementById('sp');
+  sp.classList.toggle('hidden');
+  this.classList.toggle('active');
+});
 
-// Global Crosshair & Keyboard Nav
-const gl=document.getElementById('globalCrosshair');
-const gll=document.getElementById('globalCrosshairLabel');
+// ── INITIAL VIEW ────────────────────────────────────────────────────────────
+setTimeout(() => {
+  charts.forEach(c => { if (c.ch && c.p.style.display !== 'none') c.ch.timeScale().setVisibleLogicalRange({ from: 0, to: 150 }); });
+}, 200);
+
+// ── GLOBAL CROSSHAIR ────────────────────────────────────────────────────────
+const gl  = document.getElementById('gc');
+const gll = document.getElementById('gcl');
 let lastFocusedTime = null;
 
-function updateCrosshair(param, sourceCh){
-   if(!param.time || !param.point){
-       gl.style.display='none'; gll.style.display='none';
-       return;
-   }
-   
-   // TRACK FOCUS
-   lastFocusedTime = param.time;
+function updateCrosshair(param, sourceCh) {
+  if (!param.time || !param.point) {
+    gl.style.display = 'none'; gll.style.display = 'none'; return;
+  }
+  lastFocusedTime = param.time;
+  gl.style.display  = 'block'; gl.style.left  = param.point.x + 'px';
+  gll.style.display = 'block'; gll.style.left = param.point.x + 'px';
+  const date = new Date(param.time * 1000);
+  gll.textContent = date.toISOString().slice(0, 16).replace('T', ' ');
 
-   gl.style.display='block';
-   gl.style.left=param.point.x+'px';
-   
-   // Label
-   gll.style.display='block';
-   gll.style.left=param.point.x+'px';
-   const date = new Date(param.time*1000);
-   gll.textContent = date.toISOString().slice(0,16).replace('T',' ');
-   
-   // Sync others (Time only - vertical line)
-   // Sync others (Time only - vertical line + Horizontal Magnet)
-   charts.forEach(c=>{
-       if(c.ch!==sourceCh && c.ch && c.series){
-           const data = _findDataAt(c.series, param.time);
-           if(data){
-               const val = data.value !== undefined ? data.value : data.close;
-               c.ch.setCrosshairPosition(val, param.time, c.series);
-           } else {
-               c.ch.clearCrosshairPosition();
-           }
-       }
-   });
-   
-   // Tooltip Update via Map Lookup (Exact Match)
-   const trade = tooltipMap.get(param.time);
-   const tt=document.getElementById('tt');
-   
-   if(trade){
-       tt.style.display='block';
-       tt.style.left=(param.point.x+20)+'px';
-       tt.style.top=(param.point.y+20)+'px';
-       
-       // Keep tooltip inside window
-       const rect = tt.getBoundingClientRect();
-       if(rect.right > window.innerWidth) tt.style.left = (param.point.x - rect.width - 20) + 'px';
-       
-       const cls = trade.pnl>=0?'win':'loss';
-       const pnlSign = trade.pnl>=0?'+':'';
-       
-       tt.innerHTML=`
-         <div style="font-weight:bold;margin-bottom:8px;display:flex;justify-content:space-between;align-items:center">
-            <span style="color:${trade.type==='LONG'?'#2962FF':'#FF6D00'}">${trade.type}</span>
-            <span class="tt-badge ${cls}">${trade.pnl>=0?'WIN':'LOSS'}</span>
-         </div>
-         <div class="tt-row"><span class="tt-label">Entry</span><span class="tt-val">$${trade.ep.toFixed(2)}</span></div>
-         <div class="tt-row"><span class="tt-label">Exit</span><span class="tt-val">$${trade.xp.toFixed(2)}</span></div>
-         <div class="tt-row"><span class="tt-label">Qty</span><span class="tt-val">${trade.qty}</span></div>
-         <div class="tt-row"><span class="tt-label">Dur</span><span class="tt-val">${trade.dur}</span></div>
-         <div class="tt-row"><span class="tt-label">Fees</span><span class="tt-val" style="color:#D29922">$${trade.fees.toFixed(2)}</span></div>
-         <div class="tt-row" style="margin-top:8px;border-top:1px solid #333;padding-top:8px">
-            <span class="tt-label">Net PnL</span>
-            <span class="tt-val ${trade.pnl>=0?'pos':'neg'}">${pnlSign}$${trade.pnl.toFixed(2)}</span>
-         </div>
-       `;
-   }else{
-       tt.style.display='none';
-       // Update OHLC header
-       const candle = cData.find(c=>c.time===param.time);
-       if(candle){
-           document.getElementById('tv').textContent=gll.textContent;
-           document.getElementById('ov').textContent=candle.open.toFixed(2);
-           document.getElementById('hv').textContent=candle.high.toFixed(2);
-           document.getElementById('lv').textContent=candle.low.toFixed(2);
-           const cEl = document.getElementById('cv');
-           cEl.textContent=candle.close.toFixed(2);
-           cEl.className = candle.close >= candle.open ? 'ohlc-val up' : 'ohlc-val down';
-       }
-   }
+  charts.forEach(c => {
+    if (c.ch !== sourceCh && c.ch && c.series && c.p.style.display !== 'none') {
+      try {
+        const data = _findDataAt(c.series, param.time);
+        if (data) {
+          const val = data.value !== undefined ? data.value : data.close;
+          if (val !== undefined && val !== null) c.ch.setCrosshairPosition(val, param.time, c.series);
+        } else {
+          c.ch.clearCrosshairPosition();
+        }
+      } catch(e) {}
+    }
+  });
+
+  const trade = tooltipMap.get(param.time);
+  const tt = document.getElementById('tt');
+  if (trade) {
+    tt.style.display = 'block';
+    tt.style.left = (param.point.x + 20) + 'px';
+    tt.style.top  = (param.point.y + 20) + 'px';
+    const rect = tt.getBoundingClientRect();
+    if (rect.right > window.innerWidth) tt.style.left = (param.point.x - rect.width - 20) + 'px';
+    const cls = trade.pnl >= 0 ? 'win' : 'loss';
+    const sign = trade.pnl >= 0 ? '+' : '';
+    const pnlCls = trade.pnl >= 0 ? 'pos' : 'neg';
+    tt.innerHTML = `
+      <div style="font-weight:700;margin-bottom:8px;display:flex;justify-content:space-between;align-items:center">
+        <span style="color:${trade.type === 'LONG' ? '#2962FF' : '#FF6D00'}">${trade.type}</span>
+        <span class="tt-badge ${cls}">${trade.pnl >= 0 ? 'WIN' : 'LOSS'}</span>
+      </div>
+      <div class="tt-row"><span class="tt-lbl">Entry</span><span class="tt-val">$${trade.ep.toFixed(2)}</span></div>
+      <div class="tt-row"><span class="tt-lbl">Exit</span><span class="tt-val">$${trade.xp.toFixed(2)}</span></div>
+      <div class="tt-row"><span class="tt-lbl">Dur</span><span class="tt-val">${trade.dur}</span></div>
+      <div class="tt-row"><span class="tt-lbl">Fees</span><span class="tt-val" style="color:#D29922">$${trade.fees.toFixed(2)}</span></div>
+      <div class="tt-row" style="margin-top:7px;border-top:1px solid #2a2a2a;padding-top:7px">
+        <span class="tt-lbl">Net PnL</span>
+        <span class="tt-val ${pnlCls}">${sign}$${trade.pnl.toFixed(2)}</span>
+      </div>`;
+  } else {
+    tt.style.display = 'none';
+    const candle = cData.find(c => c.time === param.time);
+    if (candle) {
+      document.getElementById('tv').textContent = gll.textContent;
+      document.getElementById('ov').textContent = candle.open.toFixed(2);
+      document.getElementById('hv').textContent = candle.high.toFixed(2);
+      document.getElementById('lv').textContent = candle.low.toFixed(2);
+      const cEl = document.getElementById('cv');
+      cEl.textContent = candle.close.toFixed(2);
+      cEl.className = candle.close >= candle.open ? 'ov up' : 'ov dn';
+    }
+  }
 }
 
-charts.forEach(c=>{
-    if(c.ch) c.ch.subscribeCrosshairMove(p=>updateCrosshair(p, c.ch));
+charts.forEach(c => { if (c.ch) c.ch.subscribeCrosshairMove(p => updateCrosshair(p, c.ch)); });
+
+ct.addEventListener('mouseleave', () => {
+  gl.style.display = 'none'; gll.style.display = 'none';
+  charts.forEach(c => { if (c.ch) c.ch.clearCrosshairPosition(); });
 });
 
-ct.addEventListener('mouseleave', ()=>{
-    gl.style.display='none';
-    gll.style.display='none';
-    charts.forEach(c=>{if(c.ch)c.ch.clearCrosshairPosition();});
-});
-
-// Zoom Controls
-document.getElementById('zoomIn').onclick = () => {
-    charts.forEach(c=>c.ch.timeScale().applyOptions({barSpacing: c.ch.timeScale().options().barSpacing * 1.2}));
-};
-document.getElementById('zoomOut').onclick = () => {
-    charts.forEach(c=>c.ch.timeScale().applyOptions({barSpacing: c.ch.timeScale().options().barSpacing * 0.8}));
-};
-
-// KEYBOARD NAVIGATION
+// ── KEYBOARD NAVIGATION ───────────────────────────────────────────────────
 document.addEventListener('keydown', e => {
-    if(e.key === 'ArrowLeft' || e.key === 'ArrowRight'){
-        e.preventDefault();
-        
-        let idx = -1;
-        if(lastFocusedTime !== null) idx = D.t.indexOf(lastFocusedTime);
-        if(idx === -1) idx = D.t.length - 1; // Default to end if no focus
-        
-        if(e.key === 'ArrowLeft') idx = Math.max(0, idx - 1);
-        else idx = Math.min(D.t.length - 1, idx + 1);
-        
-        const t = D.t[idx];
-        const candle = cData[idx];
-        if(!candle) return;
-        
-        // Use Main Chart for coords
-        const mainCh = charts[0].ch;
-        const mainSer = charts[0].series;
-        
-        const x = mainCh.timeScale().timeToCoordinate(t);
-        const y = mainSer.priceToCoordinate(candle.close);
-        
-        if(x !== null && y !== null){
-            updateCrosshair({time: t, point: {x: x, y: y}}, null);
-            mainCh.setCrosshairPosition(candle.close, t, mainSer);
-            
-            // Auto-Scroll if out of view
-            const logIdx = mainCh.timeScale().coordinateToLogical(x);
-             // Simple fallback: if coordinate is extremely left or right
-             if(x < 50 || x > mainCh.timeScale().width() - 50){
-                 mainCh.timeScale().scrollToPosition(- (D.t.length - 1 - idx), true);
-             }
-        }
+  if (e.key === 'ArrowLeft' || e.key === 'ArrowRight') {
+    e.preventDefault();
+    let idx = lastFocusedTime !== null ? D.t.indexOf(lastFocusedTime) : -1;
+    if (idx === -1) idx = D.t.length - 1;
+    idx = e.key === 'ArrowLeft' ? Math.max(0, idx - 1) : Math.min(D.t.length - 1, idx + 1);
+    const t = D.t[idx], candle = cData[idx];
+    if (!candle) return;
+    const mainCh = charts[0].ch, mainSer = charts[0].series;
+    const x = mainCh.timeScale().timeToCoordinate(t);
+    const y = mainSer.priceToCoordinate(candle.close);
+    if (x !== null && y !== null) {
+      updateCrosshair({ time: t, point: { x, y } }, null);
+      mainCh.setCrosshairPosition(candle.close, t, mainSer);
+      if (x < 50 || x > mainCh.timeScale().width() - 50)
+        mainCh.timeScale().scrollToPosition(-(D.t.length - 1 - idx), true);
     }
+  }
+  // E = toggle equity, S = toggle stats
+  if (e.key === 'e' || e.key === 'E') document.getElementById('eq-toggle')?.click();
+  if (e.key === 's' || e.key === 'S') document.getElementById('stats-toggle')?.click();
 });
 
 '''
@@ -2176,6 +2002,31 @@ def plot_trades(
             
     indicators_data["sub_panels"] = list(grouped_panels.values())
 
+    # ================== PREPARE EQUITY ==================
+    equity_out = None
+    if equity_curve and len(equity_curve) >= 2:
+        try:
+            ec = [float(v) for v in equity_curve if v is not None]
+            n_ec = len(ec)
+            n_ts = len(ts_q)
+            if n_ec >= 2 and n_ts >= 2:
+                if n_ec == n_ts:
+                    eq_vals = ec
+                    eq_ts   = ts_q.tolist()
+                elif n_ec > n_ts:
+                    # downsample: tomar los últimos n_ts valores (más relevantes)
+                    indices  = [int(round(i * (n_ec - 1) / (n_ts - 1))) for i in range(n_ts)]
+                    eq_vals  = [ec[j] for j in indices]
+                    eq_ts    = ts_q.tolist()
+                else:
+                    # upsample: distribuir equitativamente los n_ec puntos en ts_q
+                    indices = [int(round(i * (n_ts - 1) / (n_ec - 1))) for i in range(n_ec)]
+                    eq_vals = ec
+                    eq_ts   = [int(ts_q[j]) for j in indices]
+                equity_out = {"t": eq_ts, "v": eq_vals, "si": float(saldo_inicial)}
+        except Exception:
+            pass
+
     # ================== WRITE HTML ==================
     import os
     if not os.path.exists(plot_base):
@@ -2183,14 +2034,11 @@ def plot_trades(
             os.makedirs(plot_base)
         except:
             pass
-            
-    # Clean filename
-    clean_combo = "".join(c for c in str(combo) if c.isalnum() or c in ('_','-'))
+
     filename = f"TRIAL {trial_number} - {int(score)}.html"
     filepath = os.path.join(plot_base, filename)
-    
-    # Try using metric get helper or safe get
-    def _g(k): 
+
+    def _g(k):
         return metrics.get(k, 0) if metrics else 0
 
     _write_html_streaming(
@@ -2199,14 +2047,18 @@ def plot_trades(
         indicators_data,
         trades_data,
         config={
-            "activo": str(activo or "ASSET"),
-            "combo": str(combo),
-            "trial": str(trial_number),
-            "total_trades": len(df_trades) if df_trades is not None else 0,
-            "winrate": _g("winrate"),
-            "pnl_neto": _g("pnl_neto"),
-            "score": score
-        }
+            "activo":        str(activo or "ASSET"),
+            "combo":         str(combo),
+            "trial":         str(trial_number),
+            "total_trades":  len(df_trades) if df_trades is not None else 0,
+            "winrate":       _g("winrate") or _g("WINRATE_PCT") or _g("PORC_GANADORAS"),
+            "pnl_neto":      _g("pnl_neto") or _g("PNL_NETO"),
+            "score":         score,
+            "max_dd":        _g("max_dd") or _g("MAX_DD_PCT"),
+            "profit_factor": _g("profit_factor") or _g("PROFIT_FACTOR"),
+            "roi":           _g("roi") or _g("ROI_PCT"),
+        },
+        equity_data=equity_out,
     )
     
     return filepath
