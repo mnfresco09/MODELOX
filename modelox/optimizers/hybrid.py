@@ -165,7 +165,7 @@ class HybridScoringConfig:
     E_MAX: float          = 2.0   # Techo de E_score (y divisor de normalización)
     DD_THRESHOLD: float   = 27.5  # Umbral de drawdown en % (por encima → penaliza)
     MAX_DD_PENALTY: float = 2.0   # Penalización máxima de DD (en unidades de E_score)
-    TPD_THRESHOLD: float  = 0.25  # Trades/día mínimos sin penalización
+    TPD_THRESHOLD: float  = 0.10  # Trades/día mínimos sin penalización
     N_PARTS: int          = 4     # Slices temporales para anti-overfitting
     # BASE_CAPITAL: se usa saldo_inicial del BacktestConfig, no hay valor fijo aquí
 

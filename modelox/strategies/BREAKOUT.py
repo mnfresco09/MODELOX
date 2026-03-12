@@ -76,8 +76,8 @@ class EstrategiaID12BREAKVOL(EstrategiaBase):
     """
 
     # ── Identidad ──────────────────────────────────────────────────────────────
-    combinacion_id: int = 12
-    name: str           = "BREAKVOL"
+    combinacion_id: int = 1
+    name: str           = "BREAKOUT"
 
     # ── Salidas: engine global vía exits.py ────────────────────────────────────
     SALIDAS_PERSONALIZADAS: bool = False
@@ -94,8 +94,8 @@ class EstrategiaID12BREAKVOL(EstrategiaBase):
         Total combinaciones: 9 x 9 = 81 — espacio muy controlado.
         """
         return {
-            "base_window":       trial.suggest_int("base_window",       14,  14, step=2),
-            "sigma_mean_window": trial.suggest_int("sigma_mean_window", 100, 100, step=10),
+            "base_window":       trial.suggest_int("base_window",       15,  70, step=1),
+            "sigma_mean_window": trial.suggest_int("sigma_mean_window", 20, 500, step=5),
         }
 
     # ==========================================================================

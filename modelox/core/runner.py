@@ -350,6 +350,8 @@ class OptimizationRunner:
     # Régimen de mercado (filtro EMA 21/200 en 1D)
     regimen_activo: bool = False
     regimen_tipo: str = "ALCISTA"
+    regimen_buy_hold_activo: bool = False
+    regimen_buy_hold_saldo: Any = "ALL"
     regimen_df: Optional[pl.DataFrame] = None  # Pre-computado: timestamp, regime, regime_bullish
     regimen_dias_operables: int = 0
     
@@ -750,19 +752,43 @@ class OptimizationRunner:
                 t2_signals = time.perf_counter()
                 
                 # ================================================================
-                # FILTRO DE RÉGIMEN DE MERCADO (EMA 21/200 en 1D)
+                # FILTRO DE RÉGIMEN DE MERCADO (EMA 21/200 | MACD 12/26/9 en 1D)
                 # ================================================================
-                # Régimen se recalcula PER-TRIAL desde df_trial (DESPUÉS de 
+                # Régimen se recalcula PER-TRIAL desde df_trial (DESPUÉS de
                 # perturbaciones), para que reflejen el precio perturbado.
-                # Resamplear TF→1D + EMA 21/200 es ultra rápido (~μs para ~750 días).
                 if self.regimen_activo:
                     try:
                         from modelox.core.regime import compute_regime_mask_1d, apply_precomputed_regime_filter
-                        regime_df_trial = compute_regime_mask_1d(df_trial)
+                        _reg_ind = getattr(self, "regimen_indicador", "EMA")
+                        regime_df_trial = compute_regime_mask_1d(df_trial, indicador=_reg_ind)
                         signals_df, _dias_op = apply_precomputed_regime_filter(
                             signals_df, df_trial, regime_df_trial,
                             regimen_tipo=self.regimen_tipo,
+                            regimen_buy_hold_activo=self.regimen_buy_hold_activo,
+                            regimen_buy_hold_saldo=self.regimen_buy_hold_saldo,
                         )
+
+                        # Inyectar flags runtime para que el engine ajuste el tamaño
+                        # de posición en modo Buy&Hold por régimen.
+                        if "regime_buy_hold_mode" in signals_df.columns:
+                            try:
+                                _bh_mode = bool(signals_df["regime_buy_hold_mode"][0])
+                            except Exception:
+                                _bh_mode = False
+
+                            if _bh_mode:
+                                try:
+                                    _bh_all = bool(signals_df["regime_buy_hold_saldo_all"][0])
+                                except Exception:
+                                    _bh_all = True
+                                try:
+                                    _bh_saldo = float(signals_df["regime_buy_hold_saldo"][0])
+                                except Exception:
+                                    _bh_saldo = 0.0
+
+                                params_rt["__regime_buy_hold_mode"] = True
+                                params_rt["__regime_buy_hold_saldo_all"] = _bh_all
+                                params_rt["__regime_buy_hold_saldo"] = _bh_saldo
                     except Exception:
                         pass  # Fallback silencioso: operar sin filtro
                 
@@ -1063,10 +1089,17 @@ def run_single_exit_type(
         ENTRENAMIENTO_ROBUSTO_ACTIVAR = False
 
     try:
-        from general.configuracion import REGIMEN_ACTIVO, REGIMEN_TIPO
+        from general.configuracion import (
+            REGIMEN_ACTIVO, REGIMEN_TIPO,
+            REGIMEN_BUY_HOLD_ACTIVO, REGIMEN_BUY_HOLD_SALDO,
+            REGIMEN_INDICADOR,
+        )
     except ImportError:
         REGIMEN_ACTIVO = False
         REGIMEN_TIPO = "ALCISTA"
+        REGIMEN_BUY_HOLD_ACTIVO = False
+        REGIMEN_BUY_HOLD_SALDO = "ALL"
+        REGIMEN_INDICADOR = "EMA"
 
     # Pre-computar estadísticas del régimen (días operables / total)
     _regimen_dias_operables = 0
@@ -1084,8 +1117,8 @@ def run_single_exit_type(
                     _df_1m_full = _ld_regime(_path_1m)
             
             if _df_1m_full is not None and len(_df_1m_full) > 0:
-                # Computar régimen con todos los datos (EMA200 necesita warmup)
-                _regimen_df = compute_regime_mask_1d(_df_1m_full)
+                # Computar régimen con todos los datos (EMA200/MACD necesita warmup)
+                _regimen_df = compute_regime_mask_1d(_df_1m_full, indicador=REGIMEN_INDICADOR)
                 
                 # Filtrar al periodo del backtest para contar stats
                 if fecha_inicio and fecha_fin:
@@ -1169,6 +1202,10 @@ def run_single_exit_type(
                 formato_datos=_FMT,
                 comparativa_periodos_activar=_CPA,
                 comparativa_periodo=_CP,
+                regimen_activo=REGIMEN_ACTIVO,
+                regimen_tipo=REGIMEN_TIPO,
+                regimen_buy_hold_activo=bool(REGIMEN_BUY_HOLD_ACTIVO),
+                regimen_buy_hold_saldo=str(REGIMEN_BUY_HOLD_SALDO),
             ))
 
         if generar_plots and graficos_dir:
@@ -1193,13 +1230,8 @@ def run_single_exit_type(
         OPTUNA_CREATE_DATABASE = True
         GUARDAR_EQUITY_EN_DB = False
 
-    if bool(OPTUNA_CREATE_DATABASE) and bool(OPTUNA_RESET_DB_ON_START):
-        try:
-            removed = delete_strategy_database(strategy_id=getattr(strategy, "combinacion_id", None))
-            if removed > 0:
-                logger.info(f"🧹 Reset DB Optuna: eliminados {removed} archivo(s) de la estrategia.")
-        except Exception as _e:
-            logger.warning(f"No se pudo resetear la DB de estrategia: {_e}")
+    # El reinicio de la DB ahora se hace a nivel global en ejecutar.py
+    # para evitar borrar el progreso cuando se corren múltiples activos o salidas.
 
     runner = OptimizationRunner(
         config=cfg_updated, 
@@ -1242,6 +1274,9 @@ def run_single_exit_type(
     # 5c. CONFIGURAR RÉGIMEN DE MERCADO
     runner.regimen_activo = REGIMEN_ACTIVO
     runner.regimen_tipo = REGIMEN_TIPO
+    runner.regimen_indicador = REGIMEN_INDICADOR
+    runner.regimen_buy_hold_activo = bool(REGIMEN_BUY_HOLD_ACTIVO)
+    runner.regimen_buy_hold_saldo = REGIMEN_BUY_HOLD_SALDO
     runner.regimen_df = _regimen_df
     runner.regimen_dias_operables = _regimen_dias_operables
 

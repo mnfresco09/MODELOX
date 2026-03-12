@@ -125,14 +125,14 @@ class EstrategiaID2RLOG(EstrategiaBase):
     Fallback automático a Python puro si Numba no está disponible.
     """
 
-    combinacion_id: int          = 2
-    name: str                    = "RLOG"
+    combinacion_id: int          = 3
+    name: str                    = "TREND"
     SALIDAS_PERSONALIZADAS: bool = False
 
     # ==========================================================================
     def suggest_params(self, trial: Any) -> Dict[str, Any]:
         return {
-            "ols_window": trial.suggest_int  ("ols_window", 20, 120,   step=2),
+            "ols_window": trial.suggest_int  ("ols_window", 20, 120,   step=1),
             "r2_min":     trial.suggest_float("r2_min",     0.30, 0.80, step=0.01),
         }
 

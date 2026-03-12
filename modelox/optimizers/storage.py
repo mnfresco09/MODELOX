@@ -156,12 +156,17 @@ def resolve_storage_for_strategy(
     *,
     create_database: bool,
     strategy_id: Optional[int] = None,
-    reset_existing: bool = True,
+    activo: Optional[str] = None,
+    reset_existing: bool = False,
 ) -> Optional[str]:
     """Resuelve el storage SQLite por estrategia (IDx.db) o RAM.
 
-    Si ``reset_existing=True`` (default), elimina automáticamente la DB previa
-    de esa estrategia antes de iniciar una nueva ejecución.
+    El nombre del archivo es siempre IDx.db (sin activo) para mantener
+    compatibilidad con optuna-dashboard sqlite:///DATABASE/IDx.db.
+    Cada activo genera un estudio distinto dentro del mismo archivo.
+
+    reset_existing=False (default): acumula estudios de distintos activos.
+    reset_existing=True: borra el DB completo antes de arrancar (reset manual).
     """
     if not create_database:
         return None
@@ -177,7 +182,6 @@ def resolve_storage_for_strategy(
         try:
             delete_database_file(db_name, delete_root_legacy=True)
         except Exception:
-            # Nunca bloquear el arranque por problemas de borrado (locks/permisos).
             pass
 
     db_path = get_database_file_path(db_name)

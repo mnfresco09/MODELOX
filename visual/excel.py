@@ -15,6 +15,7 @@ import re
 import math
 import datetime
 import logging
+import bisect
 from copy import deepcopy
 from dataclasses import dataclass, field
 from typing import Any, Dict, List, Optional, Protocol, Tuple
@@ -167,6 +168,12 @@ class ExcelReporter:
     comparativa_periodos_activar: bool = True
     comparativa_periodo: str = "1mes"
 
+    # Régimen de mercado (para filtrar períodos inactivos)
+    regimen_activo: bool = False
+    regimen_tipo: str = "ALCISTA"
+    regimen_buy_hold_activo: bool = False
+    regimen_buy_hold_saldo: str = "ALL"  # "ALL" o importe fijo ("1500")
+
     _csv_resumen_path: Optional[str] = field(default=None, init=False, repr=False)
     _resumen_rows: List[Dict[str, Any]] = field(default_factory=list, init=False, repr=False)
     _trade_candidates: List[Dict[str, Any]] = field(default_factory=list, init=False, repr=False)
@@ -248,18 +255,63 @@ class ExcelReporter:
         # Cargar precio continuo UNA SOLA VEZ (cache para todos los trials)
         _t0 = _t.perf_counter()
         _cached_prices, _cached_timestamps = None, None
+        _cached_prices_5k, _cached_ts_5k = None, None
         try:
-            _cached_prices, _cached_timestamps = _load_price_with_timestamps(
+            # 5000 pts para comparativa períodos (alta resolución)
+            _cached_prices_5k, _cached_ts_5k = _load_price_with_timestamps(
                 activo=self._activo or "BTC",
                 datos_dir=self.datos_dir,
                 fecha_inicio=self.fecha_inicio,
                 fecha_fin=self.fecha_fin,
-                n_points=500,
+                n_points=5000,
             )
+            # 500 pts para gráfica B&H (downsampled from the 5k)
+            if _cached_prices_5k and len(_cached_prices_5k) > 500:
+                n5k = len(_cached_prices_5k)
+                idx500 = [int(round(i * (n5k - 1) / 499)) for i in range(500)]
+                _cached_prices = [_cached_prices_5k[i] for i in idx500]
+                _cached_timestamps = [_cached_ts_5k[i] for i in idx500]
+            else:
+                _cached_prices = _cached_prices_5k
+                _cached_timestamps = _cached_ts_5k
         except Exception:
             pass
         _t1 = _t.perf_counter()
+
         logger.debug(f"[EXCEL DEBUG] Precio B&H cargado en {(_t1-_t0)*1000:.0f}ms ({len(_cached_prices) if _cached_prices else 0} pts)")
+
+        # Pre-computar régimen diario UNA SOLA VEZ (para comparativa períodos)
+        _cached_regime_daily = None
+        if self.regimen_activo:
+            try:
+                import polars as _pl_regime
+                from modelox.core.regime import compute_regime_mask_1d
+                _act_up = str(self._activo or "BTC").strip().upper()
+                _base = self.datos_dir or "datos"
+                _price_path = None
+                for _pat in [f"{_act_up}_ohlcv_1m.feather", f"{_act_up}_ohlcv_1m.parquet",
+                             f"{_act_up.lower()}_ohlcv_1m.feather"]:
+                    _p = os.path.join(_base, _pat)
+                    if os.path.exists(_p):
+                        _price_path = _p
+                        break
+                if _price_path:
+                    _t_reg0 = _t.perf_counter()
+                    _ext = os.path.splitext(_price_path)[1].lower()
+                    if _ext in (".feather", ".fthr"):
+                        _df_1m = _pl_regime.read_ipc(_price_path, memory_map=False)
+                    else:
+                        _df_1m = _pl_regime.read_parquet(_price_path)
+                    _regime_df = compute_regime_mask_1d(_df_1m)
+                    _cached_regime_daily = {}
+                    for _row in _regime_df.iter_rows(named=True):
+                        _d = str(_row["timestamp"])[:10]
+                        _cached_regime_daily[_d] = _row["regime"]
+                    del _df_1m, _regime_df
+                    _t_reg1 = _t.perf_counter()
+                    logger.debug(f"[EXCEL DEBUG] Régimen diario cacheado en {(_t_reg1-_t_reg0)*1000:.0f}ms ({len(_cached_regime_daily)} días)")
+            except Exception as _e:
+                logger.debug(f"[EXCEL DEBUG] Régimen no disponible: {_e}")
 
         self._trade_candidates.sort(key=lambda x: x["score"], reverse=True)
         for candidate in self._trade_candidates[:self.max_archivos]:
@@ -267,7 +319,10 @@ class ExcelReporter:
                 _t2 = _t.perf_counter()
                 self._write_trades_excel(base_dir, candidate,
                                          cached_prices=_cached_prices,
-                                         cached_timestamps=_cached_timestamps)
+                                         cached_timestamps=_cached_timestamps,
+                                         cached_prices_5k=_cached_prices_5k,
+                                         cached_ts_5k=_cached_ts_5k,
+                                         cached_regime_daily=_cached_regime_daily)
                 _t3 = _t.perf_counter()
                 logger.debug(f"[EXCEL DEBUG] Trial {candidate['trial_number']} Excel en {(_t3-_t2)*1000:.0f}ms")
             except Exception as e:
@@ -332,7 +387,9 @@ class ExcelReporter:
                 writer.writerow(csv_row)
 
     def _write_trades_excel(self, trades_dir: str, candidate: Dict[str, Any],
-                            cached_prices=None, cached_timestamps=None):
+                            cached_prices=None, cached_timestamps=None,
+                            cached_prices_5k=None, cached_ts_5k=None,
+                            cached_regime_daily=None):
         import time as _t
         trades = candidate["trades"]
         if trades is None or (hasattr(trades, "empty") and trades.empty):
@@ -367,6 +424,13 @@ class ExcelReporter:
             pass
         _t1 = _t.perf_counter()
 
+        # Desglose ROI por modo (Estrategia vs Buy&Hold) para tabla lateral
+        regime_mode_breakdown = _calcular_aporte_roi_por_modo(
+            df_trades,
+            cached_price_vals=cached_prices_5k,
+            cached_price_ts=cached_ts_5k,
+        )
+
         exit_type = str(candidate["params"].get("__exit_type", candidate["params"].get("exit_type", "FIXED"))).upper()
         df_export = _preparar_df_trades(df_trades, exit_type)
         _t2 = _t.perf_counter()
@@ -374,6 +438,7 @@ class ExcelReporter:
         saldo = candidate['params'].get('__saldo_usado') or 0
         apal  = candidate['params'].get('__apalancamiento_max') or 0
         vol   = saldo * apal
+        bh_saldo_str = str(self.regimen_buy_hold_saldo).strip().upper() if self.regimen_buy_hold_activo else None
 
         filename = f"TRIAL {candidate['trial_number']} - {int(candidate['score'])}.xlsx"
         filepath = os.path.join(trades_dir, filename)
@@ -383,12 +448,17 @@ class ExcelReporter:
         if self.comparativa_periodos_activar:
             try:
                 period_data = _calcular_comparativa_periodos(
-                    df=df_export,  # df_export tiene las columnas renombradas: BALANCE, EXIT_TIME, PNL NETO
+                    df=df_export,
                     activo=self._activo or "BTC",
                     datos_dir=self.datos_dir,
                     fecha_inicio=self.fecha_inicio,
                     fecha_fin=self.fecha_fin,
                     periodo_str=self.comparativa_periodo,
+                    regimen_activo=self.regimen_activo,
+                    regimen_tipo=self.regimen_tipo,
+                    cached_price_vals=cached_prices_5k,
+                    cached_price_ts=cached_ts_5k,
+                    cached_regime_daily=cached_regime_daily,
                 )
             except Exception:
                 pass
@@ -400,6 +470,8 @@ class ExcelReporter:
                 price_timestamps=cached_timestamps,
                 period_data=period_data,
                 activo_name=str(self._activo or "Activo").upper(),
+                regime_mode_breakdown=regime_mode_breakdown,
+                bh_saldo_str=bh_saldo_str,
             )
         except Exception as e:
             logger.warning(f"Error xlsxwriter, fallback openpyxl: {e}")
@@ -443,9 +515,26 @@ def _preparar_df_trades(df_trades: pd.DataFrame, exit_type: str = "") -> pd.Data
 
     df.columns = [c.upper() for c in df.columns]
 
+    # Columna TIPO: "B&H" si es buy&hold, "S" si es estrategia
+    if "IS_BUY_HOLD" in df.columns:
+        df["TIPO"] = df["IS_BUY_HOLD"].fillna(False).astype(bool).map({True: "B&H", False: "S"})
+        df.drop(columns=["IS_BUY_HOLD"], inplace=True)
+    else:
+        df["TIPO"] = "S"
+
+    # Volumen usado por trade (notional): CANTIDAD * ENTRY_PRICE
+    if "CANTIDAD" in df.columns and "ENTRY_PRICE" in df.columns:
+        try:
+            _qty = pd.to_numeric(df["CANTIDAD"], errors="coerce")
+            _epx = pd.to_numeric(df["ENTRY_PRICE"], errors="coerce")
+            df["VOLUMEN USADO"] = (_qty * _epx).round(2)
+        except Exception:
+            pass
+
     order = [
+        "TIPO",
         "ENTRY_TIME", "ENTRY_PRICE", "TRAIL_ACT_PRICE", "TRAIL_ACT_TIME",
-        "EXIT_TIME", "EXIT_PRICE", "POSICIÓN", "EXIT_REASON", "CANTIDAD",
+        "EXIT_TIME", "EXIT_PRICE", "POSICIÓN", "EXIT_REASON", "CANTIDAD", "VOLUMEN USADO",
         "PNL BRUTO", "COMISIONES", "PNL NETO", "BALANCE"
     ]
     
@@ -543,11 +632,19 @@ def _calcular_comparativa_periodos(
     fecha_inicio: Optional[str],
     fecha_fin: Optional[str],
     periodo_str: str,
+    regimen_activo: bool = False,
+    regimen_tipo: str = "ALCISTA",
+    cached_price_vals: Optional[List[float]] = None,
+    cached_price_ts: Optional[List] = None,
+    cached_regime_daily: Optional[dict] = None,
 ) -> Optional[Tuple[List[str], List[float], List[float]]]:
     """
     Divide el rango de la estrategia en períodos y calcula la variación % de:
       - La estrategia (balance al cierre del período)
       - El activo subyacente (precio de cierre del período)
+
+    Si regimen_activo=True, sólo incluye períodos donde el régimen dominante
+    coincide con regimen_tipo.
 
     Retorna (labels, strat_pct_list, asset_pct_list) o None si no hay datos.
     """
@@ -613,13 +710,16 @@ def _calcular_comparativa_periodos(
         offset = _parse_periodo_offset(periodo_str)
 
         # ── 4. Cargar precios diarios completos para el activo ───────────────
-        price_vals, price_ts = _load_price_with_timestamps(
-            activo=activo or "BTC",
-            datos_dir=datos_dir or "datos",
-            fecha_inicio=fecha_inicio,
-            fecha_fin=fecha_fin,
-            n_points=5000,
-        )
+        if cached_price_vals is not None and cached_price_ts is not None:
+            price_vals, price_ts = cached_price_vals, cached_price_ts
+        else:
+            price_vals, price_ts = _load_price_with_timestamps(
+                activo=activo or "BTC",
+                datos_dir=datos_dir or "datos",
+                fecha_inicio=fecha_inicio,
+                fecha_fin=fecha_fin,
+                n_points=5000,
+            )
         if not price_ts or len(price_ts) < 2:
             return None
 
@@ -642,7 +742,58 @@ def _calcular_comparativa_periodos(
                 idx = len(price_vals_arr) - 1
             return float(price_vals_arr[idx])
 
-        # ── 5. Iterar períodos ───────────────────────────────────────────────
+        # ── 5. Cargar régimen si está activo ────────────────────────────────
+        regime_daily = cached_regime_daily  # Usar cache si disponible
+        if regimen_activo and regime_daily is None:
+            try:
+                import polars as _pl
+                from modelox.core.regime import compute_regime_mask_1d
+                _price_path = None
+                import glob as _glob2
+                _act_up = str(activo).strip().upper()
+                _base = datos_dir or "datos"
+                for _pat in [f"{_act_up}_ohlcv_1m.feather", f"{_act_up}_ohlcv_1m.parquet",
+                             f"{_act_up.lower()}_ohlcv_1m.feather", f"{_act_up.lower()}_ohlcv_1m.parquet"]:
+                    _p = os.path.join(_base, _pat)
+                    if os.path.exists(_p):
+                        _price_path = _p
+                        break
+                if _price_path:
+                    _ext = os.path.splitext(_price_path)[1].lower()
+                    if _ext in (".feather", ".fthr"):
+                        _df_1m = _pl.read_ipc(_price_path, memory_map=False)
+                    else:
+                        _df_1m = _pl.read_parquet(_price_path)
+                    _regime_df = compute_regime_mask_1d(_df_1m)
+                    regime_daily = {}
+                    for _row in _regime_df.iter_rows(named=True):
+                        _d = str(_row["timestamp"])[:10]
+                        regime_daily[_d] = _row["regime"]
+                    del _df_1m
+            except Exception as _e:
+                logger.debug(f"_calcular_comparativa_periodos régimen: {_e}")
+                regime_daily = None
+
+        def _period_regime_ok(t_start, t_end):
+            """Retorna True si el régimen dominante en [t_start, t_end) coincide con regimen_tipo."""
+            if regime_daily is None:
+                return True
+            _target = regimen_tipo.upper()
+            _match = 0
+            _total = 0
+            _d = t_start.normalize()
+            while _d < t_end:
+                _key = _d.strftime("%Y-%m-%d")
+                if _key in regime_daily:
+                    _total += 1
+                    if regime_daily[_key] == _target:
+                        _match += 1
+                _d += pd.Timedelta(days=1)
+            if _total == 0:
+                return True
+            return _match / _total > 0.5  # >50% del período en el régimen correcto
+
+        # ── 6. Iterar períodos ───────────────────────────────────────────────
         labels:     List[str]   = []
         strat_pcts: List[float] = []
         asset_pcts: List[float] = []
@@ -652,6 +803,11 @@ def _calcular_comparativa_periodos(
             t_next = t_cur + offset
             if t_next > t_last:
                 t_next = t_last
+
+            # Filtrar por régimen: saltar períodos donde la estrategia no operaba
+            if not _period_regime_ok(t_cur, t_next):
+                t_cur = t_next
+                continue
 
             bal_start = _balance_at(t_cur)
             bal_end   = _balance_at(t_next)
@@ -679,6 +835,132 @@ def _calcular_comparativa_periodos(
         return None
 
 
+def _calcular_aporte_roi_por_modo(
+    df_trades: pd.DataFrame,
+    cached_price_vals: Optional[List[float]] = None,
+    cached_price_ts: Optional[List] = None,
+) -> Optional[Dict[str, float]]:
+    """
+    Calcula aporte de ROI por modo (Estrategia vs Buy&Hold por régimen) y
+    rendimiento del activo en los períodos operados por cada modo.
+    """
+    try:
+        if df_trades is None or df_trades.empty:
+            return None
+
+        req = {"pnl_neto", "entry_time", "exit_time"}
+        if not req.issubset(set(df_trades.columns)):
+            return None
+
+        if "is_buy_hold" not in df_trades.columns:
+            return None
+
+        dfx = df_trades.copy()
+        dfx["pnl_neto"] = pd.to_numeric(dfx["pnl_neto"], errors="coerce").fillna(0.0)
+        dfx["is_buy_hold"] = dfx["is_buy_hold"].fillna(False).astype(bool)
+
+        if "saldo_antes" in dfx.columns:
+            saldo_ini = float(pd.to_numeric(dfx["saldo_antes"], errors="coerce").dropna().iloc[0])
+        elif "saldo_despues" in dfx.columns:
+            first_bal = float(pd.to_numeric(dfx["saldo_despues"], errors="coerce").dropna().iloc[0])
+            first_pnl = float(dfx["pnl_neto"].iloc[0])
+            saldo_ini = first_bal - first_pnl
+        else:
+            return None
+
+        if saldo_ini <= 0:
+            return None
+
+        pnl_total = float(dfx["pnl_neto"].sum())
+        pnl_bh = float(dfx.loc[dfx["is_buy_hold"], "pnl_neto"].sum())
+        pnl_strat = float(dfx.loc[~dfx["is_buy_hold"], "pnl_neto"].sum())
+
+        roi_total = (pnl_total / saldo_ini) * 100.0
+        roi_bh = (pnl_bh / saldo_ini) * 100.0
+        roi_strat = (pnl_strat / saldo_ini) * 100.0
+
+        if abs(roi_total) > 1e-12:
+            share_bh = (roi_bh / roi_total) * 100.0
+            share_strat = (roi_strat / roi_total) * 100.0
+        else:
+            share_bh = 0.0
+            share_strat = 0.0
+
+        # Rendimiento del activo en TODO el periodo del backtest
+        # (inicio→fin del rango de precios cacheado), para evitar sesgo
+        # de calcular sólo cuando hubo trades.
+        asset_ret_total = 0.0
+
+        # Rendimiento del activo en los períodos operados por cada modo
+        # (se mantiene como métrica auxiliar).
+        asset_ret_bh = 0.0
+        asset_ret_strat = 0.0
+        if cached_price_vals and cached_price_ts and len(cached_price_vals) >= 2:
+            pts = [pd.Timestamp(t).tz_localize(None) if getattr(pd.Timestamp(t), "tzinfo", None) else pd.Timestamp(t)
+                   for t in cached_price_ts]
+            pvs = [float(x) for x in cached_price_vals]
+
+            def _price_at(ts_val: pd.Timestamp) -> Optional[float]:
+                i = bisect.bisect_right(pts, ts_val) - 1
+                if i < 0:
+                    i = 0
+                if i >= len(pvs):
+                    i = len(pvs) - 1
+                p = pvs[i]
+                return p if p > 0 else None
+
+            # ROI del activo en todo el backtest (primer precio vs último)
+            p_start_all = pvs[0] if pvs and pvs[0] > 0 else None
+            p_end_all = pvs[-1] if pvs and pvs[-1] > 0 else None
+            if p_start_all and p_end_all:
+                asset_ret_total = (p_end_all / p_start_all - 1.0) * 100.0
+
+            def _asset_perf(mask: pd.Series) -> float:
+                growth = 1.0
+                sub = dfx.loc[mask, ["entry_time", "exit_time"]].copy()
+                if sub.empty:
+                    return 0.0
+                sub["entry_time"] = pd.to_datetime(sub["entry_time"], errors="coerce")
+                sub["exit_time"] = pd.to_datetime(sub["exit_time"], errors="coerce")
+                sub = sub.dropna(subset=["entry_time", "exit_time"])
+                for _, r in sub.iterrows():
+                    et = r["entry_time"]
+                    xt = r["exit_time"]
+                    if getattr(et, "tzinfo", None):
+                        et = et.tz_localize(None)
+                    if getattr(xt, "tzinfo", None):
+                        xt = xt.tz_localize(None)
+                    p0 = _price_at(pd.Timestamp(et))
+                    p1 = _price_at(pd.Timestamp(xt))
+                    if p0 and p1 and p0 > 0:
+                        growth *= (p1 / p0)
+                return (growth - 1.0) * 100.0
+
+            asset_ret_bh = _asset_perf(dfx["is_buy_hold"])
+            asset_ret_strat = _asset_perf(~dfx["is_buy_hold"])
+
+        n_strat = int((~dfx["is_buy_hold"]).sum())
+        n_bh    = int(dfx["is_buy_hold"].sum())
+
+        return {
+            "has_buy_hold":    bool(dfx["is_buy_hold"].any()),
+            "roi_total":       float(roi_total),
+            "roi_strat":       float(roi_strat),
+            "roi_bh":          float(roi_bh),
+            "pnl_strat":       float(pnl_strat),
+            "pnl_bh":          float(pnl_bh),
+            "n_strat":         n_strat,
+            "n_bh":            n_bh,
+            "share_roi_strat": float(share_strat),
+            "share_roi_bh":    float(share_bh),
+            "asset_ret_total": float(asset_ret_total),
+            "asset_ret_strat": float(asset_ret_strat),
+            "asset_ret_bh":    float(asset_ret_bh),
+        }
+    except Exception:
+        return None
+
+
 # ==============================================================================
 # ESCRITURA ULTRA RÁPIDA CON XLSXWRITER  (v7 — posición y escalado corregidos)
 # ==============================================================================
@@ -693,6 +975,8 @@ def _escribir_trades_xlsxwriter(
     price_timestamps: Optional[List] = None,
     period_data: Optional[Tuple[List[str], List[float], List[float]]] = None,
     activo_name: str = "Activo",
+    regime_mode_breakdown: Optional[Dict[str, float]] = None,
+    bh_saldo_str: Optional[str] = None,  # "ALL" o importe fijo; None = sin B&H
 ):
     """
     Layout final:
@@ -754,7 +1038,7 @@ def _escribir_trades_xlsxwriter(
         h = hdr.upper()
         if 'TIME' in h or 'DATE' in h:                          return 'dt'
         if 'PRICE' in h:                                         return 'price'
-        if 'PNL' in h or 'BALANCE' in h or 'COMISIONES' in h:  return 'money'
+        if 'PNL' in h or 'BALANCE' in h or 'COMISIONES' in h or 'VOLUMEN' in h:  return 'money'
         if h == 'ROI':                                           return 'pct'
         if 'APALANCAMIENTO' in h:                                return 'apal'
         return 'gen'
@@ -768,15 +1052,23 @@ def _escribir_trades_xlsxwriter(
     comisiones_idx  = next((i for i, c in enumerate(cols) if 'COMISIONES' in c), None)
     entry_price_idx = next((i for i, c in enumerate(cols) if c == 'ENTRY_PRICE'), None)
     exit_price_idx  = next((i for i, c in enumerate(cols) if c == 'EXIT_PRICE'), None)
+    exit_time_idx   = next((i for i, c in enumerate(cols) if c == 'EXIT_TIME'), None)
+    qty_idx         = next((i for i, c in enumerate(cols) if c == 'CANTIDAD'), None)
+    posicion_idx    = next((i for i, c in enumerate(cols) if c == 'POSICIÓN'), None)
+    tipo_idx        = next((i for i, c in enumerate(cols) if c == 'TIPO'), None)
 
     # ── Hoja auxiliar oculta para datos de gráficos ─────────────────────
     # Columnas: A=ENTRY_TIME, B=BAL_BRUTO, C=STRAT_ROI%, D=BH_ROI%
     #           E=CUM_COMISIONES, F=CUM_PNL_NETO
     #           G=BH_CONT_TIME, H=BH_CONT_ROI% (B&H continuo, independiente de trades)
+    #           I=DAILY_TIME, J=DAILY_BAL, K=DAILY_ROI, L=DAILY_PNL, M=DAILY_BAL_BRUTO
+    #           N=DAILY_BAL_STRAT (solo periodos estrategia), O=DAILY_BAL_BH (solo periodos B&H)
     has_bruto_data = False
     has_roi_data   = False
     has_continuous_bh = False
+    has_daily_bal  = False
     n_bh_points = 0
+    n_daily_points = 0
     if n_rows > 0:
         ws_aux = wb.add_worksheet('_ChartData')
         ws_aux.hide()
@@ -788,6 +1080,13 @@ def _escribir_trades_xlsxwriter(
         ws_aux.write_string(0, 5, 'CUM_PNL_NETO')
         ws_aux.write_string(0, 6, 'BH_CONT_TIME')
         ws_aux.write_string(0, 7, 'BH_CONT_ROI')
+        ws_aux.write_string(0, 8, 'DAILY_TIME')
+        ws_aux.write_string(0, 9, 'DAILY_BAL')
+        ws_aux.write_string(0, 10, 'DAILY_ROI')
+        ws_aux.write_string(0, 11, 'DAILY_PNL')
+        ws_aux.write_string(0, 12, 'DAILY_BAL_BRUTO')
+        ws_aux.write_string(0, 13, 'DAILY_BAL_STRAT')
+        ws_aux.write_string(0, 14, 'DAILY_BAL_BH')
 
         dt_fmt = wb.add_format({'num_format': 'dd/mm/yy hh:mm'})
 
@@ -913,6 +1212,121 @@ def _escribir_trades_xlsxwriter(
                         bh_roi_cont = (price_series[bi] / first_price - 1.0) * 100.0
                         ws_aux.write_number(bi + 1, 7, bh_roi_cont)
 
+        # ── Col I/J: Balance diario mark-to-market ──────────────────────────
+        # Interpola el balance en cada punto de price_series teniendo en cuenta
+        # el PnL no realizado de cualquier trade abierto en ese momento.
+        # Esto elimina los escalones cuando hay trades largos (ej. B&H).
+        if (price_series and price_timestamps
+                and len(price_series) >= 2
+                and entry_time_idx is not None
+                and exit_time_idx is not None
+                and qty_idx is not None
+                and balance_idx is not None
+                and pnl_neto_idx is not None
+                and entry_price_idx is not None):
+
+            def _ts_naive(v):
+                ts = pd.Timestamp(v)
+                return ts.tz_localize(None) if ts.tzinfo is not None else ts
+
+            # Construir lista de trades ordenados por entry_time
+            # Tupla: (entry_time, exit_time, entry_price, qty, pnl_neto, balance, posicion, comision, is_bh)
+            _trades_mtm = []
+            for _r in range(n_rows):
+                try:
+                    _et  = _ts_naive(df.iloc[_r, entry_time_idx])
+                    _xt  = _ts_naive(df.iloc[_r, exit_time_idx])
+                    _ep  = float(df.iloc[_r, entry_price_idx])
+                    _qty = float(df.iloc[_r, qty_idx])
+                    _pnl = float(df.iloc[_r, pnl_neto_idx])
+                    _bal = float(df.iloc[_r, balance_idx])
+                    _pos = str(df.iloc[_r, posicion_idx]).upper() if posicion_idx is not None else 'LONG'
+                    _com = float(df.iloc[_r, comisiones_idx]) if comisiones_idx is not None else 0.0
+                    _ibh = (str(df.iloc[_r, tipo_idx]).strip() == 'B&H') if tipo_idx is not None else False
+                    _trades_mtm.append((_et, _xt, _ep, _qty, _pnl, _bal, _pos, _com, _ibh))
+                except Exception:
+                    continue
+            _trades_mtm.sort(key=lambda x: x[0])
+
+            # Saldo inicial (antes del primer trade)
+            _saldo_ini_mtm = (_trades_mtm[0][5] - _trades_mtm[0][4]
+                              if _trades_mtm else (_saldo_ini if _saldo_ini > 0 else 300.0))
+
+            _last_closed_bal = _saldo_ini_mtm
+            _cum_com = 0.0   # comisiones acumuladas de trades cerrados
+            _ti = 0
+            _nt = len(_trades_mtm)
+            _daily_times:   list = []
+            _daily_bals:    list = []
+            _daily_rois:    list = []
+            _daily_pnls:    list = []
+            _daily_brutos:  list = []
+            _daily_is_bh:   list = []   # True = B&H, False = Estrategia
+            _prev_is_bh: object = None  # para detectar transiciones
+
+            for _price_now, _ts_raw in zip(price_series, price_timestamps):
+                try:
+                    _ts = _ts_naive(pd.Timestamp(_ts_raw))
+                except Exception:
+                    continue
+
+                # Avanzar trades ya cerrados en este momento
+                while _ti < _nt and _trades_mtm[_ti][1] <= _ts:
+                    _last_closed_bal = _trades_mtm[_ti][5]
+                    _cum_com += _trades_mtm[_ti][7]
+                    _ti += 1
+
+                # ¿Hay un trade abierto ahora?
+                if _ti < _nt and _trades_mtm[_ti][0] <= _ts:
+                    _et, _xt, _ep, _qty, _pnl, _bal, _pos, _com, _ibh = _trades_mtm[_ti]
+                    _bal_before = _bal - _pnl
+                    _mtm_pnl = _qty * (_ep - _price_now) if 'SHORT' in _pos else _qty * (_price_now - _ep)
+                    _cur_bal  = _bal_before + _mtm_pnl
+                    _cur_is_bh = _ibh
+                else:
+                    _cur_bal   = _last_closed_bal
+                    _cur_is_bh = False   # sin trade abierto → periodo de estrategia
+
+                _cur_bruto = _cur_bal + _cum_com
+
+                _daily_times.append(_ts_raw)
+                _daily_bals.append(_cur_bal)
+                _daily_rois.append((_cur_bal / _saldo_ini_mtm - 1.0) * 100.0 if _saldo_ini_mtm > 0 else 0.0)
+                _daily_pnls.append(_cur_bal - _saldo_ini_mtm)
+                _daily_brutos.append(_cur_bruto)
+                _daily_is_bh.append(_cur_is_bh)
+                _prev_is_bh = _cur_is_bh
+
+            # Escribir en _ChartData cols I-O
+            n_daily_points = len(_daily_times)
+            if n_daily_points >= 2:
+                _prev_bh_write = None
+                for _di, (_dt_raw, _db, _dr, _dp, _dg, _dibh) in enumerate(
+                    zip(_daily_times, _daily_bals, _daily_rois, _daily_pnls, _daily_brutos, _daily_is_bh)
+                ):
+                    try:
+                        _dt_wr = pd.Timestamp(_dt_raw).to_pydatetime()
+                        _dt_wr = _dt_wr.replace(tzinfo=None)
+                        ws_aux.write_datetime(_di + 1, 8, _dt_wr, dt_fmt)
+                    except Exception:
+                        ws_aux.write_number(_di + 1, 8, _di)
+                    ws_aux.write_number(_di + 1, 9,  float(_db))   # DAILY_BAL
+                    ws_aux.write_number(_di + 1, 10, float(_dr))   # DAILY_ROI
+                    ws_aux.write_number(_di + 1, 11, float(_dp))   # DAILY_PNL
+                    ws_aux.write_number(_di + 1, 12, float(_dg))   # DAILY_BAL_BRUTO
+                    # Cols N/O: split por tipo — overlap de 1 punto en transiciones
+                    _at_trans = (_prev_bh_write is not None) and (_dibh != _prev_bh_write)
+                    if _dibh:
+                        ws_aux.write_number(_di + 1, 14, float(_db))   # DAILY_BAL_BH
+                        if _at_trans:
+                            ws_aux.write_number(_di + 1, 13, float(_db))  # overlap → conecta
+                    else:
+                        ws_aux.write_number(_di + 1, 13, float(_db))   # DAILY_BAL_STRAT
+                        if _at_trans:
+                            ws_aux.write_number(_di + 1, 14, float(_db))  # overlap → conecta
+                    _prev_bh_write = _dibh
+                has_daily_bal = True
+
     # ── Anchos de columna: muestrea 20 filas, O(cols) ───────────────────────
     for i, col_name in enumerate(cols):
         max_len = len(str(col_name))
@@ -952,14 +1366,20 @@ def _escribir_trades_xlsxwriter(
 
     # ── FORMATO CONDICIONAL PNL NETO ────────────────────────────────────────
     if pnl_neto_idx is not None and n_rows > 0:
-        fmt_green = wb.add_format({**_BASE,
-                                    'font_color': '#38A169', 'bold': True})
-        fmt_red   = wb.add_format({**_BASE,
-                                    'font_color': '#E53E3E', 'bold': True})
+        fmt_green = wb.add_format({**_BASE, 'font_color': '#38A169', 'bold': True})
+        fmt_red   = wb.add_format({**_BASE, 'font_color': '#E53E3E', 'bold': True})
         ws.conditional_format(1, pnl_neto_idx, n_rows, pnl_neto_idx,
                                {'type': 'cell', 'criteria': '>', 'value': 0, 'format': fmt_green})
         ws.conditional_format(1, pnl_neto_idx, n_rows, pnl_neto_idx,
                                {'type': 'cell', 'criteria': '<', 'value': 0, 'format': fmt_red})
+
+    # ── FORMATO CONDICIONAL TIPO (S / B&H) ──────────────────────────────────
+    tipo_idx = next((i for i, c in enumerate(cols) if c == 'TIPO'), None)
+    if tipo_idx is not None and n_rows > 0:
+        fmt_bh = wb.add_format({**_BASE, 'bg_color': '#EBF8FF', 'font_color': '#2B6CB0', 'bold': True})
+        ws.conditional_format(1, tipo_idx, n_rows, tipo_idx,
+                               {'type': 'text', 'criteria': 'containing',
+                                'value': 'B&H', 'format': fmt_bh})
 
     # ── FILA DE SEPARACIÓN entre datos y gráfico/tabla ──────────────────────
     BLOCK_ROW = n_rows + 2   # fila 0-indexed donde empieza bloque inferior
@@ -978,19 +1398,36 @@ def _escribir_trades_xlsxwriter(
         y_max_axis = y_max_raw + margin
         major_unit = _nice_major_unit(data_range, target_ticks=6)
 
-        chart1 = wb.add_chart({'type': 'line'})
+        chart1 = wb.add_chart({'type': 'scatter', 'subtype': 'straight'})
 
-        bal_col_letter = xl_col_to_name(balance_idx)
-        series_neto = {
-            'name':   'Balance Neto',
-            'values': f"=Trades!${bal_col_letter}$2:${bal_col_letter}${n_rows + 1}",
-            'line':   {'color': '#4A5568', 'width': 1.5},
-            'marker': {'type': 'none'},
-        }
-        if entry_time_idx is not None:
-            et_letter = xl_col_to_name(entry_time_idx)
-            series_neto['categories'] = f"=Trades!${et_letter}$2:${et_letter}${n_rows + 1}"
-        chart1.add_series(series_neto)
+        # Si hay balance diario MTM, usarlo como línea principal (continua).
+        # La serie por cierre de trade pasa a ser puntos de referencia.
+        if has_daily_bal:
+            # Ajustar rango Y con el rango del balance diario
+            y_min_raw = min(y_min_raw, min(_daily_bals))
+            y_max_raw = max(y_max_raw, max(_daily_bals))
+            data_range = y_max_raw - y_min_raw if y_max_raw != y_min_raw else max(abs(y_max_raw) * 0.1, 1.0)
+            margin     = data_range * 0.03
+            y_min_axis = y_min_raw - margin
+            y_max_axis = y_max_raw + margin
+            major_unit = _nice_major_unit(data_range, target_ticks=6)
+
+        # Series coloreadas por tipo: Estrategia=rojo, B&H=azul
+        if has_daily_bal:
+            chart1.add_series({
+                'name':       'Estrategia',
+                'categories': f"='_ChartData'!$I$2:$I${n_daily_points + 1}",
+                'values':     f"='_ChartData'!$N$2:$N${n_daily_points + 1}",
+                'line':       {'color': '#E53E3E', 'width': 2.0},
+                'marker':     {'type': 'none'},
+            })
+            chart1.add_series({
+                'name':       'B&H',
+                'categories': f"='_ChartData'!$I$2:$I${n_daily_points + 1}",
+                'values':     f"='_ChartData'!$O$2:$O${n_daily_points + 1}",
+                'line':       {'color': '#2B6CB0', 'width': 2.0},
+                'marker':     {'type': 'none'},
+            })
 
         chart1.set_title({'name': 'Balance', 'name_font': {'size': 11, 'bold': True, 'color': '#2D3436', 'name': 'Calibri'}})
         chart1.set_y_axis({
@@ -1019,59 +1456,38 @@ def _escribir_trades_xlsxwriter(
         ws.insert_chart(BLOCK_ROW, 1, chart1, {'x_offset': 2, 'y_offset': 5})
         CHARTS_HEIGHT_ROWS += 24  # ~430px ≈ 24 filas
 
-    # ── GRÁFICO 2: BALANCE NETO vs BALANCE BRUTO (comparación) ──────────────
-    # Usa datos de _ChartData (hoja oculta) para Balance Bruto
-    if balance_idx is not None and has_bruto_data and n_rows > 0:
-        # Calcular rango Y incluyendo ambas series
-        bal_series = df.iloc[:, balance_idx].dropna()
-        y_min_raw2 = float(bal_series.min())
-        y_max_raw2 = float(bal_series.max())
-
-        comisiones_acum = 0.0
-        for r_idx in range(n_rows):
-            try:
-                comision_val = float(df.iloc[r_idx, comisiones_idx])
-            except (ValueError, TypeError):
-                comision_val = 0.0
-            comisiones_acum += comision_val
-            try:
-                balance_val = float(df.iloc[r_idx, balance_idx])
-            except (ValueError, TypeError):
-                balance_val = 0.0
-            bruto_val = balance_val + comisiones_acum
-            y_min_raw2 = min(y_min_raw2, bruto_val)
-            y_max_raw2 = max(y_max_raw2, bruto_val)
-
+    # ── GRÁFICO 2: BALANCE NETO vs BALANCE BRUTO (comparación, solo diario) ──
+    if has_daily_bal and n_rows > 0:
+        y_min_raw2 = min(_daily_bals + _daily_brutos)
+        y_max_raw2 = max(_daily_bals + _daily_brutos)
         data_range2 = y_max_raw2 - y_min_raw2 if y_max_raw2 != y_min_raw2 else max(abs(y_max_raw2) * 0.1, 1.0)
         margin2     = data_range2 * 0.03
         y_min_axis2 = y_min_raw2 - margin2
         y_max_axis2 = y_max_raw2 + margin2
         major_unit2 = _nice_major_unit(data_range2, target_ticks=6)
 
-        chart2 = wb.add_chart({'type': 'line'})
-
-        # Serie 1 — BALANCE NETO (azul) — desde hoja Trades
-        bal_col_letter = xl_col_to_name(balance_idx)
-        series_neto2 = {
-            'name':   'Balance Neto',
-            'values': f"=Trades!${bal_col_letter}$2:${bal_col_letter}${n_rows + 1}",
-            'line':   {'color': '#4A5568', 'width': 1.5},
-            'marker': {'type': 'none'},
-        }
-        if entry_time_idx is not None:
-            et_letter = xl_col_to_name(entry_time_idx)
-            series_neto2['categories'] = f"=Trades!${et_letter}$2:${et_letter}${n_rows + 1}"
-        chart2.add_series(series_neto2)
-
-        # Serie 2 — BALANCE BRUTO (verde) — desde hoja _ChartData
-        series_bruto2 = {
-            'name':       'Balance Bruto',
-            'values':     f"='_ChartData'!$B$2:$B${n_rows + 1}",
-            'categories': f"='_ChartData'!$A$2:$A${n_rows + 1}",
+        chart2 = wb.add_chart({'type': 'scatter', 'subtype': 'straight'})
+        chart2.add_series({
+            'name':       'Estrategia',
+            'categories': f"='_ChartData'!$I$2:$I${n_daily_points + 1}",
+            'values':     f"='_ChartData'!$N$2:$N${n_daily_points + 1}",
+            'line':       {'color': '#E53E3E', 'width': 2.0},
+            'marker':     {'type': 'none'},
+        })
+        chart2.add_series({
+            'name':       'B&H',
+            'categories': f"='_ChartData'!$I$2:$I${n_daily_points + 1}",
+            'values':     f"='_ChartData'!$O$2:$O${n_daily_points + 1}",
+            'line':       {'color': '#2B6CB0', 'width': 2.0},
+            'marker':     {'type': 'none'},
+        })
+        chart2.add_series({
+            'name':       'Bruto',
+            'categories': f"='_ChartData'!$I$2:$I${n_daily_points + 1}",
+            'values':     f"='_ChartData'!$M$2:$M${n_daily_points + 1}",
             'line':       {'color': '#CBD5E0', 'width': 1.5, 'dash_type': 'dash'},
             'marker':     {'type': 'none'},
-        }
-        chart2.add_series(series_bruto2)
+        })
 
         chart2.set_title({'name': 'Neto vs Bruto', 'name_font': {'size': 11, 'bold': True, 'color': '#2D3436', 'name': 'Calibri'}})
         chart2.set_y_axis({
@@ -1100,25 +1516,26 @@ def _escribir_trades_xlsxwriter(
         ws.insert_chart(BLOCK_ROW + CHARTS_HEIGHT_ROWS, 1, chart2, {'x_offset': 2, 'y_offset': 5})
         CHARTS_HEIGHT_ROWS += 24
 
-    # ── GRÁFICO 3: ESTRATEGIA vs BUY & HOLD (scatter XY para eje continuo) ──
-    # Scatter chart permite series con distinto nº de puntos sin gaps.
-    if has_roi_data and n_rows > 0:
+    # ── GRÁFICO 3: ESTRATEGIA vs RENDIMIENTO ACTIVO (scatter XY, siempre diario) ──
+    if has_daily_bal and n_rows > 0:
         chart3 = wb.add_chart({'type': 'scatter', 'subtype': 'straight'})
 
-        # Serie 1 — Estrategia (gris oscuro) — basada en trades
-        series_strat = {
+        # Serie 1a — Estrategia ROI% (rojo, solo periodos estrategia)
+        # Reusamos cols N/O escalados a ROI%: si _saldo_ini_mtm > 0 ya está en col K
+        # Para el split usamos N y O pero como ROI: (val/_saldo_ini - 1)*100
+        # Simplificamos: usamos la col K completa como referencia + las N/O para color
+        chart3.add_series({
             'name':       'Estrategia',
-            'values':     f"='_ChartData'!$C$2:$C${n_rows + 1}",
-            'categories': f"='_ChartData'!$A$2:$A${n_rows + 1}",
-            'line':       {'color': '#4A5568', 'width': 1.5},
+            'categories': f"='_ChartData'!$I$2:$I${n_daily_points + 1}",
+            'values':     f"='_ChartData'!$K$2:$K${n_daily_points + 1}",
+            'line':       {'color': '#E53E3E', 'width': 2.0},
             'marker':     {'type': 'none'},
-        }
-        chart3.add_series(series_strat)
+        })
 
-        # Serie 2 — Buy & Hold: SIEMPRE continuo e independiente de trades
+        # Serie 2 — Rendimiento Activo: precio real, continuo e independiente de trades
         if has_continuous_bh and n_bh_points > 0:
             series_bh = {
-                'name':       'Buy & Hold',
+                'name':       'Rendimiento Activo',
                 'values':     f"='_ChartData'!$H$2:$H${n_bh_points + 1}",
                 'categories': f"='_ChartData'!$G$2:$G${n_bh_points + 1}",
                 'line':       {'color': '#CBD5E0', 'width': 1.5},
@@ -1126,7 +1543,7 @@ def _escribir_trades_xlsxwriter(
             }
         else:
             series_bh = {
-                'name':       'Buy & Hold',
+                'name':       'Rendimiento Activo',
                 'values':     f"='_ChartData'!$D$2:$D${n_rows + 1}",
                 'categories': f"='_ChartData'!$A$2:$A${n_rows + 1}",
                 'line':       {'color': '#CBD5E0', 'width': 1.5},
@@ -1134,7 +1551,7 @@ def _escribir_trades_xlsxwriter(
             }
         chart3.add_series(series_bh)
 
-        chart3.set_title({'name': 'Estrategia vs Buy & Hold', 'name_font': {'size': 11, 'bold': True, 'color': '#2D3436', 'name': 'Calibri'}})
+        chart3.set_title({'name': 'Estrategia vs Rendimiento Activo', 'name_font': {'size': 11, 'bold': True, 'color': '#2D3436', 'name': 'Calibri'}})
         chart3.set_y_axis({
             'num_format':      '#,##0"%"',
             'num_font':        {'size': 8, 'color': '#718096', 'name': 'Calibri'},
@@ -1160,20 +1577,20 @@ def _escribir_trades_xlsxwriter(
         ws.insert_chart(BLOCK_ROW + CHARTS_HEIGHT_ROWS, 1, chart3, {'x_offset': 2, 'y_offset': 5})
         CHARTS_HEIGHT_ROWS += 24
 
-    # ── GRÁFICO 4: COMISIONES vs BENEFICIO ──────────────────────────────────
-    if has_fee_data and pnl_neto_idx is not None and n_rows > 0:
-        chart4 = wb.add_chart({'type': 'line'})
+    # ── GRÁFICO 4: COMISIONES vs BENEFICIO (siempre diario) ─────────────────
+    if has_daily_bal and pnl_neto_idx is not None and n_rows > 0:
+        chart4 = wb.add_chart({'type': 'scatter', 'subtype': 'straight'})
 
-        # Serie 1 — PNL Neto acumulado (gris oscuro sólido)
+        # Serie 1 — PNL Neto acumulado diario (realizado + no realizado)
         chart4.add_series({
             'name':       'Beneficio Neto',
-            'values':     f"='_ChartData'!$F$2:$F${n_rows + 1}",
-            'categories': f"='_ChartData'!$A$2:$A${n_rows + 1}",
-            'line':       {'color': '#4A5568', 'width': 1.5},
+            'values':     f"='_ChartData'!$L$2:$L${n_daily_points + 1}",
+            'categories': f"='_ChartData'!$I$2:$I${n_daily_points + 1}",
+            'line':       {'color': '#2B6CB0', 'width': 2.0},
             'marker':     {'type': 'none'},
         })
 
-        # Serie 2 — Comisiones acumuladas (gris claro punteado)
+        # Serie 2 — Comisiones acumuladas (siempre por cierre de trade, gris punteado)
         chart4.add_series({
             'name':       'Comisiones',
             'values':     f"='_ChartData'!$E$2:$E${n_rows + 1}",
@@ -1391,8 +1808,18 @@ def _escribir_trades_xlsxwriter(
     items = [
         ("Saldo Usado",    val_saldo,   '#,##0.00 $', False),
         ("Volumen Máx.",   val_volumen, '#,##0.00 $', False),
-        ("Apalancamiento", val_apal,    '0.00"x"',    True),
+        ("Apalancamiento", val_apal,    '0.00"x"',    bh_saldo_str is None),
     ]
+    if bh_saldo_str is not None:
+        _bh_is_all = bh_saldo_str in {"ALL", "TODO", "100%", "100"}
+        if not _bh_is_all:
+            try:
+                _bh_val = float(bh_saldo_str)
+                items.append(("Saldo B&H", _bh_val, '#,##0.00 $', True))
+            except ValueError:
+                _bh_is_all = True
+        if _bh_is_all:
+            items.append(("Saldo B&H", "Todo el saldo", None, True))
 
     ws.set_row(TABLE_ROW, 28)
     ws.merge_range(TABLE_ROW, TABLE_COL, TABLE_ROW, TABLE_COL + 1,
@@ -1401,11 +1828,155 @@ def _escribir_trades_xlsxwriter(
     for i, (label, value, num_fmt, is_last) in enumerate(items):
         r = TABLE_ROW + i + 1
         ws.set_row(r, 24)
-        ws.write(r, TABLE_COL,     label, _lbl_fmt(is_last))
-        ws.write(r, TABLE_COL + 1, value, _val_fmt(num_fmt, is_last))
+        ws.write(r, TABLE_COL, label, _lbl_fmt(is_last))
+        if num_fmt is None:
+            # Valor de texto (ej. "Todo el saldo")
+            _txt_fmt = wb.add_format({**_TBL,
+                'bold': True, 'font_color': '#2D3436', 'bg_color': '#FFFFFF',
+                'align': 'right', 'italic': True,
+                'bottom': 0, 'top': 0, 'left': 0, 'right': 0,
+            })
+            ws.write_string(r, TABLE_COL + 1, str(value), _txt_fmt)
+        else:
+            ws.write(r, TABLE_COL + 1, value, _val_fmt(num_fmt, is_last))
 
     ws.set_column(TABLE_COL,     TABLE_COL,     22)
     ws.set_column(TABLE_COL + 1, TABLE_COL + 1, 18)
+
+    # ── TABLA: ESTRATEGIA vs BUY & HOLD ─────────────────────────────────────
+    if regime_mode_breakdown and regime_mode_breakdown.get("has_buy_hold", False):
+        rb  = regime_mode_breakdown
+        RC  = TABLE_COL + 3   # columna de inicio
+        RR  = TABLE_ROW       # fila de inicio
+
+        # ── Formatos específicos de esta tabla ──────────────────────────────
+        _rb_title = wb.add_format({
+            'font_name': 'Calibri', 'font_size': 11, 'bold': True,
+            'font_color': '#2D3436', 'bg_color': '#EDF2F7',
+            'align': 'left', 'valign': 'vcenter', 'indent': 1,
+            'bottom': 2, 'bottom_color': '#A0AEC0',
+        })
+        _rb_col_hdr = wb.add_format({
+            'font_name': 'Calibri', 'font_size': 9, 'bold': True,
+            'font_color': '#FFFFFF', 'bg_color': '#4A5568',
+            'align': 'center', 'valign': 'vcenter',
+            'border': 1, 'border_color': '#718096',
+        })
+        _rb_lbl = wb.add_format({
+            'font_name': 'Calibri', 'font_size': 9,
+            'font_color': '#4A5568', 'bg_color': '#FFFFFF',
+            'align': 'left', 'valign': 'vcenter', 'indent': 1,
+            'bottom': 1, 'bottom_color': '#EDF2F7',
+        })
+        _rb_sub = wb.add_format({
+            'font_name': 'Calibri', 'font_size': 9, 'bold': True, 'italic': True,
+            'font_color': '#718096', 'bg_color': '#F7FAFC',
+            'align': 'left', 'valign': 'vcenter', 'indent': 1,
+            'top': 1, 'top_color': '#CBD5E0',
+            'bottom': 1, 'bottom_color': '#CBD5E0',
+        })
+
+        def _rb_val(positive: bool, pct: bool = True, is_last: bool = False):
+            """Formato de valor con color según signo."""
+            num_fmt = '0.00"%"' if pct else '#,##0.00 $'
+            return wb.add_format({
+                'font_name': 'Calibri', 'font_size': 10, 'bold': True,
+                'font_color': '#38A169' if positive else '#E53E3E',
+                'bg_color': '#FFFFFF',
+                'align': 'center', 'valign': 'vcenter',
+                'num_format': num_fmt,
+                'bottom': 1 if not is_last else 0,
+                'bottom_color': '#EDF2F7',
+            })
+
+        def _rb_neu(pct: bool = True, is_last: bool = False):
+            """Formato neutro (sin color) para valores benchmark/count."""
+            num_fmt = '0.00"%"' if pct else '0'
+            return wb.add_format({
+                'font_name': 'Calibri', 'font_size': 10, 'bold': True,
+                'font_color': '#2D3436', 'bg_color': '#FFFFFF',
+                'align': 'center', 'valign': 'vcenter',
+                'num_format': num_fmt,
+                'bottom': 1 if not is_last else 0,
+                'bottom_color': '#EDF2F7',
+            })
+
+        _rb_blank = wb.add_format({
+            'bg_color': '#FFFFFF',
+            'bottom': 1, 'bottom_color': '#EDF2F7',
+        })
+
+        roi_strat       = rb.get("roi_strat", 0.0)
+        roi_bh          = rb.get("roi_bh", 0.0)
+        roi_total       = rb.get("roi_total", 0.0)
+        pnl_strat       = rb.get("pnl_strat", 0.0)
+        pnl_bh          = rb.get("pnl_bh", 0.0)
+        n_strat         = rb.get("n_strat", 0)
+        n_bh            = rb.get("n_bh", 0)
+        asset_strat     = rb.get("asset_ret_strat", 0.0)
+        asset_bh        = rb.get("asset_ret_bh", 0.0)
+        asset_total     = rb.get("asset_ret_total", 0.0)
+
+        # ── Título principal (3 columnas) ────────────────────────────────────
+        ws.set_row(RR, 28)
+        ws.merge_range(RR, RC, RR, RC + 2, 'Estrategia  vs  Buy & Hold', _rb_title)
+
+        # ── Encabezados de columna ───────────────────────────────────────────
+        ws.set_row(RR + 1, 22)
+        ws.write_blank(RR + 1, RC,     None,          _rb_col_hdr)
+        ws.write(RR + 1, RC + 1, 'Estrategia',        _rb_col_hdr)
+        ws.write(RR + 1, RC + 2, 'Buy & Hold',        _rb_col_hdr)
+
+        # ── Fila: ROI (%) ────────────────────────────────────────────────────
+        r = RR + 2
+        ws.set_row(r, 22)
+        ws.write(r, RC,     'ROI (%)',                  _rb_lbl)
+        ws.write(r, RC + 1, roi_strat,   _rb_val(roi_strat >= 0,  pct=True))
+        ws.write(r, RC + 2, roi_bh,      _rb_val(roi_bh    >= 0,  pct=True))
+
+        # ── Fila: P&L neto ($) ──────────────────────────────────────────────
+        r += 1
+        ws.set_row(r, 22)
+        ws.write(r, RC,     'P&L neto ($)',             _rb_lbl)
+        ws.write(r, RC + 1, pnl_strat,  _rb_val(pnl_strat >= 0, pct=False))
+        ws.write(r, RC + 2, pnl_bh,     _rb_val(pnl_bh    >= 0, pct=False))
+
+        # ── Fila: Nº operaciones ─────────────────────────────────────────────
+        r += 1
+        ws.set_row(r, 22)
+        ws.write(r, RC,     'Nº operaciones',           _rb_lbl)
+        ws.write(r, RC + 1, n_strat,    _rb_neu(pct=False))
+        ws.write(r, RC + 2, n_bh,       _rb_neu(pct=False))
+
+        # ── Fila: Benchmark activo (en ese período) ──────────────────────────
+        r += 1
+        ws.set_row(r, 22)
+        ws.write(r, RC,     'Activo (su período)',       _rb_lbl)
+        ws.write(r, RC + 1, asset_strat, _rb_val(asset_strat >= 0, pct=True))
+        ws.write(r, RC + 2, asset_bh,    _rb_val(asset_bh    >= 0, pct=True))
+
+        # ── Sub-encabezado: Totales ───────────────────────────────────────────
+        r += 1
+        ws.set_row(r, 20)
+        ws.merge_range(r, RC, r, RC + 2, 'Backtest completo', _rb_sub)
+
+        # ── Fila: ROI total combinado ────────────────────────────────────────
+        r += 1
+        ws.set_row(r, 22)
+        ws.write(r, RC,     'ROI total (%)',             _rb_lbl)
+        ws.write(r, RC + 1, roi_total,  _rb_val(roi_total >= 0, pct=True))
+        ws.write(r, RC + 2, None,       _rb_blank)
+
+        # ── Fila: Activo en todo el backtest ─────────────────────────────────
+        r += 1
+        ws.set_row(r, 22)
+        ws.write(r, RC,     'Activo (backtest completo)', _rb_lbl)
+        ws.write(r, RC + 1, asset_total, _rb_val(asset_total >= 0, pct=True, is_last=True))
+        ws.write(r, RC + 2, None,        _rb_blank)
+
+        ws.set_column(RC,     RC,     22)
+        ws.set_column(RC + 1, RC + 1, 14)
+        ws.set_column(RC + 2, RC + 2, 14)
 
     wb.close()
 
@@ -1448,7 +2019,7 @@ def _escribir_trades_openpyxl_fallback(
             col_fmt[c] = "DD/MM/YY HH:MM"
         elif "PRICE" in hdr:
             col_fmt[c] = "#,##0.00"
-        elif "PNL" in hdr or "BALANCE" in hdr or "COMISIONES" in hdr:
+        elif "PNL" in hdr or "BALANCE" in hdr or "COMISIONES" in hdr or "VOLUMEN" in hdr:
             col_fmt[c] = "#,##0.00"
         else:
             col_fmt[c] = "General"

@@ -11,33 +11,33 @@ from modelox.core.types import normalize_timeframe_to_suffix
 # =============================================================================
 # CAPITAL (colateral & apalancamiento)
 # =============================================================================
-SALDO_USADO        = 500    # Colateral por operación ($)
-APALANCAMIENTO_MAX = 20    # Apalancamiento máximo
+SALDO_USADO        = 75    # Colateral por operación ($)
+APALANCAMIENTO_MAX = 15    # Apalancamiento máximo
 
 # =============================================================================
 # COMBINACIÓN & ESTRATEGIA
 # =============================================================================
-COMBINACION_A_EJECUTAR = [2]   # IDs de estrategias en modelox/strategies/
+COMBINACION_A_EJECUTAR = [1,2,3]   # IDs de estrategias en modelox/strategies/
 
 # =============================================================================
 # OPTIMIZACIÓN (OPTUNA)
 # =============================================================================
-N_TRIALS                 = 32     # Trials (potencias de 2 para QMC: 32,64,128,256,512,1024,2048…)
+N_TRIALS                 = 10    # Trials (potencias de 2 para QMC: 32,64,128,256,512,1024,2048…)
 OPTUNA_SAMPLER           = "HYBRID" # HYBRID | QMC | TPE | CMA | GT | ML
 
 # =============================================================================
 # ACTIVO
 # =============================================================================
-ACTIVO = "BTC"  # BTC | ETH | GOLD | SILVER | SP500 | NASDAQ | BIST100
+ACTIVO = "GOLD,SP500,BTC"  # BTC | ETH | GOLD | SILVER | SP500 | NASDAQ | BIST100
 
 # =============================================================================
 # RANGO DE FECHAS
 # =============================================================================
-FECHA_INICIO = "2018-01-01"
-FECHA_FIN    = "2025-06-01"
+FECHA_INICIO = "2021-01-01"
+FECHA_FIN    = "2025-12-01"
 
 USAR_RANGOS_POR_TRIAL = False  # False = rango fijo | True = sub-ventana aleatoria por trial
-MESES_POR_TRIAL       = 7     # Duración de la ventana (solo si USAR_RANGOS_POR_TRIAL=True)
+MESES_POR_TRIAL       = 12     # Duración de la ventana (solo si USAR_RANGOS_POR_TRIAL=True)
 
 # =============================================================================
 # TIMEFRAME
@@ -46,10 +46,14 @@ TIMEFRAME_BASE = "60"           # 1|5|15|30|60|240|720|1440 (min) o "1m","5m","1
 TIMEFRAMES     = [TIMEFRAME_BASE]
 
 # =============================================================================
-# RÉGIMEN DE MERCADO (EMA 21/200 en 1D)
+# RÉGIMEN DE MERCADO (EMA 21/200  |  MACD 12/26/9  |  ADX 14 — en 1D)
 # =============================================================================
-REGIMEN_ACTIVO = True          # True = filtrar por régimen | False = operar siempre
-REGIMEN_TIPO   = "BAJISTA"      # ALCISTA (EMA21>EMA200) | BAJISTA (EMA21<EMA200)
+REGIMEN_ACTIVO     = True          # True = filtrar por régimen | False = operar siempre
+REGIMEN_INDICADOR  = "MACD"        # EMA  → EMA(21) vs EMA(200) en 1D  # ADX  → ADX(14): ALCISTA si ADX>25 y +DI>-DI
+
+REGIMEN_TIPO       = "BAJISTA"     # ALCISTA | BAJISTA
+REGIMEN_BUY_HOLD_ACTIVO = True
+REGIMEN_BUY_HOLD_SALDO  = "2000"  # Buy&Hold sale cuando el régimen cambia de dirección
 
 # =============================================================================
 # PERTURBACIONES (anti-overfitting — Leashed Brownian Motion)
@@ -64,9 +68,9 @@ RUIDO_VOLUMEN_PCT             = 0.08    # Ruido en volumen
 # =============================================================================
 # GRÁFICA
 # =============================================================================
-GRAFICA_RANGO_PERSONALIZADO = False         # False = últimos 2 meses auto | True = fechas manuales
-GRAFICA_FECHA_INICIO        = "2022-01-01"  # Solo si GRAFICA_RANGO_PERSONALIZADO=True
-GRAFICA_FECHA_FIN           = "2025-06-10"
+GRAFICA_RANGO_PERSONALIZADO = "all"       # "all" = 100% rango del trial | False = últimos 2 meses | True = fechas manuales
+GRAFICA_FECHA_INICIO        = "2023-01-01"  # Solo si GRAFICA_RANGO_PERSONALIZADO=True
+GRAFICA_FECHA_FIN           = "2024-01-10"
 
 # =============================================================================
 # COMPARATIVA POR PERÍODOS (gráfica en Excel Trial)
@@ -81,7 +85,7 @@ COMPARATIVA_PERIODO          = "1mes"  # Ejemplos: "1mes" | "3 semanas" | "2 mes
 GENERAR_PLOTS         = True      # Gráfico HTML interactivo
 USAR_EXCEL            = True      # Excel con métricas y trades
 MAX_ARCHIVOS_GUARDAR  = 5         # Conservar solo los N mejores
-TELEGRAM              = True      # Enviar reporte a Telegram
+TELEGRAM              = False      # Enviar reporte a Telegram
 CLEANUP_INTERVAL      = 200       # Liberar RAM cada N trials
 PURGE_PYCACHE_ON_EXIT = True      # Limpiar __pycache__ al terminar
 CARPETA_DATOS         = "datos"   # Carpeta con <ACTIVO>_ohlcv_1m.<ext>
@@ -90,10 +94,10 @@ FORMATO_DATOS         = "feather" # feather | parquet
 # =============================================================================
 # CAPITAL (resto)
 # =============================================================================
-SALDO_INICIAL          = 10000.0  # Saldo de inicio ($)
-SALDO_OPERATIVO_MAX    = 10000.0  # Tope máximo (sin reinversión)
+SALDO_INICIAL          = 1000.0  # Saldo de inicio ($)
+SALDO_OPERATIVO_MAX    = 100.0  # Tope máximo (sin reinversión)
 SALDO_MINIMO_OPERATIVO = 300.0   # Parar si cae por debajo
-COMISION_PCT           = 0.0003  # Comisión por operación (0.03%)
+COMISION_PCT           = 0.0005  # Comisión por operación (0.03%)
 COMISION_SIDES         = 2       # 1=solo apertura | 2=apertura+cierre
 
 # =============================================================================
@@ -195,4 +199,7 @@ CONFIG = {
     "MAX_DRIFT_PCT": MAX_DRIFT_PCT, "DRIFT_STEP_VOLATILITY": DRIFT_STEP_VOLATILITY,
     "RUIDO_MECHAS_PCT": RUIDO_MECHAS_PCT, "RUIDO_VOLUMEN_PCT": RUIDO_VOLUMEN_PCT,
     "REGIMEN_ACTIVO": REGIMEN_ACTIVO, "REGIMEN_TIPO": REGIMEN_TIPO,
+    "REGIMEN_INDICADOR": REGIMEN_INDICADOR,
+    "REGIMEN_BUY_HOLD_ACTIVO": REGIMEN_BUY_HOLD_ACTIVO,
+    "REGIMEN_BUY_HOLD_SALDO": REGIMEN_BUY_HOLD_SALDO,
 }

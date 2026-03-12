@@ -368,6 +368,26 @@ def main() -> None:
                         s_name = getattr(strat, 'name', "STRAT")
                         s_safe = re.sub(r"[^A-Z0-9_]+", "_", s_name.upper())
 
+                        # Limpiar base de datos Optuna de esta estrategia una sola vez por ejecución
+                        try:
+                            from general.configuracion import OPTUNA_RESET_DB_ON_START, OPTUNA_CREATE_DATABASE
+                        except ImportError:
+                            OPTUNA_RESET_DB_ON_START = True; OPTUNA_CREATE_DATABASE = True
+                            
+                        strat_id = getattr(strat, 'combinacion_id', None)
+                        if strat_id is not None and OPTUNA_CREATE_DATABASE and OPTUNA_RESET_DB_ON_START:
+                            if not hasattr(main, '_cleaned_dbs'):
+                                main._cleaned_dbs = set()
+                            if strat_id not in main._cleaned_dbs:
+                                try:
+                                    from modelox.optimizers.storage import delete_strategy_database
+                                    removed = delete_strategy_database(strategy_id=strat_id)
+                                    if removed > 0:
+                                        print(f"🗑️  Base de datos previa eliminada: ID{strat_id}.db")
+                                except Exception as e:
+                                    print(f"⚠️  No se pudo eliminar la DB de Optuna para ID{strat_id}: {e}")
+                                main._cleaned_dbs.add(strat_id)
+
                         # Timeframe display
                         base_suf = normalize_timeframe_to_suffix(tf_base)
                         tf_display = base_suf.upper()
@@ -386,6 +406,22 @@ def main() -> None:
                             strategy_root = os.path.join("resultados", s_safe, exit_folder, activo_safe)
                             excel_dir = os.path.join(strategy_root, "EXCEL")
                             graficos_dir = os.path.join(strategy_root, "GRAFICA")
+
+                            # Limpiar carpeta de la estrategia/salida/activo si ya existe
+                            _target_dir = strategy_root
+                            if not hasattr(main, '_cleaned_dirs'):
+                                main._cleaned_dirs = set()
+                            if _target_dir not in main._cleaned_dirs and os.path.isdir(_target_dir):
+                                import shutil
+                                try:
+                                    shutil.rmtree(_target_dir)
+                                    print(f"🗑️  Carpeta anterior eliminada: {_target_dir}/")
+                                except Exception as _e:
+                                    print(f"⚠️  No se pudo eliminar {_target_dir}: {_e}")
+                                main._cleaned_dirs.add(_target_dir)
+                            elif _target_dir not in main._cleaned_dirs:
+                                main._cleaned_dirs.add(_target_dir)
+
                             os.makedirs(excel_dir, exist_ok=True)
                             os.makedirs(graficos_dir, exist_ok=True)
 

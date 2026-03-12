@@ -124,6 +124,10 @@ class BacktestParams:
     exit_atr_min_pct:  float = DEFAULT_EXIT_ATR_MIN_PCT   # % stake mínimo (igual que sl_pct)
     exit_atr_max_pct:  float = DEFAULT_EXIT_ATR_MAX_PCT   # % stake máximo (igual que sl_pct)
     exit_atr_lookback: int   = DEFAULT_EXIT_ATR_LOOKBACK
+    # ── Régimen Buy&Hold (runtime, opcional) ──
+    regime_buy_hold_mode: bool = False
+    regime_buy_hold_saldo_all: bool = True
+    regime_buy_hold_saldo: float = 0.0
 
     @classmethod
     def from_config_and_params(cls, config: BacktestConfig, params: Dict[str, Any]) -> "BacktestParams":
@@ -145,6 +149,9 @@ class BacktestParams:
             exit_atr_min_pct=float(params.get("__exit_atr_min_pct", getattr(config, "exit_atr_min_pct", DEFAULT_EXIT_ATR_MIN_PCT))),
             exit_atr_max_pct=float(params.get("__exit_atr_max_pct", getattr(config, "exit_atr_max_pct", DEFAULT_EXIT_ATR_MAX_PCT))),
             exit_atr_lookback=int(params.get("__exit_atr_lookback", getattr(config, "exit_atr_lookback", DEFAULT_EXIT_ATR_LOOKBACK))),
+            regime_buy_hold_mode=bool(params.get("__regime_buy_hold_mode", False)),
+            regime_buy_hold_saldo_all=bool(params.get("__regime_buy_hold_saldo_all", True)),
+            regime_buy_hold_saldo=float(params.get("__regime_buy_hold_saldo", 0.0) or 0.0),
         )
 
 
@@ -256,6 +263,7 @@ def _simulate_trades_with_1m_exits(
     entry_indices: np.ndarray,
     entry_prices: np.ndarray,
     entry_types: np.ndarray,
+    entry_is_buy_hold: np.ndarray,
     entry_timestamps: np.ndarray,  # Timestamps del TF de entrada
     # Datos de 1m para salidas
     close_1m: np.ndarray,
@@ -266,8 +274,10 @@ def _simulate_trades_with_1m_exits(
     saldo_inicial: float,
     fee_rate: float,
     min_op: float,
-    apalancamiento_max: float,
-    saldo_usado_cfg: float,
+    apalancamiento_max: float,    # Para trades B&H
+    saldo_usado_cfg: float,       # Para trades B&H
+    apalancamiento_strat: float,  # Para trades de estrategia
+    saldo_usado_strat: float,     # Para trades de estrategia
     # Parámetros de salida
     is_trailing: bool,
     sl_pct: float,
@@ -341,26 +351,34 @@ def _simulate_trades_with_1m_exits(
         
         entry_p = entry_prices[i]
         side = entry_types[i]
+        is_bh_trade = entry_is_buy_hold[i]
         
-        # Calcular saldo_usado real
-        saldo_usado = min(saldo_usado_cfg, current_balance)
-        
+        # Calcular saldo_usado real (B&H usa config BH, estrategia usa config estrategia)
+        _saldo_cfg = saldo_usado_cfg if is_bh_trade else saldo_usado_strat
+        _apal = apalancamiento_max if is_bh_trade else apalancamiento_strat
+        saldo_usado = min(_saldo_cfg, current_balance)
+
         # Calcular qty dinámica
-        volumen_max = saldo_usado * apalancamiento_max
+        volumen_max = saldo_usado * _apal
         qty = volumen_max / entry_p if entry_p > 0 else 0.0
         
         if qty <= 0 or saldo_usado <= 0:
             continue
         
         # Calcular distancias de precio (ATR adaptive o % sobre stake)
-        if len(atr_sl_dist_arr) > 0:
+        if len(atr_sl_dist_arr) > 0 and not is_bh_trade:
             sl_distance = atr_sl_dist_arr[i]
             tp_distance = atr_tp_dist_arr[i]
         else:
-            sl_distance = (saldo_usado * sl_pct / 100.0) / qty
-            tp_distance = (saldo_usado * tp_pct / 100.0) / qty
-        trail_act_distance = (saldo_usado * trail_act_pct / 100.0) / qty
-        trail_dist_distance = (saldo_usado * trail_dist_pct / 100.0) / qty
+            # Buy&Hold por régimen: SL fijo de seguridad del 25%
+            _sl_pct = 25.0 if is_bh_trade else sl_pct
+            _tp_pct = 0.0 if is_bh_trade else tp_pct
+            sl_distance = (saldo_usado * _sl_pct / 100.0) / qty
+            tp_distance = (saldo_usado * _tp_pct / 100.0) / qty
+        _trail_act_pct = 0.0 if is_bh_trade else trail_act_pct
+        _trail_dist_pct = 0.0 if is_bh_trade else trail_dist_pct
+        trail_act_distance = (saldo_usado * _trail_act_pct / 100.0) / qty
+        trail_dist_distance = (saldo_usado * _trail_dist_pct / 100.0) / qty
 
         if side == 1:  # LONG
             sl_price = entry_p - sl_distance
@@ -378,7 +396,7 @@ def _simulate_trades_with_1m_exits(
         # time_stop_bars está en barras del TF de entrada
         search_limit_1m = n_bars_1m
         limit_1m = n_bars_1m
-        if time_stop_bars > 0:
+        if (time_stop_bars > 0) and (not is_bh_trade):
             limit_tf = entry_idx_tf + time_stop_bars
             if limit_tf < len(entry_timestamps):
                 limit_ts = entry_timestamps[limit_tf]
@@ -412,7 +430,7 @@ def _simulate_trades_with_1m_exits(
                 exit_reason = 5  # Custom Signal
                 break
             
-            if is_trailing:
+            if is_trailing and (not is_bh_trade):
                 if not trailing_active:
                     # Check SL inicial
                     if side == 1 and low_val <= sl_price:
@@ -471,7 +489,7 @@ def _simulate_trades_with_1m_exits(
                         exit_p = sl_price
                         exit_reason = 1
                         break
-                    if tp_pct > 0 and h >= tp_price:
+                    if (not is_bh_trade) and tp_pct > 0 and h >= tp_price:
                         exit_idx_1m = curr_1m
                         exit_p = tp_price
                         exit_reason = 2
@@ -482,14 +500,14 @@ def _simulate_trades_with_1m_exits(
                         exit_p = sl_price
                         exit_reason = 1
                         break
-                    if tp_pct > 0 and low_val <= tp_price:
+                    if (not is_bh_trade) and tp_pct > 0 and low_val <= tp_price:
                         exit_idx_1m = curr_1m
                         exit_p = tp_price
                         exit_reason = 2
                         break
         
         # Time stop fallback
-        if exit_idx_1m == -1 and time_stop_bars > 0:
+        if exit_idx_1m == -1 and time_stop_bars > 0 and (not is_bh_trade):
             final_idx_1m = limit_1m - 1
             if final_idx_1m >= n_bars_1m:
                 final_idx_1m = n_bars_1m - 1
@@ -521,7 +539,6 @@ def _simulate_trades_with_1m_exits(
             comision = entry_p * qty * fee_rate
         
         pnl_neto = pnl_bruto - comision
-        pnl_pct = (pnl_neto / saldo_usado * 100) if saldo_usado > 0 else 0.0
         
         saldo_antes = current_balance
         current_balance += pnl_neto
@@ -530,6 +547,11 @@ def _simulate_trades_with_1m_exits(
             current_balance = min_op
         
         saldo_despues = current_balance
+
+        # IMPORTANTE: el PnL contabilizado debe ser consistente con el cambio
+        # real de balance (especialmente cuando se aplica floor de saldo mínimo).
+        pnl_neto = saldo_despues - saldo_antes
+        pnl_pct = (pnl_neto / saldo_usado * 100) if saldo_usado > 0 else 0.0
         
         # Guardar trade
         out_entry_idx[trade_count] = entry_idx_tf  # Índice en TF de entrada
@@ -558,6 +580,7 @@ def _simulate_trades_sequential(
     entry_indices: np.ndarray,
     entry_prices: np.ndarray,
     entry_types: np.ndarray,
+    entry_is_buy_hold: np.ndarray,
     close_prices: np.ndarray,
     high_prices: np.ndarray,
     low_prices: np.ndarray,
@@ -566,6 +589,8 @@ def _simulate_trades_sequential(
     min_op: float,
     apalancamiento_max: float,
     saldo_usado_cfg: float,
+    apalancamiento_strat: float,  # Para trades de estrategia
+    saldo_usado_strat: float,     # Para trades de estrategia
     is_trailing: bool,
     sl_pct: float,
     tp_pct: float,
@@ -621,23 +646,32 @@ def _simulate_trades_sequential(
         
         entry_p = entry_prices[i]
         side = entry_types[i]
-        
-        saldo_usado = min(saldo_usado_cfg, current_balance)
-        volumen_max = saldo_usado * apalancamiento_max
+        is_bh_trade = entry_is_buy_hold[i]
+
+        # B&H usa config BH, estrategia usa config estrategia
+        _saldo_cfg = saldo_usado_cfg if is_bh_trade else saldo_usado_strat
+        _apal = apalancamiento_max if is_bh_trade else apalancamiento_strat
+        saldo_usado = min(_saldo_cfg, current_balance)
+        volumen_max = saldo_usado * _apal
         qty = volumen_max / entry_p if entry_p > 0 else 0.0
-        
+
         if qty <= 0 or saldo_usado <= 0:
             continue
-        
+
         # Calcular distancias de precio (ATR adaptive o % sobre stake)
-        if len(atr_sl_dist_arr) > 0:
+        if len(atr_sl_dist_arr) > 0 and not is_bh_trade:
             sl_distance = atr_sl_dist_arr[i]
             tp_distance = atr_tp_dist_arr[i]
         else:
-            sl_distance = (saldo_usado * sl_pct / 100.0) / qty
-            tp_distance = (saldo_usado * tp_pct / 100.0) / qty
-        trail_act_distance = (saldo_usado * trail_act_pct / 100.0) / qty
-        trail_dist_distance = (saldo_usado * trail_dist_pct / 100.0) / qty
+            # Buy&Hold por régimen: SL fijo de seguridad del 25%
+            _sl_pct = 25.0 if is_bh_trade else sl_pct
+            _tp_pct = 0.0 if is_bh_trade else tp_pct
+            sl_distance = (saldo_usado * _sl_pct / 100.0) / qty
+            tp_distance = (saldo_usado * _tp_pct / 100.0) / qty
+        _trail_act_pct = 0.0 if is_bh_trade else trail_act_pct
+        _trail_dist_pct = 0.0 if is_bh_trade else trail_dist_pct
+        trail_act_distance = (saldo_usado * _trail_act_pct / 100.0) / qty
+        trail_dist_distance = (saldo_usado * _trail_dist_pct / 100.0) / qty
 
         if side == 1:
             sl_price = entry_p - sl_distance
@@ -652,7 +686,7 @@ def _simulate_trades_sequential(
         trailing_level = 0.0
 
         search_limit = n_bars
-        if time_stop_bars > 0:
+        if (time_stop_bars > 0) and (not is_bh_trade):
             limit = entry_idx + time_stop_bars + 1
             if limit < search_limit:
                 search_limit = limit
@@ -681,7 +715,7 @@ def _simulate_trades_sequential(
                 exit_reason = 5
                 break
             
-            if is_trailing:
+            if is_trailing and (not is_bh_trade):
                 if not trailing_active:
                     if side == 1 and low_val <= sl_price:
                         exit_idx = curr
@@ -731,7 +765,7 @@ def _simulate_trades_sequential(
                         exit_p = sl_price
                         exit_reason = 1
                         break
-                    if tp_pct > 0 and h >= tp_price:
+                    if (not is_bh_trade) and tp_pct > 0 and h >= tp_price:
                         exit_idx = curr
                         exit_p = tp_price
                         exit_reason = 2
@@ -742,13 +776,13 @@ def _simulate_trades_sequential(
                         exit_p = sl_price
                         exit_reason = 1
                         break
-                    if tp_pct > 0 and low_val <= tp_price:
+                    if (not is_bh_trade) and tp_pct > 0 and low_val <= tp_price:
                         exit_idx = curr
                         exit_p = tp_price
                         exit_reason = 2
                         break
         
-        if exit_idx == -1 and time_stop_bars > 0:
+        if exit_idx == -1 and time_stop_bars > 0 and (not is_bh_trade):
             final_idx = entry_idx + time_stop_bars
             if final_idx >= n_bars:
                 final_idx = n_bars - 1
@@ -778,7 +812,6 @@ def _simulate_trades_sequential(
             comision = entry_p * qty * fee_rate
         
         pnl_neto = pnl_bruto - comision
-        pnl_pct = (pnl_neto / saldo_usado * 100) if saldo_usado > 0 else 0.0
         
         saldo_antes = current_balance
         current_balance += pnl_neto
@@ -787,6 +820,11 @@ def _simulate_trades_sequential(
             current_balance = min_op
         
         saldo_despues = current_balance
+
+        # IMPORTANTE: el PnL contabilizado debe ser consistente con el cambio
+        # real de balance (especialmente cuando se aplica floor de saldo mínimo).
+        pnl_neto = saldo_despues - saldo_antes
+        pnl_pct = (pnl_neto / saldo_usado * 100) if saldo_usado > 0 else 0.0
         
         out_entry_idx[trade_count] = entry_idx
         out_exit_idx[trade_count] = exit_idx
@@ -889,6 +927,13 @@ def calculate_performance_vectorized_numba(
     entry_long_np = entry_long.to_numpy()
     signal_types = np.where(entry_long_np[signal_indices], 1, -1).astype(np.int64)
     
+    # Flag por entrada: si proviene de señal Buy&Hold por régimen
+    if "regime_buy_hold_long" in signals.columns:
+        _bh_col = signals["regime_buy_hold_long"].fill_null(False).to_numpy()
+        signal_is_bh = _bh_col[signal_indices]
+    else:
+        signal_is_bh = np.zeros(len(signal_indices), dtype=np.bool_)
+    
     # ========== ENTRADA AL INICIO DE LA SIGUIENTE VELA (OPEN) ==========
     # Desplazamos la entrada a la siguiente vela
     entry_indices = signal_indices + 1
@@ -897,6 +942,7 @@ def calculate_performance_vectorized_numba(
     valid_mask = entry_indices < df.height
     entry_indices = entry_indices[valid_mask]
     entry_types = signal_types[valid_mask]
+    entry_is_buy_hold = signal_is_bh[valid_mask]
     
     # Precio de entrada = OPEN de la vela de entrada (la siguiente a la señal)
     entry_prices = o_arr[entry_indices]
@@ -911,6 +957,21 @@ def calculate_performance_vectorized_numba(
     min_op = float(params.saldo_minimo_operativo)
     apalancamiento_max = float(params.apalancamiento_max)
     saldo_usado_cfg = float(params.saldo_usado)
+
+    # Guardar valores originales de estrategia antes de posible override B&H
+    apalancamiento_strat = apalancamiento_max
+    saldo_usado_strat = saldo_usado_cfg
+
+    # Modo Buy&Hold por régimen (inyectado por runner):
+    # - usa 100% del balance (ALL) o saldo fijo capado por balance.
+    # - fuerza apalancamiento 1x para simular compra spot del activo.
+    bh_mode = bool(getattr(params, "regime_buy_hold_mode", False))
+    if bh_mode:
+        bh_all = bool(getattr(params, "regime_buy_hold_saldo_all", True))
+        bh_saldo = float(getattr(params, "regime_buy_hold_saldo", 0.0) or 0.0)
+        saldo_usado_cfg = 1e18 if bh_all else max(0.0, bh_saldo)
+        apalancamiento_max = 1.0
+
     sl_pct = float(params.exit_sl_pct)
     tp_pct = float(params.exit_tp_pct)
     trail_act = float(params.exit_trail_act_pct)
@@ -939,7 +1000,7 @@ def calculate_performance_vectorized_numba(
             close=c_arr,
             entry_indices=entry_indices,
             entry_prices=entry_prices,
-            apalancamiento_max=apalancamiento_max,
+            apalancamiento_max=apalancamiento_strat,  # Siempre el leverage de estrategia, nunca el B&H override
             atr_period=int(getattr(params, "exit_atr_period", DEFAULT_EXIT_ATR_PERIOD)),
             atr_min_pct=float(getattr(params, "exit_atr_min_pct", DEFAULT_EXIT_ATR_MIN_PCT)),
             atr_max_pct=float(getattr(params, "exit_atr_max_pct", DEFAULT_EXIT_ATR_MAX_PCT)),
@@ -973,17 +1034,34 @@ def calculate_performance_vectorized_numba(
         
         tf_ratio = timeframe_minutes  # Ratio de velas 1m por vela TF
         
-        # Señales de salida en 1m
+        # Señales de salida en 1m (estrategia)
         if signals_1m is not None and "exit_long" in signals_1m.columns:
             exit_long_1m = signals_1m["exit_long"].fill_null(False).to_numpy()
         else:
             exit_long_1m = np.zeros(len(df_1m), dtype=np.bool_)
-            
+
         if signals_1m is not None and "exit_short" in signals_1m.columns:
             exit_short_1m = signals_1m["exit_short"].fill_null(False).to_numpy()
         else:
             exit_short_1m = np.zeros(len(df_1m), dtype=np.bool_)
-        
+
+        # Propagar señales de salida del TF (régimen, custom) a resolución 1m.
+        # CRÍTICO: el filtro de régimen escribe exit_long/exit_short en signals (TF),
+        # pero el kernel 1m solo lee exit_long_1m. Sin esto, los trades abiertos
+        # en régimen no permitido nunca se cierran → la estrategia se bloquea.
+        _tf_idx_per_1m = np.clip(
+            np.searchsorted(ts_entry, ts_1m, side='right') - 1,
+            0, len(ts_entry) - 1,
+        )
+        if "exit_long" in signals.columns:
+            _tf_ex_l = signals["exit_long"].fill_null(False).to_numpy()
+            if _tf_ex_l.any():
+                exit_long_1m = exit_long_1m | _tf_ex_l[_tf_idx_per_1m]
+        if "exit_short" in signals.columns:
+            _tf_ex_s = signals["exit_short"].fill_null(False).to_numpy()
+            if _tf_ex_s.any():
+                exit_short_1m = exit_short_1m | _tf_ex_s[_tf_idx_per_1m]
+
         (out_entry_idx, out_exit_idx, out_entry_price, out_exit_price,
          out_side, out_reason, out_qty, out_saldo_usado, out_pnl_neto,
          out_pnl_pct, out_saldo_antes, out_saldo_despues,
@@ -991,6 +1069,7 @@ def calculate_performance_vectorized_numba(
             entry_indices=entry_indices,
             entry_prices=entry_prices,
             entry_types=entry_types,
+            entry_is_buy_hold=entry_is_buy_hold,
             entry_timestamps=ts_entry,
             close_1m=c_1m,
             high_1m=h_1m,
@@ -1001,6 +1080,8 @@ def calculate_performance_vectorized_numba(
             min_op=min_op,
             apalancamiento_max=apalancamiento_max,
             saldo_usado_cfg=saldo_usado_cfg,
+            apalancamiento_strat=apalancamiento_strat,
+            saldo_usado_strat=saldo_usado_strat,
             is_trailing=is_trailing,
             sl_pct=sl_pct,
             tp_pct=tp_pct,
@@ -1026,6 +1107,7 @@ def calculate_performance_vectorized_numba(
             entry_indices=entry_indices,
             entry_prices=entry_prices,
             entry_types=entry_types,
+            entry_is_buy_hold=entry_is_buy_hold,
             close_prices=c_arr,
             high_prices=h_arr,
             low_prices=l_arr,
@@ -1034,6 +1116,8 @@ def calculate_performance_vectorized_numba(
             min_op=min_op,
             apalancamiento_max=apalancamiento_max,
             saldo_usado_cfg=saldo_usado_cfg,
+            apalancamiento_strat=apalancamiento_strat,
+            saldo_usado_strat=saldo_usado_strat,
             is_trailing=is_trailing,
             sl_pct=sl_pct,
             tp_pct=tp_pct,
@@ -1069,6 +1153,11 @@ def calculate_performance_vectorized_numba(
     saldo_despues_view = out_saldo_despues[:trade_count]
     trail_act_idx_view = out_trail_act_idx[:trade_count]
     trail_act_price_view = out_trail_act_price[:trade_count]
+    
+    # Flag por trade: si la entrada provino del modo Buy&Hold por régimen
+    entry_is_bh_by_idx = np.zeros(df.height, dtype=np.bool_)
+    entry_is_bh_by_idx[entry_indices] = entry_is_buy_hold
+    is_buy_hold_view = entry_is_bh_by_idx[entry_idx_view]
     
     # PnL bruto y comisión
     pnl_bruto = np.where(
@@ -1107,6 +1196,7 @@ def calculate_performance_vectorized_numba(
         "exit_time": exit_times,
         "trail_act_idx": trail_act_idx_view,
         "trail_act_price": trail_act_price_view,
+        "is_buy_hold": is_buy_hold_view,
     })
 
     # Para exit_type=time_bars, la duración debe representar barras del TF de entrada,
@@ -1163,7 +1253,7 @@ def _warmup_jit() -> None:
         dummy_bool = np.zeros(20, dtype=np.bool_)
         dummy_atr = np.empty(0, dtype=np.float64)  # ATR arrays vacíos (modo no-ATR)
         _simulate_trades_sequential(
-            dummy_entries, dummy_prices, dummy_types,
+            dummy_entries, dummy_prices, dummy_types, np.zeros(3, dtype=np.bool_),
             dummy_close, dummy_high, dummy_low,
             1000.0, 0.001, 100.0, 10.0, 75.0,
             False, 5.0, 10.0, 0.0, 0.0, 0, 2,
@@ -1182,7 +1272,7 @@ def _warmup_jit() -> None:
         dummy_ts_1m = np.arange(100, dtype=np.int64)
         dummy_atr_1m = np.empty(0, dtype=np.float64)  # ATR arrays vacíos (modo no-ATR)
         _simulate_trades_with_1m_exits(
-            dummy_entries, dummy_prices, dummy_types, dummy_ts,
+            dummy_entries, dummy_prices, dummy_types, np.zeros(3, dtype=np.bool_), dummy_ts,
             dummy_close_1m, dummy_high_1m, dummy_low_1m, dummy_ts_1m,
             1000.0, 0.001, 100.0, 10.0, 75.0,
             False, 5.0, 10.0, 0.0, 0.0, 0, 2,

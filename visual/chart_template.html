@@ -1,0 +1,826 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width,initial-scale=1,maximum-scale=1,user-scalable=no">
+<title>MODELOX</title>
+<script src="https://unpkg.com/lightweight-charts@4.1.0/dist/lightweight-charts.standalone.production.js"></script>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500;600;700&family=Inter:wght@400;500;600&display=swap" rel="stylesheet">
+<style>
+*,*::before,*::after{margin:0;padding:0;box-sizing:border-box}
+html,body{width:100%;height:100%;overflow:hidden;background:#07090F;color:#BDC3D1;font-family:'Inter',system-ui,sans-serif;-webkit-font-smoothing:antialiased;font-size:13px}
+:root{
+  --bg:#07090F;--panel:#0C0F18;--raised:#111722;--hover:#161C2A;
+  --b0:rgba(255,255,255,.04);--b1:rgba(255,255,255,.08);--b2:rgba(255,255,255,.14);
+  --text:#BDC3D1;--dim:#5A6070;--muted:#32384A;
+  --green:#00C087;--red:#E8374A;--blue:#1D6FDB;--gold:#C8A045;
+  --mono:'IBM Plex Mono','JetBrains Mono',monospace;
+  --tb:44px;--sb:218px;--stb:26px;
+}
+/* ── APP SHELL ── */
+#app{display:flex;flex-direction:column;width:100vw;height:100vh}
+/* ── TOP BAR ── */
+#topbar{height:var(--tb);min-height:var(--tb);background:var(--panel);border-bottom:1px solid var(--b0);display:flex;align-items:center;padding:0 10px;gap:0;z-index:100;flex-shrink:0}
+.tb-brand{font-family:var(--mono);font-size:9px;font-weight:700;color:var(--blue);letter-spacing:3px;text-transform:uppercase;padding:0 12px 0 2px;border-right:1px solid var(--b1);margin-right:10px;white-space:nowrap;flex-shrink:0}
+.tb-sym{font-size:14px;font-weight:600;letter-spacing:-.3px;color:var(--text);margin-right:8px;white-space:nowrap;flex-shrink:0}
+.tb-chip{font-family:var(--mono);font-size:8.5px;color:var(--dim);background:var(--b0);padding:2px 8px;border:1px solid var(--b0);border-radius:2px;margin-right:5px;white-space:nowrap;flex-shrink:0}
+.tb-kpis{display:flex;align-items:stretch;height:100%;flex:1;overflow:hidden;justify-content:center;border-left:1px solid var(--b0);margin-left:6px}
+.kpi{display:flex;align-items:center;gap:6px;padding:0 14px;border-right:1px solid var(--b0);white-space:nowrap;flex-shrink:0}
+.kpi-l{font-size:7px;font-weight:600;color:var(--muted);text-transform:uppercase;letter-spacing:1px}
+.kpi-v{font-family:var(--mono);font-size:11px;font-weight:600}
+.kpi-v.pos{color:var(--green)}.kpi-v.neg{color:var(--red)}.kpi-v.neu{color:var(--text)}
+.tb-ctrl{display:flex;align-items:center;gap:3px;padding-left:8px;flex-shrink:0}
+.btn{height:26px;padding:0 10px;background:var(--b0);border:1px solid var(--b0);border-radius:2px;color:var(--dim);font-family:var(--mono);font-size:9.5px;cursor:pointer;display:flex;align-items:center;gap:5px;transition:background .1s,color .1s,border-color .1s;white-space:nowrap;user-select:none}
+.btn:hover{background:var(--hover);color:var(--text);border-color:var(--b1)}
+.btn.on{background:rgba(29,111,219,.18);border-color:rgba(29,111,219,.35);color:var(--blue)}
+/* ── WORKSPACE ── */
+#workspace{flex:1;display:flex;overflow:hidden;min-height:0}
+/* ── SIDEBAR ── */
+#sidebar{width:var(--sb);min-width:var(--sb);background:var(--panel);border-right:1px solid var(--b0);display:flex;flex-direction:column;overflow:hidden;flex-shrink:0;transition:width .2s ease,min-width .2s ease}
+#sidebar.off{width:0;min-width:0}
+.sb-head{height:30px;min-height:30px;display:flex;align-items:center;justify-content:space-between;padding:0 10px 0 14px;border-bottom:1px solid var(--b0);flex-shrink:0}
+.sb-ttl{font-size:7.5px;font-weight:700;color:var(--muted);text-transform:uppercase;letter-spacing:1.5px}
+.sb-x{background:none;border:none;color:var(--dim);cursor:pointer;width:18px;height:18px;display:flex;align-items:center;justify-content:center;border-radius:2px;font-size:13px;transition:color .1s,background .1s}
+.sb-x:hover{color:var(--text);background:var(--b1)}
+#lyrs{flex:1;overflow-y:auto;padding:4px 0}
+#lyrs::-webkit-scrollbar{width:2px}
+#lyrs::-webkit-scrollbar-thumb{background:rgba(255,255,255,.07);border-radius:2px}
+.sec{padding:9px 14px 3px;font-size:7px;font-weight:700;color:var(--muted);text-transform:uppercase;letter-spacing:1.5px}
+.lyr{display:flex;align-items:center;gap:7px;padding:5px 9px 5px 14px;user-select:none;transition:background .08s;cursor:default}
+.lyr:hover{background:var(--hover)}
+.ldot{width:6px;height:6px;border-radius:50%;flex-shrink:0}
+.lname{font-size:10px;color:var(--dim);flex:1;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.lval{font-family:var(--mono);font-size:9px;color:var(--dim);min-width:52px;text-align:right;flex-shrink:0}
+.eye{background:none;border:none;cursor:pointer;color:var(--muted);padding:2px;border-radius:2px;display:flex;align-items:center;flex-shrink:0;transition:color .1s}
+.eye:hover{color:var(--text)}.eye.off{opacity:.25}
+.lyr.hid .lname{opacity:.28;text-decoration:line-through}.lyr.hid .lval{opacity:.15}
+/* ── CHART AREA ── */
+#ca{flex:1;display:flex;flex-direction:column;overflow:hidden;position:relative;min-width:0}
+.pnl{position:relative;overflow:hidden;border-bottom:1px solid var(--b0);min-height:40px}
+.pnl-main{flex:3 1 0}.pnl-sub{flex:1 1 0}
+.ptag{position:absolute;top:6px;left:10px;z-index:20;font-family:var(--mono);font-size:7.5px;font-weight:700;color:rgba(255,255,255,.1);text-transform:uppercase;letter-spacing:1.5px;pointer-events:none}
+/* ── RESIZER ── */
+.rzr{height:4px;flex:0 0 4px;background:transparent;cursor:row-resize;z-index:50;position:relative;transition:background .12s}
+.rzr:hover,.rzr.on{background:rgba(29,111,219,.45)}
+/* ── STATUS BAR ── */
+#stbar{height:var(--stb);min-height:var(--stb);background:var(--panel);border-top:1px solid var(--b0);display:flex;align-items:center;padding:0 12px;gap:0;flex-shrink:0;z-index:100;overflow:hidden}
+.stb-sep{width:1px;height:12px;background:var(--b1);margin:0 12px;flex-shrink:0}
+.stb-grp{display:flex;align-items:center;gap:6px;flex-shrink:0}
+.stb-l{font-family:var(--mono);font-size:8.5px;color:var(--muted)}
+.stb-v{font-family:var(--mono);font-size:8.5px;color:var(--dim)}
+#stb-time{font-family:var(--mono);font-size:8.5px;color:var(--dim)}
+#stb-hint{margin-left:auto;font-family:var(--mono);font-size:8px;color:var(--muted);opacity:.6;white-space:nowrap}
+.pos{color:var(--green)}.neg{color:var(--red)}
+/* ── TOOLTIP ── */
+#tt{position:fixed;display:none;background:rgba(10,12,20,.97);backdrop-filter:blur(20px);border:1px solid rgba(255,255,255,.07);border-radius:3px;padding:10px 13px;z-index:600;pointer-events:none;min-width:185px;box-shadow:0 16px 48px rgba(0,0,0,.8),0 0 0 1px rgba(255,255,255,.03)}
+.tt-hd{display:flex;justify-content:space-between;align-items:center;margin-bottom:8px;padding-bottom:7px;border-bottom:1px solid rgba(255,255,255,.05)}
+.tt-side{font-family:var(--mono);font-size:11px;font-weight:700;letter-spacing:.3px}
+.tt-res{font-family:var(--mono);font-size:7.5px;font-weight:700;padding:2px 6px;border-radius:2px;letter-spacing:.5px}
+.tt-res.W{background:rgba(0,192,135,.12);color:var(--green);border:1px solid rgba(0,192,135,.22)}
+.tt-res.L{background:rgba(232,55,74,.10);color:var(--red);border:1px solid rgba(232,55,74,.18)}
+.tt-row{display:flex;justify-content:space-between;gap:14px;margin-bottom:4px}
+.tt-row:last-child{margin-bottom:0}
+.tt-l{color:var(--dim);font-size:9px;text-transform:uppercase;letter-spacing:.3px}
+.tt-v{font-family:var(--mono);font-size:10px;font-weight:500}
+.tt-sep{height:1px;background:rgba(255,255,255,.05);margin:6px 0}
+.tt-pnl{font-family:var(--mono);font-size:13px;font-weight:700}
+/* ── RULER CANVAS ── */
+#rc{position:absolute;inset:0;pointer-events:none;z-index:40}
+/* ── SCROLLBARS ── */
+::-webkit-scrollbar{width:2px;height:2px}
+::-webkit-scrollbar-thumb{background:rgba(255,255,255,.07);border-radius:2px}
+</style>
+</head>
+<body>
+<div id="app">
+  <!-- TOP BAR -->
+  <div id="topbar">
+    <span class="tb-brand">MODELOX</span>
+    <span class="tb-sym" id="tb-asset"></span>
+    <span class="tb-chip" id="tb-combo"></span>
+    <span class="tb-chip" id="tb-trial"></span>
+    <div class="tb-kpis" id="tb-kpis"></div>
+    <div class="tb-ctrl">
+      <button class="btn on" id="btn-sb">&#9776; Layers</button>
+      <button class="btn" id="btn-fit">&#8596; Fit</button>
+      <button class="btn" id="btn-zi">&#xFF0B;</button>
+      <button class="btn" id="btn-zo">&#xFF0D;</button>
+      <button class="btn" id="btn-focus">Focus</button>
+    </div>
+  </div>
+  <!-- WORKSPACE -->
+  <div id="workspace">
+    <aside id="sidebar">
+      <div class="sb-head"><span class="sb-ttl">Layers</span><button class="sb-x" id="btn-sbx">&#215;</button></div>
+      <div id="lyrs"></div>
+    </aside>
+    <div id="ca"></div>
+  </div>
+  <!-- STATUS BAR -->
+  <div id="stbar">
+    <span id="stb-time">—</span>
+    <div class="stb-sep"></div>
+    <div class="stb-grp"><span class="stb-l">O</span><span class="stb-v" id="stb-o">—</span></div>
+    <div class="stb-grp"><span class="stb-l">H</span><span class="stb-v" id="stb-h">—</span></div>
+    <div class="stb-grp"><span class="stb-l">L</span><span class="stb-v" id="stb-l">—</span></div>
+    <div class="stb-grp"><span class="stb-l">C</span><span class="stb-v" id="stb-c">—</span></div>
+    <span id="stb-hint">&#8679; Shift+drag to measure</span>
+  </div>
+</div>
+<div id="tt"></div>
+
+<script type="application/json" id="_D">%%INJECT_D%%</script>
+<script type="application/json" id="_I">%%INJECT_I%%</script>
+<script type="application/json" id="_T">%%INJECT_T%%</script>
+<script type="application/json" id="_E">%%INJECT_E%%</script>
+<script type="application/json" id="_C">%%INJECT_CFG%%</script>
+
+<script>
+(function(){'use strict';try{
+var _g=function(id){return JSON.parse(document.getElementById(id).textContent);};
+var D=_g('_D'),I=_g('_I'),T=_g('_T'),E=_g('_E'),CFG=_g('_C');
+
+// ── GUARD ──────────────────────────────────────────────────────────────────
+if(!D||!D.t||!D.t.length){
+  document.body.innerHTML='<div style="display:flex;height:100vh;align-items:center;justify-content:center;color:#32384A;font:11px var(--mono)">NO DATA</div>';
+  return;
+}
+
+// ── TOPBAR ─────────────────────────────────────────────────────────────────
+document.title='MX · '+CFG.activo+' · #'+CFG.trial;
+document.getElementById('tb-asset').textContent=CFG.activo;
+document.getElementById('tb-combo').textContent=CFG.combo;
+document.getElementById('tb-trial').textContent='T#'+CFG.trial;
+(function(){
+  var f=function(v,d){return Number(v||0).toFixed(d);};
+  var $=function(v){return '$'+Math.abs(v||0).toLocaleString('en-US',{maximumFractionDigits:0});};
+  var kpis=[
+    {l:'Trades', v:String(CFG.total_trades),             c:'neu'},
+    {l:'WinRate',v:f(CFG.winrate,1)+'%',                 c:CFG.winrate>=50?'pos':'neu'},
+    {l:'PnL',    v:$(CFG.pnl_neto),                      c:CFG.pnl_neto>=0?'pos':'neg'},
+    {l:'ROI',    v:f(CFG.roi,2)+'%',                     c:CFG.roi>=0?'pos':'neg'},
+    {l:'Max DD', v:f(CFG.max_dd,2)+'%',                  c:'neg'},
+    {l:'P.Factor',v:f(CFG.pf,2),                         c:CFG.pf>=1?'pos':'neg'},
+    {l:'Expect.', v:f(CFG.expectancy,2),                  c:CFG.expectancy>=0?'pos':'neu'},
+    {l:'Score',  v:f(CFG.score,1),                       c:'neu'},
+    {l:'Avg Win',v:'$'+f(CFG.avg_win,2),                 c:'pos'},
+    {l:'Avg Loss',v:'$'+f(CFG.avg_loss,2),               c:'neg'},
+  ];
+  var cont=document.getElementById('tb-kpis');
+  kpis.forEach(function(k){
+    var d=document.createElement('div');d.className='kpi';
+    d.innerHTML='<span class="kpi-l">'+k.l+'</span><span class="kpi-v '+k.c+'">'+k.v+'</span>';
+    cont.appendChild(d);
+  });
+})();
+
+// ── CONSTANTS ──────────────────────────────────────────────────────────────
+var MON=['Jan','Feb','Mar','Apr','May','Jun','Jul','Aug','Sep','Oct','Nov','Dec'];
+var N=D.t.length;
+
+// Pre-decode candle array once
+var cData=new Array(N);
+for(var i=0;i<N;i++) cData[i]={time:D.t[i],open:D.o[i]/D.f,high:D.h[i]/D.f,low:D.l[i]/D.f,close:D.c[i]/D.f};
+
+// O(1) timestamp → index lookup
+var tIdx=new Map();
+for(var i=0;i<N;i++) tIdx.set(D.t[i],i);
+
+// ── STATE ──────────────────────────────────────────────────────────────────
+var charts=[];      // [{ch,el,series,data}]
+var layers=[];      // [{name,color,series,valEl,sortData}]
+var subEntries=[];  // non-main panel entries (vol, indicators, equity)
+var rzrEls=[];      // resizer DOM elements
+var overlaySeries=[];// indicator series overlaid on main price chart
+var syncing=false, rafSync=null, rafCross=null, lastCross=null;
+var sbOpen=true, focusMode=false;
+var lyrSection='';
+
+// ── PRICE FORMAT ───────────────────────────────────────────────────────────
+function fp(v){if(v>=10000)return v.toFixed(1);if(v>=1)return v.toFixed(2);return v.toFixed(4);}
+function ft(ts){
+  var d=new Date(ts*1000);
+  return d.getUTCDate()+' '+MON[d.getUTCMonth()]+' '+d.getUTCFullYear()
+    +'  '+String(d.getUTCHours()).padStart(2,'0')+':'+String(d.getUTCMinutes()).padStart(2,'0')+' UTC';
+}
+
+// ── LWC BASE OPTIONS ───────────────────────────────────────────────────────
+function mkOpts(showTS){
+  return{
+    autoSize:true,
+    layout:{background:{type:'solid',color:'#07090F'},textColor:'#3D4355',fontSize:9,fontFamily:"'IBM Plex Mono','JetBrains Mono',monospace"},
+    grid:{vertLines:{color:'rgba(255,255,255,.022)'},horzLines:{color:'rgba(255,255,255,.022)'}},
+    crosshair:{
+      mode:1,
+      vertLine:{color:'rgba(255,255,255,.12)',labelBackgroundColor:'#111722',style:0,width:1},
+      horzLine:{color:'rgba(255,255,255,.12)',labelBackgroundColor:'#111722',style:0,width:1},
+    },
+    timeScale:{
+      borderColor:'rgba(255,255,255,.05)',rightOffset:8,barSpacing:4,minBarSpacing:0.2,
+      fixLeftEdge:false,fixRightEdge:false,lockVisibleTimeRangeOnResize:true,
+      visible:showTS,timeVisible:true,secondsVisible:false,
+      tickMarkFormatter:function(time,type){
+        var d=new Date(time*1000);
+        var day=d.getUTCDate(),mon=MON[d.getUTCMonth()],yr=String(d.getUTCFullYear()).slice(2);
+        var h=String(d.getUTCHours()).padStart(2,'0'),m=String(d.getUTCMinutes()).padStart(2,'0');
+        if(type<=1)return mon+"'"+yr;
+        if(type===2)return day+' '+mon;
+        return h+':'+m;
+      }
+    },
+    rightPriceScale:{borderColor:'rgba(255,255,255,.05)',scaleMargins:{top:.10,bottom:.08},autoScale:true,borderVisible:false},
+    localization:{timeFormatter:ft},
+    handleScale:{axisPressedMouseMove:{time:true,price:true},mouseWheel:true,pinch:true},
+    handleScroll:{mouseWheel:true,pressedMouseMove:true,horzTouchDrag:true,vertTouchDrag:true},
+    kineticScroll:{touch:true,mouse:true},
+  };
+}
+
+// ── DOM REFS ───────────────────────────────────────────────────────────────
+var CA=document.getElementById('ca');
+var LYR=document.getElementById('lyrs');
+var TT=document.getElementById('tt');
+var SB=document.getElementById('sidebar');
+var stbTime=document.getElementById('stb-time');
+var stbO=document.getElementById('stb-o');
+var stbH=document.getElementById('stb-h');
+var stbL=document.getElementById('stb-l');
+var stbC=document.getElementById('stb-c');
+
+// ── PANEL FACTORY ──────────────────────────────────────────────────────────
+function mkPanel(id,flex,isMain,tag){
+  var el=document.createElement('div');
+  el.id=id;
+  el.className=isMain?'pnl pnl-main':'pnl pnl-sub';
+  el.style.flex=flex+' 1 0';
+  if(tag){var t=document.createElement('div');t.className='ptag';t.textContent=tag;el.appendChild(t);}
+  CA.appendChild(el);
+  var ch=LightweightCharts.createChart(el,mkOpts(false));
+  var entry={ch:ch,el:el,series:null,data:null};
+  charts.push(entry);
+  return entry;
+}
+
+// ── RESIZER ────────────────────────────────────────────────────────────────
+function addRzr(above,below){
+  var r=document.createElement('div');r.className='rzr';
+  CA.insertBefore(r,below.el);
+  rzrEls.push(r);
+  var drag=false,sy=0,sa=0,sb=0;
+  r.addEventListener('pointerdown',function(e){
+    drag=true;sy=e.clientY;
+    sa=above.el.getBoundingClientRect().height;
+    sb=below.el.getBoundingClientRect().height;
+    r.setPointerCapture(e.pointerId);r.classList.add('on');e.preventDefault();
+  });
+  r.addEventListener('pointermove',function(e){
+    if(!drag)return;
+    var dy=e.clientY-sy;
+    above.el.style.flex='none';above.el.style.height=Math.max(40,sa+dy)+'px';
+    below.el.style.flex='none';below.el.style.height=Math.max(40,sb-dy)+'px';
+    above.ch.resize(above.el.clientWidth,above.el.clientHeight);
+    below.ch.resize(below.el.clientWidth,below.el.clientHeight);
+  });
+  r.addEventListener('pointerup',function(){drag=false;r.classList.remove('on');});
+  return r;
+}
+
+// ── LAYER MANAGER ──────────────────────────────────────────────────────────
+var EYON ='<svg viewBox="0 0 14 10" width="11" height="11" fill="none" stroke="currentColor" stroke-width="1.3"><path d="M1 5s2.5-4 6-4 6 4 6 4-2.5 4-6 4-6-4-6-4z"/><circle cx="7" cy="5" r="1.8"/></svg>';
+var EYOFF='<svg viewBox="0 0 14 10" width="11" height="11" fill="none" stroke="currentColor" stroke-width="1.3"><path d="M1 5s2.5-4 6-4 6 4 6 4-2.5 4-6 4-6-4-6-4z" stroke-dasharray="2 2"/><line x1="1" y1="0" x2="13" y2="10"/></svg>';
+function addLayer(name,color,series,section,sortData){
+  if(section!==lyrSection){
+    var sec=document.createElement('div');sec.className='sec';sec.textContent=section;
+    LYR.appendChild(sec);lyrSection=section;
+  }
+  var item=document.createElement('div');item.className='lyr';
+  var sid='lv_'+name.replace(/\W/g,'_');
+  item.innerHTML='<div class="ldot" style="background:'+color+'"></div><span class="lname">'+name+'</span><span class="lval" id="'+sid+'"></span><button class="eye">'+EYON+'</button>';
+  var vis=true;
+  var eyeBtn=item.querySelector('.eye');
+  eyeBtn.addEventListener('click',function(){
+    vis=!vis;series.applyOptions({visible:vis});
+    eyeBtn.innerHTML=vis?EYON:EYOFF;eyeBtn.classList.toggle('off',!vis);item.classList.toggle('hid',!vis);
+  });
+  LYR.appendChild(item);
+  layers.push({name:name,color:color,series:series,valEl:document.getElementById(sid),sortData:sortData||null});
+}
+
+// ── BINARY SEARCH: last item with time <= t ─────────────────────────────────
+function floor(arr,t){
+  var lo=0,hi=arr.length-1,res=null;
+  while(lo<=hi){var m=(lo+hi)>>>1;if(arr[m].time<=t){res=arr[m];lo=m+1;}else hi=m-1;}
+  return res;
+}
+function bisectIdx(arr,t){
+  var lo=0,hi=arr.length-1;
+  while(lo<=hi){var m=(lo+hi)>>>1;if(arr[m]===t)return m;if(arr[m]<t)lo=m+1;else hi=m-1;}
+  return lo;
+}
+
+// ─────────────────────────────────────────────────────────────────────────
+// MAIN CHART — PRICE
+// ─────────────────────────────────────────────────────────────────────────
+var ME=mkPanel('mc',3,true,null);
+var MC=ME.ch;
+
+var cs=MC.addCandlestickSeries({
+  upColor:'#00C087',downColor:'#E8374A',
+  borderUpColor:'#00C087',borderDownColor:'#E8374A',
+  wickUpColor:'rgba(0,192,135,.65)',wickDownColor:'rgba(232,55,74,.65)',
+  priceFormat:{type:'price',precision:2,minMove:0.01},
+});
+cs.setData(cData);
+ME.series=cs;ME.data=cData;
+
+// ── OVERLAYS ──────────────────────────────────────────────────────────────
+if(I.overlays&&I.overlays.length){
+  I.overlays.forEach(function(ov){
+    if(!ov.v||!ov.v.length)return;
+    var d=[];for(var i=0;i<ov.v.length;i++)if(ov.v[i]!==null)d.push({time:ov.t[i],value:ov.v[i]/ov.f});
+    if(!d.length)return;
+    var s=MC.addLineSeries({color:ov.color,lineWidth:1,crosshairMarkerVisible:false,priceLineVisible:false,lastValueVisible:false});
+    s.setData(d);
+    overlaySeries.push(s);  // tracked for focus mode
+    addLayer(ov.name||'IND',ov.color,s,'Overlays',d);
+  });
+}
+
+// ── TRADE MARKERS ─────────────────────────────────────────────────────────
+var tooltipMap=new Map();
+var mkrs=[];
+
+if(T.list&&T.list.length){
+  T.list.forEach(function(tr){
+    if(tr.entry_ts!==null){
+      var isLong=tr.type==='LONG';
+      mkrs.push({
+        time:tr.entry_ts,
+        position:isLong?'belowBar':'aboveBar',
+        color:isLong?'#00FFB3':'#FF3D5A',
+        shape:isLong?'arrowUp':'arrowDown',
+        text:'',size:2
+      });
+      tooltipMap.set(tr.entry_ts,Object.assign({},tr,{isEntry:true}));
+    }
+    if(tr.exit_ts!==null){
+      mkrs.push({
+        time:tr.exit_ts,
+        position:'aboveBar',
+        color:tr.win?'#00FFB3':'#FF3D5A',
+        shape:'circle',text:'',size:1.5
+      });
+      if(!tooltipMap.has(tr.exit_ts))tooltipMap.set(tr.exit_ts,Object.assign({},tr,{isEntry:false}));
+    }
+    if(tr.ta_ts!==null&&tr.ta_p!==null){
+      mkrs.push({time:tr.ta_ts,position:'aboveBar',color:'#FFD700',shape:'square',text:'',size:1});
+    }
+  });
+  mkrs.sort(function(a,b){return a.time-b.time;});
+  cs.setMarkers(mkrs);
+}
+
+// ── TRADE CANVAS OVERLAY ───────────────────────────────────────────────────
+// Draws entry→exit horizontal bars + vertical entry/exit lines for each trade.
+// Redraws synchronously whenever the chart range changes (called inside sync fn).
+var TC=document.createElement('canvas');
+TC.style.cssText='position:absolute;inset:0;pointer-events:none;z-index:25';
+ME.el.appendChild(TC);
+var TX=TC.getContext('2d');
+function resizeTC(){TC.width=ME.el.clientWidth;TC.height=ME.el.clientHeight;}
+resizeTC();new ResizeObserver(resizeTC).observe(ME.el);
+
+function drawTrades(){
+  var W=TC.width,H=TC.height;
+  TX.clearRect(0,0,W,H);
+  if(!T.list||!T.list.length)return;
+  var ts=MC.timeScale();
+  T.list.forEach(function(tr){
+    if(tr.entry_ts===null||tr.exit_ts===null)return;
+    var x1=ts.timeToCoordinate(tr.entry_ts);
+    var x2=ts.timeToCoordinate(tr.exit_ts);
+    if(x1===null&&x2===null)return;
+    if(x1===null)x1=0;
+    if(x2===null)x2=W;
+    if(x2<0||x1>W)return;
+    var yE=cs.priceToCoordinate(tr.ep);
+    var yX=cs.priceToCoordinate(tr.xp);
+    if(yE===null)return;
+    if(yX===null)yX=yE;
+    var isLong=tr.type==='LONG';
+    var col=tr.win?(isLong?'#00FFB3':'#00C8FF'):(isLong?'#FF3D5A':'#FF9020');
+    var fillA=isLong?'rgba(0,255,179,0.06)':'rgba(0,200,255,0.05)';
+    if(!tr.win)fillA=isLong?'rgba(255,61,90,0.06)':'rgba(255,144,32,0.05)';
+    var lineA=tr.win?'rgba(0,255,179,0.4)':'rgba(255,61,90,0.4)';
+    var yTop=Math.min(yE,yX),yBot=Math.max(yE,yX);
+    var bh=Math.max(1,yBot-yTop);
+    var bw=x2-x1;
+
+    // Filled box
+    TX.fillStyle=fillA;TX.fillRect(x1,yTop,bw,bh);
+
+    // Entry price horizontal line (solid)
+    TX.strokeStyle=lineA;TX.lineWidth=1;TX.setLineDash([]);
+    TX.beginPath();TX.moveTo(x1,yE);TX.lineTo(x2,yE);TX.stroke();
+
+    // Entry vertical line (solid, thicker)
+    TX.strokeStyle=col;TX.lineWidth=2;TX.setLineDash([]);TX.globalAlpha=0.85;
+    TX.beginPath();TX.moveTo(x1,Math.max(0,yTop-10));TX.lineTo(x1,Math.min(H,yBot+10));TX.stroke();
+
+    // Exit vertical line (dashed, thinner)
+    TX.setLineDash([3,3]);TX.lineWidth=1;TX.globalAlpha=0.5;
+    TX.beginPath();TX.moveTo(x2,Math.max(0,yTop-10));TX.lineTo(x2,Math.min(H,yBot+10));TX.stroke();
+    TX.setLineDash([]);TX.globalAlpha=1;
+
+    // Label inside the block — only when wide/tall enough to fit text
+    var labelBw=bw>36,labelBh=bh>14;
+    if(labelBw||labelBh){
+      // "B&H" for long, "S" for short (Buy&Hold = long market, S = short sell)
+      var label=isLong?'B&H':'S';
+      var cx=Math.min(Math.max(x1+4,0),W-30);
+      var cy=Math.min(Math.max(yTop+12,10),H-4);
+      TX.font='700 9px "IBM Plex Mono",monospace';
+      TX.textAlign='left';TX.textBaseline='middle';
+      TX.fillStyle=col;TX.globalAlpha=0.75;
+      TX.fillText(label,cx,cy);
+      TX.globalAlpha=1;
+    }
+  });
+}
+
+// ── VOLUME PANEL ──────────────────────────────────────────────────────────
+var VE=null;
+if(D.vol&&D.vol.length){
+  VE=mkPanel('vp',0.55,false,'VOL');addRzr(ME,VE);subEntries.push(VE);
+  VE.ch.priceScale('right').applyOptions({scaleMargins:{top:.1,bottom:0},autoScale:true});
+  var vs=VE.ch.addHistogramSeries({
+    priceFormat:{type:'volume'},
+    priceLineVisible:false,lastValueVisible:false
+  });
+  var vd=new Array(N);
+  for(var i=0;i<N;i++) vd[i]={time:D.t[i],value:D.vol[i],color:D.c[i]>=D.o[i]?'rgba(0,192,135,.55)':'rgba(232,55,74,.45)'};
+  vs.setData(vd);VE.series=vs;VE.data=vd;
+  addLayer('Volume','#3D4355',vs,'Price',vd);
+}
+
+// ── INDICATOR SUB-PANELS ──────────────────────────────────────────────────
+if(I.sub_panels&&I.sub_panels.length){
+  I.sub_panels.forEach(function(grp,gi){
+    var prev=charts[charts.length-1];
+    var pe=mkPanel('sp'+gi,1,false,grp.title);
+    addRzr(prev,pe);subEntries.push(pe);
+    pe.ch.priceScale('right').applyOptions({scaleMargins:{top:.06,bottom:.06},autoScale:true});
+    grp.series.forEach(function(ser,si){
+      var sd=[];
+      for(var i=0;i<ser.data.v.length;i++)if(ser.data.v[i]!==null)sd.push({time:ser.data.t[i],value:ser.data.v[i]/ser.data.f});
+      var s;
+      if(ser.type==='histogram'){
+        s=pe.ch.addHistogramSeries({color:ser.color,priceLineVisible:false,lastValueVisible:false,base:0});
+      }else{
+        s=pe.ch.addLineSeries({color:ser.color,lineWidth:1,crosshairMarkerVisible:false,priceLineVisible:false,lastValueVisible:false});
+        if(ser.bounds){
+          [['hi','rgba(232,55,74,.5)'],['upper','rgba(232,55,74,.5)'],['lo','rgba(0,192,135,.5)'],['lower','rgba(0,192,135,.5)'],['mid','rgba(255,255,255,.18)']].forEach(function(p){
+            if(ser.bounds[p[0]]!=null)try{s.createPriceLine({price:ser.bounds[p[0]],color:p[1],lineWidth:1,lineStyle:2,axisLabelVisible:false});}catch(e){}
+          });
+        }
+        if(ser.zero_line||(ser.bounds&&ser.bounds.mid===0))try{s.createPriceLine({price:0,color:'rgba(255,255,255,.1)',lineWidth:1,lineStyle:2,axisLabelVisible:false});}catch(e){}
+      }
+      s.setData(sd);
+      if(si===0){pe.series=s;pe.data=sd;}
+      addLayer(ser.name||grp.title,ser.color,s,'Oscillators',sd);
+    });
+  });
+}
+
+// ── EQUITY PANEL ──────────────────────────────────────────────────────────
+if(E&&E.v&&E.v.length>=2){
+  var prev=charts[charts.length-1];
+  var EE=mkPanel('eq',0.85,false,'EQUITY');
+  addRzr(prev,EE);subEntries.push(EE);
+  EE.ch.priceScale('right').applyOptions({scaleMargins:{top:.15,bottom:.08},autoScale:true});
+  var si0=E.si>0?E.si:E.v[0];
+  // Step-function: hold value until next trade exit
+  var rawEq=[];
+  for(var i=0;i<E.t.length;i++){
+    var pct=((E.v[i]/si0)-1)*100;
+    rawEq.push({time:E.t[i],value:pct});
+    if(i<E.t.length-1)rawEq.push({time:E.t[i+1]-1,value:pct});
+  }
+  rawEq.sort(function(a,b){return a.time-b.time;});
+  var eqd=[],seen=new Set();
+  rawEq.forEach(function(p){if(!seen.has(p.time)){seen.add(p.time);eqd.push(p);}});
+  if(eqd.length>=2){
+    var zl=EE.ch.addLineSeries({color:'rgba(255,255,255,.06)',lineWidth:1,lineStyle:2,priceLineVisible:false,lastValueVisible:false});
+    zl.setData([{time:eqd[0].time,value:0},{time:eqd[eqd.length-1].time,value:0}]);
+  }
+  var lastPct=eqd.length?eqd[eqd.length-1].value:0;
+  var eqCol=lastPct>=0?'#1D6FDB':'#E8374A';
+  var eqTop=lastPct>=0?'rgba(29,111,219,.20)':'rgba(232,55,74,.16)';
+  var eqBot=lastPct>=0?'rgba(29,111,219,.01)':'rgba(232,55,74,.01)';
+  var eqS=EE.ch.addAreaSeries({
+    lineColor:eqCol,topColor:eqTop,bottomColor:eqBot,lineWidth:1.5,
+    crosshairMarkerVisible:false,priceLineVisible:false,lastValueVisible:true,
+    priceFormat:{type:'custom',minMove:0.01,formatter:function(v){return(v>=0?'+':'')+v.toFixed(2)+'%';}},
+  });
+  eqS.setData(eqd);EE.series=eqS;EE.data=eqd;
+  addLayer('Equity % ROI',eqCol,eqS,'Equity',eqd);
+}
+
+// ── TIME SCALE: show on bottom panel only ─────────────────────────────────
+charts[charts.length-1].ch.timeScale().applyOptions({visible:true});
+
+// ─────────────────────────────────────────────────────────────────────────
+// SYNC ENGINE — SYNCHRONOUS UNIDIRECTIONAL (zero vibration)
+// ─────────────────────────────────────────────────────────────────────────
+// ROOT CAUSE of vibration: rAF delay (16ms) between main chart render and
+// slave chart render. During that gap both are at different positions → flicker.
+//
+// Fix: disable handleScroll/handleScale on ALL sub-charts so they can ONLY
+// be moved by programmatic setVisibleLogicalRange calls. Then subscribe
+// only to the main chart and apply SYNCHRONOUSLY — zero gap, zero vibration.
+// setVisibleLogicalRange on slaves fires their subscriptions synchronously
+// but since they have no subscribers, there is no feedback loop.
+var SLAVE_OPTS={
+  handleScroll:{mouseWheel:false,pressedMouseMove:false,horzTouchDrag:false,vertTouchDrag:false},
+  handleScale:{axisPressedMouseMove:false,mouseWheel:false,pinch:false},
+};
+for(var ci=1;ci<charts.length;ci++){
+  try{charts[ci].ch.applyOptions(SLAVE_OPTS);}catch(e){}
+}
+
+// Single subscriber on the master chart (main price panel)
+MC.timeScale().subscribeVisibleLogicalRangeChange(function(range){
+  if(syncing||!range)return;
+  syncing=true;
+  for(var ci=1;ci<charts.length;ci++){
+    try{
+      charts[ci].ch.timeScale().setVisibleLogicalRange(range);
+      // Force y-axis recalculation on slaves — LWC 4.x does not always
+      // auto-refit the price scale when the range is set programmatically.
+      charts[ci].ch.priceScale('right').applyOptions({autoScale:true});
+    }catch(e){}
+  }
+  // Also refit main chart y-axis to the current visible bars
+  try{MC.priceScale('right').applyOptions({autoScale:true});}catch(e){}
+  syncing=false;
+  drawTrades();
+});
+
+// ── RANGE HELPERS ──────────────────────────────────────────────────────────
+function setRange(from,to){
+  syncing=true;
+  charts.forEach(function(c){try{c.ch.timeScale().setVisibleLogicalRange({from:from,to:to});}catch(e){}});
+  syncing=false;
+  drawTrades();
+}
+function fitAll(){
+  syncing=true;
+  MC.timeScale().fitContent();
+  var r=MC.timeScale().getVisibleLogicalRange();
+  if(r)for(var ci=1;ci<charts.length;ci++)try{charts[ci].ch.timeScale().setVisibleLogicalRange(r);}catch(e){}
+  charts.forEach(function(c){try{c.ch.priceScale('right').applyOptions({autoScale:true});}catch(e){}});
+  syncing=false;
+  drawTrades();
+}
+function goStart(){
+  var w=ME.el.clientWidth||1000;
+  var vis=Math.max(60,Math.floor(w/4));
+  setRange(0,Math.min(vis,N-1));
+}
+setTimeout(goStart,180);
+
+// ─────────────────────────────────────────────────────────────────────────
+// CROSSHAIR — rAF throttled (max once per animation frame)
+// This is the critical fix for crosshair lag: instead of updating the DOM
+// on every mouse pixel, we capture the latest param and process it once per
+// frame. This cuts DOM writes by up to 8x on a 120Hz display.
+// ─────────────────────────────────────────────────────────────────────────
+function processCrosshair(param){
+  if(!param||!param.time||!param.point){
+    TT.style.display='none';
+    stbTime.textContent='—';
+    stbO.textContent=stbH.textContent=stbL.textContent=stbC.textContent='—';
+    stbC.className='stb-v';
+    for(var ci=1;ci<charts.length;ci++)try{charts[ci].ch.clearCrosshairPosition();}catch(e){}
+    return;
+  }
+  var t=param.time;
+  // Status bar OHLC
+  var idx=tIdx.get(t);
+  if(idx!==undefined){
+    var cd=cData[idx];
+    stbTime.textContent=ft(t);
+    stbO.textContent=fp(cd.open);
+    stbH.textContent=fp(cd.high);
+    stbL.textContent=fp(cd.low);
+    stbC.textContent=fp(cd.close);
+    stbC.className='stb-v '+(cd.close>=cd.open?'pos':'neg');
+  }
+  // Sync sub-chart crosshairs
+  for(var ci=1;ci<charts.length;ci++){
+    var c2=charts[ci];
+    if(!c2.series||!c2.data)continue;
+    try{
+      var pt=floor(c2.data,t);
+      var pv=pt?(pt.value!==undefined?pt.value:pt.close):null;
+      if(pv!=null)c2.ch.setCrosshairPosition(pv,t,c2.series);
+      else c2.ch.clearCrosshairPosition();
+    }catch(e){}
+  }
+  // Layer values (only when sidebar visible)
+  if(sbOpen){
+    for(var li=0;li<layers.length;li++){
+      var ly=layers[li];
+      if(!ly.valEl||!ly.sortData)continue;
+      var lpt=floor(ly.sortData,t);
+      ly.valEl.textContent=lpt?fp(lpt.value!==undefined?lpt.value:lpt.close):'';
+    }
+  }
+  // Trade tooltip
+  var tr=tooltipMap.get(t);
+  if(tr){
+    var pnl=tr.pnl||0;
+    var w=pnl>=0;
+    var sc=tr.type==='LONG'?'#00D4B0':'#FF4D6D';
+    TT.innerHTML=
+      '<div class="tt-hd">'+
+        '<span class="tt-side" style="color:'+sc+'">'+tr.type+'</span>'+
+        '<span class="tt-res '+(w?'W':'L')+'">'+(w?'WIN':'LOSS')+'</span>'+
+      '</div>'+
+      '<div class="tt-row"><span class="tt-l">Entry</span><span class="tt-v">$'+fp(tr.ep)+'</span></div>'+
+      '<div class="tt-row"><span class="tt-l">Exit</span><span class="tt-v">$'+fp(tr.xp)+'</span></div>'+
+      '<div class="tt-row"><span class="tt-l">Duration</span><span class="tt-v">'+tr.dur+'</span></div>'+
+      '<div class="tt-row"><span class="tt-l">Qty</span><span class="tt-v">'+Number(tr.qty||0).toFixed(4)+'</span></div>'+
+      '<div class="tt-row"><span class="tt-l">Fees</span><span class="tt-v" style="color:#C8A045">$'+Number(tr.fees||0).toFixed(2)+'</span></div>'+
+      '<div class="tt-sep"></div>'+
+      '<div class="tt-row"><span class="tt-l" style="font-weight:600">Net PnL</span><span class="tt-pnl '+(w?'pos':'neg')+'">'+(w?'+':'-')+'$'+Math.abs(pnl).toFixed(2)+'</span></div>';
+    var er=ME.el.getBoundingClientRect();
+    var tx=er.left+param.point.x+18,ty=er.top+param.point.y-14;
+    TT.style.cssText='display:block;left:'+tx+'px;top:'+ty+'px';
+    var tr2=TT.getBoundingClientRect();
+    if(tr2.right>window.innerWidth-8)TT.style.left=(tx-tr2.width-36)+'px';
+    if(tr2.bottom>window.innerHeight-8)TT.style.top=(ty-tr2.height+24)+'px';
+  }else{
+    TT.style.display='none';
+  }
+}
+
+MC.subscribeCrosshairMove(function(param){
+  lastCross=param;
+  if(rafCross)return;
+  rafCross=requestAnimationFrame(function(){rafCross=null;processCrosshair(lastCross);});
+});
+
+CA.addEventListener('mouseleave',function(){
+  lastCross=null;TT.style.display='none';
+  stbTime.textContent='—';stbO.textContent=stbH.textContent=stbL.textContent=stbC.textContent='—';stbC.className='stb-v';
+  charts.forEach(function(c){try{c.ch.clearCrosshairPosition();}catch(e){}});
+});
+
+// ─────────────────────────────────────────────────────────────────────────
+// MEASUREMENT RULER — Canvas overlay (Shift+drag)
+// ─────────────────────────────────────────────────────────────────────────
+var RC=document.createElement('canvas');RC.id='rc';
+RC.style.cssText='position:absolute;inset:0;pointer-events:none;z-index:40';
+ME.el.appendChild(RC);
+var RX=RC.getContext('2d');
+function rResize(){RC.width=ME.el.clientWidth;RC.height=ME.el.clientHeight;drawTrades();}
+rResize();new ResizeObserver(rResize).observe(ME.el);
+
+function drawRuler(sx,sy,ex,ey,sp,ep,bars,secs){
+  var W=RC.width,H=RC.height;
+  RX.clearRect(0,0,W,H);
+  var up=ep>=sp;
+  var col=up?'#00C087':'#E8374A';
+  var fill=up?'rgba(0,192,135,.09)':'rgba(232,55,74,.09)';
+  var x1=Math.min(sx,ex),x2=Math.max(sx,ex),y1=Math.min(sy,ey),y2=Math.max(sy,ey);
+  var bw=Math.max(1,x2-x1),bh=Math.max(1,y2-y1);
+  RX.fillStyle=fill;RX.fillRect(x1,y1,bw,bh);
+  RX.strokeStyle=col;RX.lineWidth=1;RX.setLineDash([]);RX.strokeRect(x1,y1,bw,bh);
+  RX.setLineDash([3,4]);RX.globalAlpha=.45;
+  [sy,ey].forEach(function(yy){RX.beginPath();RX.moveTo(0,yy);RX.lineTo(W,yy);RX.stroke();});
+  RX.setLineDash([]);RX.globalAlpha=1;
+  // Price labels
+  [[sy,sp],[ey,ep]].forEach(function(pair){
+    var lbl='$'+fp(pair[1]);
+    RX.font='600 9px "IBM Plex Mono",monospace';
+    var lw=RX.measureText(lbl).width+14,lh=16;
+    var lx=W-lw-2,ly=pair[0]-lh/2;
+    RX.fillStyle=col;RX.fillRect(lx,ly,lw,lh);
+    RX.fillStyle='#07090F';RX.textAlign='center';RX.textBaseline='middle';
+    RX.fillText(lbl,lx+lw/2,pair[0]);
+  });
+  // Center bubble
+  var pct=(ep-sp)/sp*100,sg=pct>=0?'+':'';
+  var tStr=secs<3600?Math.round(secs/60)+'m':secs<86400?(secs/3600).toFixed(1)+'h':Math.round(secs/86400)+'d';
+  var l1=sg+pct.toFixed(2)+'%   '+sg+'$'+Math.abs(ep-sp).toFixed(2);
+  var l2=bars+' bars  ·  '+tStr;
+  var cx=(x1+x2)/2,cy=(y1+y2)/2;
+  var bW=188,bH=44,bx=Math.max(4,Math.min(W-bW-4,cx-bW/2)),by=Math.max(4,cy-bH/2);
+  RX.fillStyle='rgba(7,9,15,.95)';RX.strokeStyle=col;RX.lineWidth=1;
+  var r=3;RX.beginPath();
+  RX.moveTo(bx+r,by);RX.lineTo(bx+bW-r,by);RX.arcTo(bx+bW,by,bx+bW,by+r,r);
+  RX.lineTo(bx+bW,by+bH-r);RX.arcTo(bx+bW,by+bH,bx+bW-r,by+bH,r);
+  RX.lineTo(bx+r,by+bH);RX.arcTo(bx,by+bH,bx,by+bH-r,r);
+  RX.lineTo(bx,by+r);RX.arcTo(bx,by,bx+r,by,r);
+  RX.closePath();RX.fill();RX.stroke();
+  RX.textAlign='center';RX.textBaseline='middle';
+  RX.fillStyle=col;RX.font='700 10.5px "IBM Plex Mono",monospace';RX.fillText(l1,cx,by+14);
+  RX.fillStyle='#5A6070';RX.font='400 9px "IBM Plex Mono",monospace';RX.fillText(l2,cx,by+30);
+}
+
+var ruler={on:false,sx:0,sy:0,st:null,sp:null};
+ME.el.addEventListener('mousemove',function(e){ME.el.style.cursor=e.shiftKey?'crosshair':'';},{passive:true});
+ME.el.addEventListener('mousedown',function(e){
+  if(!e.shiftKey)return;e.preventDefault();e.stopPropagation();
+  var r=ME.el.getBoundingClientRect();
+  var x=e.clientX-r.left,y=e.clientY-r.top;
+  var t=MC.timeScale().coordinateToTime(x);var p=cs.coordinateToPrice(y);
+  if(t==null||p==null)return;
+  ruler.on=true;ruler.sx=x;ruler.sy=y;ruler.st=t;ruler.sp=p;
+  document.getElementById('stb-hint').style.display='none';
+},true);
+document.addEventListener('mousemove',function(e){
+  if(!ruler.on)return;
+  var r=ME.el.getBoundingClientRect();
+  var x=e.clientX-r.left,y=e.clientY-r.top;
+  var t=MC.timeScale().coordinateToTime(x);var p=cs.coordinateToPrice(y);
+  if(t==null||p==null)return;
+  var i1=bisectIdx(D.t,ruler.st),i2=bisectIdx(D.t,t);
+  drawRuler(ruler.sx,ruler.sy,x,y,ruler.sp,p,Math.abs(i2-i1),Math.abs(t-ruler.st));
+});
+document.addEventListener('mouseup',function(e){
+  if(!ruler.on)return;if(!e.shiftKey){ruler.on=false;RX.clearRect(0,0,RC.width,RC.height);ME.el.style.cursor='';}
+});
+document.addEventListener('keyup',function(e){
+  if(e.key==='Shift'){ruler.on=false;RX.clearRect(0,0,RC.width,RC.height);ME.el.style.cursor='';}
+});
+
+// ── TOOLBAR ────────────────────────────────────────────────────────────────
+function zoomIn(){
+  var r=MC.timeScale().getVisibleLogicalRange();if(!r)return;
+  var mid=(r.from+r.to)/2,h=(r.to-r.from)/2;setRange(mid-h*.6,mid+h*.6);
+}
+function zoomOut(){
+  var r=MC.timeScale().getVisibleLogicalRange();if(!r)return;
+  var mid=(r.from+r.to)/2,h=(r.to-r.from)/2;
+  setRange(Math.max(0,mid-h*1.6),Math.min(N-1,mid+h*1.6));
+}
+function toggleSidebar(force){
+  sbOpen=force!==undefined?force:!sbOpen;
+  SB.classList.toggle('off',!sbOpen);
+  document.getElementById('btn-sb').classList.toggle('on',sbOpen);
+  document.getElementById('btn-sbx').style.display=sbOpen?'':'none';
+}
+document.getElementById('btn-fit').addEventListener('click',fitAll);
+document.getElementById('btn-zi').addEventListener('click',zoomIn);
+document.getElementById('btn-zo').addEventListener('click',zoomOut);
+document.getElementById('btn-sb').addEventListener('click',function(){toggleSidebar();});
+document.getElementById('btn-sbx').addEventListener('click',function(){toggleSidebar(false);});
+document.getElementById('btn-focus').addEventListener('click',function(){
+  focusMode=!focusMode;
+  this.classList.toggle('on',focusMode);
+
+  // Show / hide every sub-panel and its preceding resizer
+  subEntries.forEach(function(e){e.el.style.display=focusMode?'none':'';});
+  rzrEls.forEach(function(r){r.style.display=focusMode?'none':'';});
+
+  // Show / hide overlay indicator series on the main price chart
+  overlaySeries.forEach(function(s){
+    try{s.applyOptions({visible:!focusMode});}catch(e){}
+  });
+
+  // Main panel expands to fill the space when sub-panels are hidden
+  if(focusMode){
+    ME.el.style.flex='1 1 0';
+    ME.el.style.height='';
+  }else{
+    ME.el.style.flex='3 1 0';
+    ME.el.style.height='';
+  }
+
+  // Sidebar: hide in focus, restore previous state on exit
+  toggleSidebar(!focusMode&&sbOpen);
+});
+
+// ── KEYBOARD ───────────────────────────────────────────────────────────────
+document.addEventListener('keydown',function(e){
+  if(e.target.tagName==='INPUT'||e.target.tagName==='TEXTAREA')return;
+  if(e.key==='0'){e.preventDefault();fitAll();}
+  if(e.key==='Home'){e.preventDefault();goStart();}
+  if(e.key==='+'||e.key==='=')zoomIn();
+  if(e.key==='-')zoomOut();
+  if(e.key==='b'||e.key==='B')toggleSidebar();
+  if(e.key==='f'||e.key==='F')document.getElementById('btn-focus').click();
+  if(e.key==='Escape'){ruler.on=false;RX.clearRect(0,0,RC.width,RC.height);ME.el.style.cursor='';}
+});
+
+}catch(err){
+  document.body.innerHTML='<div style="display:flex;flex-direction:column;align-items:center;justify-content:center;height:100vh;gap:10px;color:#E8374A;font-family:IBM Plex Mono,monospace;font-size:12px"><div>⚠ Chart Error</div><div style="color:#5A6070">'+err.message+'</div></div>';
+}
+})();
+</script>
+</body>
+</html>

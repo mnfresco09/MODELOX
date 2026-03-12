@@ -157,8 +157,8 @@ class EstrategiaID36HVNREV(EstrategiaBase):
     estadística con proximidad logarítmica (escala-independiente).
     """
 
-    combinacion_id: int          = 36
-    name: str                    = "HVNREV"
+    combinacion_id: int          = 2
+    name: str                    = "REVERSION"
     SALIDAS_PERSONALIZADAS: bool = False
     timeframe_entry: Optional[str] = None
     timeframe_exit:  Optional[str] = None
@@ -172,7 +172,7 @@ class EstrategiaID36HVNREV(EstrategiaBase):
         return {
             "hvn_window":    trial.suggest_int  ("hvn_window",    30,  150, step=10),
             "n_bins":        trial.suggest_int  ("n_bins",        10,   30, step=5),
-            "z_threshold":   trial.suggest_float("z_threshold",  0.5,  2.0, step=0.25),
+            "z_threshold":   trial.suggest_float("z_threshold",  1.0,  3.0, step=0.1),
             "proximity_log": trial.suggest_float("proximity_log",0.002,0.01, step=0.002),
         }
 

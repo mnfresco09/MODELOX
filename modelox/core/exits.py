@@ -15,7 +15,7 @@ from typing import Any, Dict
 # =============================================================================
 
 # ─── TIPO DE SALIDA ──────────────────────────────────────────────────────────
-DEFAULT_EXIT_TYPE = "BARS"  # FIXED | TRAILING | BARS | ATR
+DEFAULT_EXIT_TYPE = "ATR"  # FIXED | TRAILING | BARS | ATR
 
 # ─── PARÁMETROS DE SL/TP (% SOBRE STAKE) ────────────────────────────────────
 DEFAULT_EXIT_SL_PCT = 25.0                    # Stop Loss
