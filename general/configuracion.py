@@ -28,13 +28,13 @@ OPTUNA_SAMPLER           = "HYBRID" # HYBRID | QMC | TPE | CMA | GT | ML
 # =============================================================================
 # ACTIVO
 # =============================================================================
-ACTIVO = "GOLD,SP500,BTC"  # BTC | ETH | GOLD | SILVER | SP500 | NASDAQ | BIST100
+ACTIVO = "BTC"  # BTC | ETH | GOLD | SILVER | SP500 | NASDAQ | BIST100
 
 # =============================================================================
 # RANGO DE FECHAS
 # =============================================================================
-FECHA_INICIO = "2021-01-01"
-FECHA_FIN    = "2025-12-01"
+FECHA_INICIO = "2022-01-01"
+FECHA_FIN    = "2024-12-01"
 
 USAR_RANGOS_POR_TRIAL = False  # False = rango fijo | True = sub-ventana aleatoria por trial
 MESES_POR_TRIAL       = 12     # Duración de la ventana (solo si USAR_RANGOS_POR_TRIAL=True)

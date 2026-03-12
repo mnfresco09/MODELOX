@@ -60,9 +60,9 @@ FONT_TITLE = "Calibri"
 FONT_BODY  = "Calibri"
 
 METRICS_ORDER = [
-    "TRADES_DIA", "LONG", "SHORT", "PROFIT_FACTOR",
-    "ROI_PCT", "MAX_DD_PCT", "EXPECTATIVA",
-    "SALDO_SIN_COMISIONES", "PNL_NETO", "SALDO_ACTUAL", "COMISIONES_TOTAL",
+    "TRADES_DIA", "LONG", "SHORT",
+    "PROFIT_FACTOR", "WINRATE_PCT", "ROI_PCT", "MAX_DD_PCT", "EXPECTATIVA", "SHARPE",
+    "PNL_NETO", "SALDO_ACTUAL", "COMISIONES_TOTAL",
 ]
 
 # Alias y métricas extra para detectar correctamente columnas de métricas
@@ -76,6 +76,7 @@ METRIC_ALIASES_TO_CANONICAL = {
     "WINRATE": "WINRATE_PCT",
     "WIN_RATE": "WINRATE_PCT",
     "WIN_RATE_PCT": "WINRATE_PCT",
+    "WINRATE%": "WINRATE_PCT",
     "MAX_DRAWDOWN": "MAX_DD_PCT",
     "MAX_DRAWDOWN_PCT": "MAX_DD_PCT",
     "DD": "MAX_DD_PCT",
@@ -85,6 +86,8 @@ METRIC_ALIASES_TO_CANONICAL = {
     "NUM_TRADES": "TOTAL_TRADES",
     "COUNT_TRADES": "TOTAL_TRADES",
     "TRADES_POR_DIA": "TRADES_DIA",
+    "EXPECTANCY": "EXPECTATIVA",
+    "SHARPE_RATIO": "SHARPE",
 }
 
 # Nombres para mostrar en las cabeceras del Excel (interno → display)
@@ -92,11 +95,14 @@ METRIC_DISPLAY_NAMES = {
     "TRADES_DIA":           "TRADES DIA",
     "LONG":                 "LONG",
     "SHORT":                "SHORT",
+    # ── 6 métricas canónicas ─────────────────────────────────────────────
     "PROFIT_FACTOR":        "PROFIT FACTOR",
+    "WINRATE_PCT":          "WIN RATE",
     "ROI_PCT":              "ROI",
     "MAX_DD_PCT":           "MAX DD",
-    "EXPECTATIVA":          "EXPECTATIVA",
-    "SALDO_SIN_COMISIONES": "BEN BRUTO",
+    "EXPECTATIVA":          "EXPECTANCY",
+    "SHARPE":               "SHARPE",
+    # ── financiero ───────────────────────────────────────────────────────
     "PNL_NETO":             "BEN NETO",
     "SALDO_ACTUAL":         "SALDO ACTUAL",
     "COMISIONES_TOTAL":     "COMISIONES",
@@ -107,15 +113,11 @@ ALL_METRICS_ORDER = METRICS_ORDER
 # Todas las métricas conocidas (para excluirlas de la sección PARÁMETROS)
 ALL_KNOWN_METRICS = {
     "TOTAL_TRADES", "TRADES_DIA", "LONG", "SHORT",
-    "PROFIT_FACTOR", "ROI_PCT", "WINRATE_PCT", "MAX_DD_PCT",
-    "SHARPE", "SQN", "EXPECTATIVA", "SORTINO", "CALMAR",
-    "PAYOFF_RATIO", "NET_PNL", "PNL_NETO", "SALDO_ACTUAL",
+    "PROFIT_FACTOR", "ROI_PCT", "WINRATE_PCT", "MAX_DD_PCT", "EXPECTATIVA", "SHARPE",
+    "NET_PNL", "PNL_NETO", "SALDO_ACTUAL",
     "SALDO_MAX", "SALDO_MIN", "COMISIONES_TOTAL", "SALDO_SIN_COMISIONES",
-    "ROI%", "WINRATE%", "MAX_DD%", "WIN_STREAK", "LOSS_STREAK",
-    "AVG_TRADE", "TRADES_POR_DIA", "PNL_NETO_POR_DIA_OPERADO",
-    "DURATION_MEAN_MIN", "RACHA_GANADORA", "RACHA_PERDEDORA",
-    "PORC_GANADORAS", "PORC_PERDEDORAS", "SALDO_MEAN",
-    "MAX_GANANCIA", "MAX_PERDIDA",
+    "ROI%", "WINRATE%", "MAX_DD%",
+    "TRADES_POR_DIA", "DURATION_MEAN_MIN", "SALDO_MEAN",
 }
 
 ID_COLS = ["TRIAL", "ESTRATEGIA", "SCORE"]
@@ -131,10 +133,10 @@ METRIC_KEYWORDS_TO_DROP = [
     "PROFIT", "LOSS", "PNL", "NET", "GROSS", "SALDO", "BALANCE", "RETORNO", "RETURN",
     "ROI", "BENEFICIO", "RIESGO", "RISK", "REWARD", "COMISION", "FEES",
     "WIN", "GANADORA", "PERDEDORA", "ACIERTO", "RATE", "PCT", "PORC_", "PERCENT",
-    "DRAWDOWN", "DD", "RACHA", "STREAK", "UNDERWATER",
-    "RATIO", "FACTOR", "SHARPE", "SORTINO", "CALMAR", "SQN", "EXPECTATIVA", "KELLY",
+    "DRAWDOWN", "DD", "UNDERWATER",
+    "RATIO", "FACTOR", "SHARPE", "EXPECTATIVA", "EXPECTANCY",
     "AVG", "MEAN", "MEDIAN", "STD", "VAR", "MAX", "MIN", "SUM", "TOTAL",
-    "ESTABILIDAD", "COUNT", "NUM_", "N_", "TRADES", "LONGS", "SHORTS", "CANTIDAD_OP",
+    "COUNT", "NUM_", "N_", "TRADES", "LONGS", "SHORTS", "CANTIDAD_OP",
     "METRIC", "RESULT", "BEST", "WORST", "DIA_OPERADO", "DURATION", "TIME"
 ]
 
@@ -1063,6 +1065,7 @@ def _escribir_trades_xlsxwriter(
     #           G=BH_CONT_TIME, H=BH_CONT_ROI% (B&H continuo, independiente de trades)
     #           I=DAILY_TIME, J=DAILY_BAL, K=DAILY_ROI, L=DAILY_PNL, M=DAILY_BAL_BRUTO
     #           N=DAILY_BAL_STRAT (solo periodos estrategia), O=DAILY_BAL_BH (solo periodos B&H)
+    #           P=DAILY_ROI_STRAT (solo periodos estrategia), Q=DAILY_ROI_BH (solo periodos B&H)
     has_bruto_data = False
     has_roi_data   = False
     has_continuous_bh = False
@@ -1087,6 +1090,8 @@ def _escribir_trades_xlsxwriter(
         ws_aux.write_string(0, 12, 'DAILY_BAL_BRUTO')
         ws_aux.write_string(0, 13, 'DAILY_BAL_STRAT')
         ws_aux.write_string(0, 14, 'DAILY_BAL_BH')
+        ws_aux.write_string(0, 15, 'DAILY_ROI_STRAT')
+        ws_aux.write_string(0, 16, 'DAILY_ROI_BH')
 
         dt_fmt = wb.add_format({'num_format': 'dd/mm/yy hh:mm'})
 
@@ -1314,16 +1319,20 @@ def _escribir_trades_xlsxwriter(
                     ws_aux.write_number(_di + 1, 10, float(_dr))   # DAILY_ROI
                     ws_aux.write_number(_di + 1, 11, float(_dp))   # DAILY_PNL
                     ws_aux.write_number(_di + 1, 12, float(_dg))   # DAILY_BAL_BRUTO
-                    # Cols N/O: split por tipo — overlap de 1 punto en transiciones
+                    # Cols N/O y P/Q: split por tipo — overlap de 1 punto en transiciones
                     _at_trans = (_prev_bh_write is not None) and (_dibh != _prev_bh_write)
                     if _dibh:
                         ws_aux.write_number(_di + 1, 14, float(_db))   # DAILY_BAL_BH
+                        ws_aux.write_number(_di + 1, 16, float(_dr))   # DAILY_ROI_BH
                         if _at_trans:
                             ws_aux.write_number(_di + 1, 13, float(_db))  # overlap → conecta
+                            ws_aux.write_number(_di + 1, 15, float(_dr))  # overlap → conecta
                     else:
                         ws_aux.write_number(_di + 1, 13, float(_db))   # DAILY_BAL_STRAT
+                        ws_aux.write_number(_di + 1, 15, float(_dr))   # DAILY_ROI_STRAT
                         if _at_trans:
                             ws_aux.write_number(_di + 1, 14, float(_db))  # overlap → conecta
+                            ws_aux.write_number(_di + 1, 16, float(_dr))  # overlap → conecta
                     _prev_bh_write = _dibh
                 has_daily_bal = True
 
@@ -1521,14 +1530,20 @@ def _escribir_trades_xlsxwriter(
         chart3 = wb.add_chart({'type': 'scatter', 'subtype': 'straight'})
 
         # Serie 1a — Estrategia ROI% (rojo, solo periodos estrategia)
-        # Reusamos cols N/O escalados a ROI%: si _saldo_ini_mtm > 0 ya está en col K
-        # Para el split usamos N y O pero como ROI: (val/_saldo_ini - 1)*100
-        # Simplificamos: usamos la col K completa como referencia + las N/O para color
         chart3.add_series({
             'name':       'Estrategia',
             'categories': f"='_ChartData'!$I$2:$I${n_daily_points + 1}",
-            'values':     f"='_ChartData'!$K$2:$K${n_daily_points + 1}",
+            'values':     f"='_ChartData'!$P$2:$P${n_daily_points + 1}",
             'line':       {'color': '#E53E3E', 'width': 2.0},
+            'marker':     {'type': 'none'},
+        })
+
+        # Serie 1b — B&H ROI% (azul, solo periodos B&H)
+        chart3.add_series({
+            'name':       'B&H',
+            'categories': f"='_ChartData'!$I$2:$I${n_daily_points + 1}",
+            'values':     f"='_ChartData'!$Q$2:$Q${n_daily_points + 1}",
+            'line':       {'color': '#2B6CB0', 'width': 2.0},
             'marker':     {'type': 'none'},
         })
 
@@ -2737,7 +2752,7 @@ def _aplicar_estilo_avanzado(
     # ── Filas de datos ───────────────────────────────────────────────────────
     # Columnas monetarias y porcentuales (tras renombrar)
     MONEY_HDRS = {"BEN BRUTO", "BEN NETO", "SALDO ACTUAL", "COMISIONES"}
-    PCT_HDRS   = {"ROI", "MAX DD"}
+    PCT_HDRS   = {"ROI", "MAX DD", "WIN RATE"}
     INT_HDRS   = {"LONG", "SHORT", "TRIAL"}
 
     for r in range(3, max_row + 1):
@@ -2764,9 +2779,9 @@ def _aplicar_estilo_avanzado(
                     cell.value = float(cell.value) / 100.0
                 except Exception:
                     pass
-            elif hdr == "PROFIT FACTOR":
+            elif hdr in {"PROFIT FACTOR", "SHARPE"}:
                 cell.number_format = "0.00"
-            elif hdr == "EXPECTATIVA":
+            elif hdr == "EXPECTANCY":
                 cell.number_format = "#,##0.00"
             elif hdr in MONEY_HDRS:
                 cell.number_format = "#,##0.00"

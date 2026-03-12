@@ -203,10 +203,14 @@ class HybridScorer:
     @staticmethod
     def _compute_expectancy(pnl: np.ndarray) -> float:
         """
-        E = WR × (AvgWin / AvgLoss_abs) − LR
+        E = WR × ganancia_media − (1−WR) × pérdida_media_abs
 
-        Punto de equilibrio estricto en 0.0.
-        Si no hay pérdidas → AvgLoss_abs = 1e-10 (E muy alto, tanh lo amortigua).
+        MISMA FÓRMULA que metrics.py:expectativa().
+        Resultado en unidades monetarias (dollars/pesos).
+
+        Para el scoring con tanh se normaliza por avg_loss_abs internamente,
+        lo que es equivalente a:  E_norm = WR × (AvgWin/AvgLoss) − LR
+        Esto mantiene la calibración del tanh sin cambiar el score behavior.
         """
         n = len(pnl)
         if n == 0:
@@ -215,14 +219,15 @@ class HybridScorer:
         winners = pnl[pnl > 0]
         losers  = pnl[pnl < 0]
 
-        wr  = len(winners) / n
-        lr  = 1.0 - wr
+        wr           = len(winners) / n
+        avg_win      = float(np.mean(winners))         if len(winners) > 0 else 0.0
+        avg_loss_abs = float(np.mean(np.abs(losers)))  if len(losers)  > 0 else 1e-10
 
-        avg_win      = float(np.mean(winners))           if len(winners) > 0 else 0.0
-        avg_loss_abs = float(np.mean(np.abs(losers)))    if len(losers)  > 0 else 1e-10
-
+        # Fórmula canónica (dollar) — normalizada por avg_loss_abs para el tanh
+        # E_dollar = wr * avg_win - (1-wr) * avg_loss_abs
+        # E_norm   = E_dollar / avg_loss_abs = wr * (avg_win/avg_loss_abs) - (1-wr)
         rr = avg_win / max(avg_loss_abs, 1e-10)
-        return float(wr * rr - lr)
+        return float(wr * rr - (1.0 - wr))
 
     @staticmethod
     def _compute_max_dd_pct(pnl: np.ndarray, base_capital: float) -> float:

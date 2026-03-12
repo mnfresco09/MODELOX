@@ -290,10 +290,9 @@ def mostrar_panel_elegante(
     
     perf_grid.add_row("WIN RATE", f"{wr:.1f}%")
     perf_grid.add_row("EXPECTANCY", f"{exp:.2f}")
-    perf_grid.add_row("SHARPE", f"{shp:.2f}")
-    perf_grid.add_row("SQN", f"{sqn:.3f}")
     perf_grid.add_row("PROFIT F", f"{pf:.2f}")
     perf_grid.add_row("MAX DD", f"{dd:.1f}%")
+    perf_grid.add_row("SHARPE", f"{shp:.2f}")
     perf_grid.add_row("TRADES/DAY", f"{tpd:.3f}")
     perf_grid.add_row("DUR. MEDIA", _format_duration_min(duration_mean_min))
     perf_grid.add_row("L / S", f"{longs} / {shorts}")
@@ -342,9 +341,10 @@ def mostrar_panel_elegante(
     if s['n_trials'] > 0:
         avg_line = (f"[{THEME.MUTED}]μ({s['n_trials']})[/]  "
                     f"ROI [{THEME.TEXT}]{s['roi_medio']:.1f}%[/]  │  "
+                    f"WR [{THEME.TEXT}]{s['wr_medio']:.1f}%[/]  │  "
                     f"PF [{THEME.TEXT}]{s['pf_medio']:.2f}[/]  │  "
+                    f"EXP [{THEME.TEXT}]{s['expectativa_media']:.2f}[/]  │  "
                     f"SHARPE [{THEME.TEXT}]{s['sharpe_medio']:.2f}[/]  │  "
-                    f"SQN [{THEME.TEXT}]{s['sqn_medio']:.2f}[/]  │  "
                     f"SCORE [{THEME.TEXT}]{_format_score(s['score_medio'])}[/]")
     
     # ═══════════════════════════════════════════════════════════════════════
@@ -459,7 +459,7 @@ class EstadisticasOptimizacion:
     """Optimization statistics tracker."""
     
     def __init__(self):
-        self.valores = {"roi": [], "sqn": [], "exp": [], "sharpe": [], "score": [], "pf": []}
+        self.valores = {"roi": [], "wr": [], "exp": [], "sharpe": [], "score": [], "pf": []}
         self.mejor_score = float("-inf")
         self.mejor_trial = 0
         self.n = 0
@@ -469,7 +469,7 @@ class EstadisticasOptimizacion:
         self.n_total += 1
         if metricas:
             self.valores["roi"].append(M.get(metricas, "roi"))
-            self.valores["sqn"].append(M.get(metricas, "sqn"))
+            self.valores["wr"].append(M.get(metricas, "winrate"))
             self.valores["exp"].append(M.get(metricas, "expectativa"))
             self.valores["sharpe"].append(M.get(metricas, "sharpe"))
             self.valores["score"].append(score)
@@ -487,7 +487,7 @@ class EstadisticasOptimizacion:
     def obtener_promedios(self) -> Dict[str, float]:
         return {
             "roi_medio": self.promedio("roi"),
-            "sqn_medio": self.promedio("sqn"),
+            "wr_medio": self.promedio("wr"),
             "expectativa_media": self.promedio("exp"),
             "sharpe_medio": self.promedio("sharpe"),
             "score_medio": self.promedio("score"),
@@ -525,7 +525,7 @@ def mostrar_evolucion_metricas(mostrar_cada_n: int = 25, forzar: bool = False) -
     grid.add_column(style=THEME.MUTED, width=8)
     grid.add_column(style=THEME.TEXT, justify="right", width=10)
     
-    grid.add_row("ROI", f"{s['roi_medio']:.2f}%", "SQN", f"{s['sqn_medio']:.3f}")
+    grid.add_row("ROI", f"{s['roi_medio']:.2f}%", "WR", f"{s['wr_medio']:.1f}%")
     grid.add_row("EXP", f"{s['expectativa_media']:.2f}", "SHARPE", f"{s['sharpe_medio']:.2f}")
     grid.add_row("PF", f"{s['pf_medio']:.2f}", "SCORE", f"[{THEME.WHITE}]{_format_score(s['score_medio'])}[/]")
     
@@ -546,14 +546,16 @@ def mostrar_evolucion_metricas(mostrar_cada_n: int = 25, forzar: bool = False) -
 def mostrar_evolucion_inline(metrics: Dict[str, Any], score: float, trial_num: int) -> str:
     """Returns inline evolution string."""
     roi = M.get(metrics, "roi")
-    sharpe = M.get(metrics, "sharpe")
-    sqn = M.get(metrics, "sqn")
+    wr = M.get(metrics, "winrate")
+    shp = M.get(metrics, "sharpe")
     exp = M.get(metrics, "expectativa")
-    
+    pf = M.get(metrics, "profit_factor")
+
     return (f"[{THEME.MUTED}]│[/] ROI {roi:.1f}% "
-            f"[{THEME.MUTED}]│[/] SHP {sharpe:.2f} "
-            f"[{THEME.MUTED}]│[/] SQN {sqn:.2f} "
-            f"[{THEME.MUTED}]│[/] EXP {exp:.2f}")
+            f"[{THEME.MUTED}]│[/] WR {wr:.1f}% "
+            f"[{THEME.MUTED}]│[/] EXP {exp:.2f} "
+            f"[{THEME.MUTED}]│[/] PF {pf:.2f} "
+            f"[{THEME.MUTED}]│[/] SHP {shp:.2f}")
 
 
 # ============================================================================
@@ -829,13 +831,13 @@ def mostrar_trial_compacto(
     if best_so_far and not is_best:
         info_rows.append(("BEST", f"{_format_score(best_so_far)}"))
     
-    # Perf
+    # Perf (6 métricas canónicas)
     perf_rows = [
         ("WR", f"{M.get(metrics, 'winrate'):.1f}%"),
-        ("SHP", f"{M.get(metrics, 'sharpe'):.2f}"),
-        ("SQN", f"{M.get(metrics, 'sqn'):.2f}"),
+        ("EXP", f"{M.get(metrics, 'expectativa'):.2f}"),
         ("PF", f"{M.get(metrics, 'profit_factor'):.2f}"),
         ("DD", f"{M.get(metrics, 'drawdown'):.1f}%"),
+        ("SHP", f"{M.get(metrics, 'sharpe'):.2f}"),
     ]
     
     # Fin

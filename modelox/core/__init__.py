@@ -11,9 +11,9 @@ from .data import (
 )
 from .metrics import (
     resumen_metricas,
-    sharpe, sortino, sqn, max_drawdown,
-    profit_factor, payoff_ratio, expectativa,
-    winrate_pct, roi_pct, calmar, trades_por_dia,
+    sharpe, max_drawdown,
+    profit_factor, expectativa,
+    winrate_pct, roi_pct, trades_por_dia,
 )
 from .exits import (
     ExitSettings,
@@ -32,9 +32,9 @@ __all__ = [
     "load_data", "prepare_multitimeframe_data", "resample_ohlcv",
     "resample_to_base_timeframe", "candles_per_month_for_tf", "get_available_timeframes",
     # metrics
-    "resumen_metricas", "sharpe", "sortino", "sqn", "max_drawdown",
-    "profit_factor", "payoff_ratio", "expectativa", "winrate_pct",
-    "roi_pct", "calmar", "trades_por_dia",
+    "resumen_metricas", "sharpe", "max_drawdown",
+    "profit_factor", "expectativa", "winrate_pct",
+    "roi_pct", "trades_por_dia",
     # exits
     "ExitSettings", "ExitResult", "resolve_exit_settings_for_trial",
     "exit_settings_from_params", "DEFAULT_EXIT_TYPE",

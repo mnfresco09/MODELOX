@@ -7,37 +7,21 @@ PROPÓSITO:
     FUENTE ÚNICA DE VERDAD para el cálculo de TODAS las métricas de rendimiento.
     Ningún otro módulo debe calcular métricas directamente.
 
-CONTENIDO:
-    1. CONFIGURACIÓN NUMBA         — Detección automática de Numba
-    2. MÉTRICAS VACÍAS             — Diccionarios de fallback
-    3. KERNEL NUMBA                — _max_drawdown_numba, _compute_all_metrics_numba
-    4. WRAPPER NUMBA               — resumen_metricas_fast
-    5. UTILIDADES DE DATAFRAME     — _is_empty, _to_numpy, _get_column
-    6. MÉTRICAS INDIVIDUALES       — roi_pct, winrate_pct, max_drawdown, sqn, etc.
-    7. ACTIVIDAD                   — trades_por_dia, pnl_neto_por_dia_operado
-    8. CALIDAD                     — sharpe, sortino, profit_factor, payoff_ratio, calmar
-    9. FUNCIÓN PRINCIPAL           — resumen_metricas (auto-detecta Numba vs Python)
-   10. IMPLEMENTACIONES INTERNAS   — _resumen_metricas_numba_wrapper, _resumen_metricas_python
+MÉTRICAS CANÓNICAS (6 métricas oficiales):
+    1. PROFIT FACTOR   PF  = Σ ganancias / |Σ pérdidas|
+    2. WIN RATE        WR  = nº trades ganadores / nº total de trades
+    3. EXPECTANCY      E   = (WR × ganancia_media) − ((1−WR) × pérdida_media_abs)
+    4. MAX DRAWDOWN    DD  = máx((peak − equity) / peak) × 100
+    5. ROI             ROI = (saldo_final − saldo_inicial) / saldo_inicial × 100
+    6. SHARPE RATIO    SR  = media(retornos) / desv_std(retornos)  [per-trade]
 
-FLUJO DE MÉTRICAS:
-    engine.py (trades_df) → metrics.py (resumen_metricas) → scoring.py → reporting
-
-    REGLA: NUNCA calcular métricas fuera de este archivo.
-    REGLA: SIEMPRE importar las funciones de aquí.
-
-MÉTRICAS DISPONIBLES:
-    BÁSICAS:   roi_pct, winrate_pct, max_drawdown, expectativa, retorno_promedio
-    CALIDAD:   sqn, sharpe, sortino, profit_factor, payoff_ratio, calmar
-    ACTIVIDAD: trades_por_dia, pnl_neto_por_dia_operado
-    RACHAS:    racha_maxima (ganadoras / perdedoras)
+REGLAS:
+    NUNCA calcular métricas fuera de este archivo.
+    SIEMPRE importar las funciones de aquí.
 
 USO:
-    from modelox.core.metrics import resumen_metricas, sharpe, sqn
+    from modelox.core.metrics import resumen_metricas
     metrics = resumen_metricas(trades_df, saldo_inicial=1000, equity_curve=eq)
-
-DEPENDENCIAS:
-    → numpy, polars, pandas (compat), numba (opcional)
-    ← engine.py, runner.py, scoring, reporting
 
 ================================================================================
 """
@@ -74,19 +58,15 @@ except Exception:
 def _empty_metrics_fast(saldo_inicial: float) -> Dict[str, Any]:
     """DICCIONARIO DE MÉTRICAS VACÍAS PARA TRIALS SIN TRADES (VERSIÓN RÁPIDA)."""
     return {
+        # ── 6 métricas canónicas ──────────────────────────────────────────
         "roi": 0.0,
         "winrate": 0.0,
         "drawdown": 0.0,
         "expectativa": 0.0,
-        "retorno_promedio": 0.0,
-        "sqn": 0.0,
-        "estabilidad": 0.0,
-        "racha_ganadora": 0,
-        "racha_perdedora": 0,
-        "porc_ganadoras": 0.0,
-        "porc_perdedoras": 0.0,
+        "profit_factor": float("nan"),
+        "sharpe": 0.0,
+        # ── operacional ──────────────────────────────────────────────────
         "trades_por_dia": 0.0,
-        "pnl_neto_por_dia_operado": 0.0,
         "n_trades": 0,
         "total_trades": 0,
         "num_trades": 0,
@@ -96,18 +76,10 @@ def _empty_metrics_fast(saldo_inicial: float) -> Dict[str, Any]:
         "n_trades_short": 0,
         "count_shorts": 0,
         "num_shorts": 0,
-        "riesgo_beneficio": float("nan"),
-        "sharpe": 0.0,
-        "sortino": 0.0,
-        "profit_factor": float("nan"),
-        "payoff_ratio": float("nan"),
-        "calmar": 0.0,
         "saldo_actual": float(saldo_inicial),
         "saldo_min": float(saldo_inicial),
         "saldo_max": float(saldo_inicial),
         "saldo_mean": float(saldo_inicial),
-        "max_ganancia": 0.0,
-        "max_perdida": 0.0,
         "duration_mean_min": 0.0,
         "comisiones_total": 0.0,
         "saldo_sin_comisiones": 0.0,
@@ -326,12 +298,12 @@ if NUMBA_METRICS_AVAILABLE:
 
         profit_factor = sum_wins / sum_losses if sum_losses > 0 else np.nan
         avg_win = sum_wins / n_wins if n_wins > 0 else 0.0
-        avg_loss = sum_losses / n_losses if n_losses > 0 else 0.0
-        payoff_ratio = avg_win / avg_loss if avg_loss > 0 else np.nan
+        avg_loss_abs = sum_losses / n_losses if n_losses > 0 else 0.0
 
-        # Expectativa = Beneficio Neto Total / N trades (misma fórmula que scoring)
-        expectativa = mean_pnl
-        retorno_promedio = mean_pnl
+        # EXPECTANCY: E = WR × ganancia_media − (1−WR) × pérdida_media_abs
+        wr_float = float(n_wins) / float(n)
+        expectativa = wr_float * avg_win - (1.0 - wr_float) * avg_loss_abs
+
         saldo_mean = saldo_sum / n
 
         _, max_dd_pct = _max_drawdown_numba(equity_curve)
@@ -388,20 +360,20 @@ if NUMBA_METRICS_AVAILABLE:
             roi,
             winrate,
             max_dd_pct,
-            sqn,
+            _sqn,           # ignorado
             sharpe,
-            sortino,
+            _sortino,       # ignorado
             profit_factor,
-            payoff_ratio,
+            _payoff,        # ignorado
             expectativa,
-            retorno_promedio,
-            max_win_streak,
-            max_loss_streak,
+            _ret_prom,      # ignorado
+            _win_streak,    # ignorado
+            _loss_streak,   # ignorado
             saldo_min,
             saldo_max,
             saldo_mean,
-            max_ganancia,
-            max_perdida,
+            _max_gan,       # ignorado
+            _max_perd,      # ignorado
             n_wins,
             n_losses,
         ) = _compute_all_metrics_numba(
@@ -409,19 +381,15 @@ if NUMBA_METRICS_AVAILABLE:
         )
 
         return {
+            # ── 6 métricas canónicas ─────────────────────────────────────
             "roi": float(roi),
             "winrate": float(winrate),
             "drawdown": float(max_dd_pct),
             "expectativa": float(expectativa),
-            "retorno_promedio": float(retorno_promedio),
-            "sqn": float(sqn),
-            "estabilidad": 0.0,
-            "racha_ganadora": int(max_win_streak),
-            "racha_perdedora": int(max_loss_streak),
-            "porc_ganadoras": 100.0 * n_wins / n if n > 0 else 0.0,
-            "porc_perdedoras": 100.0 * n_losses / n if n > 0 else 0.0,
-            "trades_por_dia": 0.0,
-            "pnl_neto_por_dia_operado": 0.0,
+            "profit_factor": float(profit_factor),
+            "sharpe": float(sharpe),   # se recalcula en wrapper con _returns_series
+            # ── operacional ─────────────────────────────────────────────
+            "trades_por_dia": 0.0,     # completado en wrapper
             "n_trades": int(n),
             "total_trades": int(n),
             "num_trades": int(n),
@@ -431,22 +399,12 @@ if NUMBA_METRICS_AVAILABLE:
             "n_trades_short": int(n_trades_short),
             "count_shorts": int(n_trades_short),
             "num_shorts": int(n_trades_short),
-            "riesgo_beneficio": float(payoff_ratio),
-            "sharpe": float(sharpe),
-            "sortino": float(sortino),
-            "profit_factor": float(profit_factor),
-            "payoff_ratio": float(payoff_ratio),
-            "calmar": 0.0,
             "saldo_actual": float(saldo_despues[-1]) if n > 0 else float(saldo_inicial),
             "saldo_min": float(saldo_min),
             "saldo_max": float(saldo_max),
             "saldo_mean": float(saldo_mean),
-            "max_ganancia": float(max_ganancia),
-            "max_perdida": float(max_perdida),
             "duration_mean_min": 0.0,
             "comisiones_total": 0.0,
-            # beneficio bruto: el wrapper lo recalculará con datos reales
-            # Aquí ponemos pnl_neto como fallback (comisiones_total=0 en esta etapa)
             "saldo_sin_comisiones": float(np.sum(pnl_neto)),
             "pnl_neto": float(np.sum(pnl_neto)),
             "net_pnl": float(np.sum(pnl_neto)),
@@ -547,111 +505,22 @@ def max_drawdown(equity_curve: List[float]) -> Tuple[float, float]:
 
 
 def expectativa(trades: TradesDF) -> float:
-    """ESPERANZA MATEMÁTICA POR TRADE ($): Beneficio Neto Total / Número Total de Trades."""
+    """EXPECTANCY: E = WR × ganancia_media − (1−WR) × pérdida_media_abs.
 
-    if _empty(trades):
-        return 0.0
-    pnl = _to_numpy(trades, "pnl_neto")
-    if len(pnl) == 0:
-        return 0.0
-    return float(np.mean(pnl))
-
-
-def retorno_promedio(trades: TradesDF) -> float:
-    """MEDIA DEL PNL NETO POR TRADE ($)."""
-
-    if _empty(trades):
-        return 0.0
-    pnl = _to_numpy(trades, "pnl_neto")
-    return float(np.mean(pnl))
-
-
-def sqn(trades: TradesDF) -> float:
-    """System Quality Number (SQN).
-
-    Fórmula:
-        $SQN = \\sqrt{N} \times (\bar{R} / \\sigma_R)$
-
-    Donde R es el resultado por trade. Aquí usamos `pnl_neto` (PnL neto por trade)
-    porque ya incluye comisiones y es consistente con el resto de métricas.
+    Fórmula canónica: cuánto espera ganar o perder por trade en promedio.
     """
-
     if _empty(trades):
         return 0.0
-
-    r = _to_numpy(trades, "pnl_neto")
-    r = r[np.isfinite(r)]
-    n = int(r.size)
-    if n < 2:
-        return 0.0
-
-    mean = float(np.mean(r))
-    std = float(np.std(r, ddof=1))
-    
-    n_wins = (r > 0).sum()
-    if n_wins == 0:
-        return -10.0
-    if n_wins == n:
-        return 10.0
-        
-    if std == 0.0 or not np.isfinite(std):
-        return 0.0
-
-    val = float(np.sqrt(float(n)) * (mean / std))
-    # Clamp to reasonable range
-    return float(max(-20.0, min(20.0, val))) if np.isfinite(val) else 0.0
-
-
-def estabilidad_equity(equity_curve: List[float]) -> float:
-    """
-    Simple smoothness measure (1 - std(delta)/mean(equity)).
-
-    This is not a standard metric; it is kept because the project already uses it.
-    """
-
-    if not equity_curve or len(equity_curve) < 2:
-        return 0.0
-    arr = np.asarray(equity_curve, dtype=np.float64)
-    cambios = np.diff(arr)
-    mean_eq = float(np.mean(arr))
-    return float(1.0 - (np.std(cambios) / mean_eq)) if mean_eq != 0 else 0.0
-
-
-def racha_maxima(trades: TradesDF) -> Tuple[int, int]:
-    """Max winning and losing streaks."""
-
-    if _empty(trades):
-        return 0, 0
-
     pnl = _to_numpy(trades, "pnl_neto")
-
-    def max_streak_np(arr: np.ndarray) -> int:
-        """Calcula racha máxima usando numpy vectorizado (sin loops Python)."""
-        if len(arr) == 0 or arr.sum() == 0:
-            return 0
-        # Detectar inicios de grupos de 1's (rising edges)
-        padded = np.concatenate(([0], arr, [0]))
-        diffs = np.diff(padded)
-        starts = np.where(diffs == 1)[0]
-        ends = np.where(diffs == -1)[0]
-        if len(starts) == 0:
-            return 0
-        return int(np.max(ends - starts))
-
-    gan = (pnl > 0).astype(int)
-    per = (pnl < 0).astype(int)
-
-    return max_streak_np(gan), max_streak_np(per)
-
-
-def porcentaje_ganadoras_perdedoras(trades: TradesDF) -> Tuple[float, float]:
-    if _empty(trades):
-        return 0.0, 0.0
-    pnl = _to_numpy(trades, "pnl_neto")
-    n = float(len(pnl))
-    n_win = float((pnl > 0).sum())
-    n_loss = float((pnl < 0).sum())
-    return 100.0 * n_win / n, 100.0 * n_loss / n
+    n = len(pnl)
+    if n == 0:
+        return 0.0
+    wins = pnl[pnl > 0]
+    losses = pnl[pnl < 0]
+    wr = len(wins) / n
+    avg_win = float(wins.mean()) if len(wins) > 0 else 0.0
+    avg_loss_abs = float(abs(losses.mean())) if len(losses) > 0 else 0.0
+    return float(wr * avg_win - (1.0 - wr) * avg_loss_abs)
 
 
 def _extract_times_polars(trades: TradesDF) -> Tuple[pl.Series, pl.Series]:
@@ -841,18 +710,9 @@ def pnl_neto_por_dia_operado(
     return pnl_neto_total / float(dias_operados)
 
 
-def riesgo_beneficio(trades: TradesDF) -> float:
-    """Average win / average loss (absolute)."""
-
-    if _empty(trades):
-        return float("nan")
-    pnl = _to_numpy(trades, "pnl_neto")
-    wins = pnl[pnl > 0]
-    losses = pnl[pnl < 0]
-    avg_win = float(wins.mean()) if len(wins) > 0 else 0.0
-    avg_loss = float(losses.mean()) if len(losses) > 0 else 0.0
-    return abs(avg_win / avg_loss) if avg_loss != 0 else float("nan")
-
+# =============================================================================
+# 8. MÉTRICAS DE CALIDAD
+# =============================================================================
 
 def _returns_series(trades: TradesDF) -> np.ndarray:
     """
@@ -880,86 +740,11 @@ def _returns_series(trades: TradesDF) -> np.ndarray:
     return r
 
 
-# Factor de anualización por timeframe (observaciones por año)
-TIMEFRAME_ANNUAL_FACTOR = {
-    "1m": 525600,   # 60 * 24 * 365.25
-    "5m": 105120,   # 12 * 24 * 365.25
-    "15m": 35040,   # 4 * 24 * 365.25
-    "30m": 17520,   # 2 * 24 * 365.25
-    "1h": 8760,     # 24 * 365.25
-    "4h": 2190,     # 6 * 365.25
-    "1d": 365.25,   # días por año
-    "1w": 52.18,    # semanas por año
-}
+def sharpe(trades: TradesDF, *, annualize: bool = False, timeframe: Optional[str] = None) -> float:
+    """SHARPE RATIO PER-TRADE: media(retornos) / desv_std(retornos).
 
-
-def _get_annualization_factor(timeframe: Optional[str] = None, trades: Optional[TradesDF] = None) -> float:
-    """
-    Obtiene el factor de anualización para Sharpe/Sortino basado en frecuencia de trading.
-    
-    IMPORTANTE: El Sharpe Ratio se anualiza según la frecuencia de observaciones (trades),
-    no según el timeframe de las velas. Sin embargo, para estrategias con alta frecuencia
-    en timeframes cortos, usar el timeframe como proxy es aceptable.
-    
-    La anualización se hace multiplicando por sqrt(N) donde N es el número de
-    observaciones por año.
-    
-    Para trading:
-    - Si tenemos trades_por_dia, usamos: N = tpd * 252 (días de trading)
-    - Si tenemos timeframe, estimamos basándose en horas de mercado
-    - Default: 252 (asumiendo ~1 trade por día)
-    """
-    # Prioridad 1: Calcular basado en trades reales
-    if trades is not None and not _empty(trades):
-        tpd = trades_por_dia(trades)
-        if tpd > 0:
-            # Usar 365.25 para crypto (24/7) o 252 para mercados tradicionales
-            # Por defecto asumimos mercados tradicionales
-            return tpd * 252.0
-    
-    # Prioridad 2: Usar timeframe como estimación
-    # NOTA: Esto asume que se hace ~1 trade por vela, lo cual puede no ser cierto
-    if timeframe and timeframe in TIMEFRAME_ANNUAL_FACTOR:
-        # Ajustar por horas de mercado (8h/día para tradicionales vs 24h para crypto)
-        # Para ser conservadores, dividimos por 3 (asumiendo mercado abierto 8h/día)
-        return float(TIMEFRAME_ANNUAL_FACTOR[timeframe]) / 3.0
-
-    # Default: asumir trading diario en mercado tradicional
-    return 252.0
-
-
-# =============================================================================
-# 8. MÉTRICAS DE CALIDAD
-# =============================================================================
-
-def sharpe(
-    trades: TradesDF,
-    *,
-    annualize: bool = False,
-    timeframe: Optional[str] = None
-) -> float:
-    """
-    Sharpe Ratio PER-TRADE (calidad por disparo individual).
-
-    FILOSOFÍA:
-    Mide la calidad promedio de cada trade individual, ignorando
-    cuántas veces dispara la estrategia al año. Esto permite comparar
-    la calidad intrínseca de los "disparos" entre estrategias.
-
-    Fórmula:
-        Sharpe_per_trade = mean(returns) / std(returns)
-
-    Si annualize=True, escala por sqrt(N_trades) para dar una idea
-    de cómo se acumula la calidad con más trades, pero el default
-    es FALSE para medir la calidad pura por trade.
-
-    Args:
-        trades: DataFrame con los trades
-        annualize: Si True, escala por sqrt(n_trades). Default=False
-        timeframe: Ignorado (mantenido por compatibilidad)
-
-    Returns:
-        Sharpe Ratio per-trade (raw si annualize=False)
+    Mide la calidad promedio de cada trade individual.
+    Fórmula: Sharpe = media(retornos_por_trade) / std(retornos_por_trade)
     """
     if _empty(trades):
         return 0.0
@@ -967,165 +752,22 @@ def sharpe(
     n_trades = r.size
     if n_trades == 0:
         return 0.0
-    mean = float(np.mean(r))
-    std = float(np.std(r, ddof=1)) if n_trades > 1 else 0.0
-    
-    n_wins = (r > 0).sum()
-    if n_wins == 0:
-        return -10.0
-    if n_wins == n_trades:
-        return 10.0
-        
-    if std < 1e-8:
+    mean_r = float(np.mean(r))
+    std_r = float(np.std(r, ddof=1)) if n_trades > 1 else 0.0
+    if std_r < 1e-8:
         return 0.0
-    # Sharpe per-trade: calidad promedio de cada disparo
-    ratio = mean / std
-    if annualize and n_trades > 1:
-        # Escalar por sqrt(N) para ver acumulación con más trades
-        ratio *= float(np.sqrt(n_trades))
-    # Clamp to reasonable range — no real Sharpe exceeds ±20 (was ±100)
-    return float(max(-20.0, min(20.0, ratio)))
-
-
-def sortino(
-    trades: TradesDF,
-    *,
-    annualize: bool = False,
-    timeframe: Optional[str] = None
-) -> float:
-    """
-    Sortino Ratio PER-TRADE (calidad por disparo, penalizando solo pérdidas).
-
-    Similar al Sharpe pero usa solo la desviación de retornos negativos
-    (downside deviation), siendo más sensible al riesgo de pérdida.
-
-    La downside deviation se calcula como:
-        sqrt(sum(min(r, 0)^2) / N)
-    
-    Esto penaliza la volatilidad a la baja pero no la volatilidad al alza.
-
-    Fórmula per-trade:
-        Sortino_per_trade = mean_return / downside_std
-
-    Args:
-        trades: DataFrame con los trades
-        annualize: Si True, escala por sqrt(n_trades). Default=False
-        timeframe: Ignorado (mantenido por compatibilidad)
-
-    Returns:
-        Sortino Ratio per-trade (raw si annualize=False)
-    """
-    if _empty(trades):
-        return 0.0
-    r = _returns_series(trades)
-    n_trades = r.size
-    if n_trades == 0:
-        return 0.0
-    
-    mean_ret = float(np.mean(r))
-    
-    # Downside deviation: sqrt(mean(min(r, 0)^2))
-    downside_sq = np.where(r < 0, r**2, 0.0)
-    downside_var = float(np.mean(downside_sq))
-    downside_std = float(np.sqrt(downside_var)) if downside_var > 0 else 0.0
-    
-    if downside_std < 1e-8:
-        # Si no hay volatilidad a la baja, verificar si hay ganancias
-        if mean_ret > 0:
-            return 10.0
-        return 0.0
-    
-    n_wins = (r > 0).sum()
-    if n_wins == 0:
-        return -10.0
-    if n_wins == n_trades:
-        return 10.0
-    
-    ratio = mean_ret / downside_std
-    if annualize and n_trades > 1:
-        ratio *= float(np.sqrt(n_trades))
-    # Clamp to reasonable range — no real Sortino exceeds ±20 (was ±100)
+    ratio = mean_r / std_r
     return float(max(-20.0, min(20.0, ratio)))
 
 
 def profit_factor(trades: TradesDF) -> float:
+    """PROFIT FACTOR: Σ ganancias / |Σ pérdidas|."""
     if _empty(trades):
         return float("nan")
     pnl = _to_numpy(trades, "pnl_neto")
     wins = float(pnl[pnl > 0].sum())
     losses = float(abs(pnl[pnl < 0].sum()))
     return wins / losses if losses != 0 else float("nan")
-
-
-def payoff_ratio(trades: TradesDF) -> float:
-    if _empty(trades):
-        return float("nan")
-    pnl = _to_numpy(trades, "pnl_neto")
-    wins = pnl[pnl > 0]
-    losses = pnl[pnl < 0]
-    avg_win = float(wins.mean()) if len(wins) > 0 else 0.0
-    avg_loss = float(abs(losses.mean())) if len(losses) > 0 else 0.0
-    return avg_win / avg_loss if avg_loss != 0 else float("nan")
-
-
-def calmar(trades: TradesDF, equity_curve: List[float]) -> float:
-    """
-    Calmar ratio (annualized return / max drawdown).
-    """
-
-    if _empty(trades) or not equity_curve:
-        return 0.0
-
-    entry_times, exit_times = _extract_times_polars(trades)
-
-    # Calcular días usando Polars temporal
-    start = entry_times.min()
-    end = exit_times.max()
-    if start is None or end is None:
-        return 0.0
-
-    # Calcular diferencia en días
-    diff_df = pl.DataFrame({"start": [start], "end": [end]})
-    diff_result = diff_df.select(
-        ((pl.col("end") - pl.col("start")).dt.total_seconds() / 86400.0).alias("days")
-    )
-    days = float(diff_result["days"][0]) if not diff_result.is_empty() else 0.0
-    years = days / 365.25 if days > 0 else 0.0
-
-    initial = float(equity_curve[0])
-    final = float(equity_curve[-1])
-    if initial <= 0 or years <= 0:
-        cagr = 0.0
-    elif final <= 0:
-        cagr = float("nan")
-    else:
-        ratio = final / initial
-        if ratio <= 0:
-            cagr = float("nan")
-        else:
-            try:
-                if ratio > 1e6:
-                    cagr = float("inf")
-                elif years < 0.001:
-                    cagr = 0.0
-                else:
-                    cagr_val = ratio ** (1.0 / years) - 1.0
-                    if isinstance(cagr_val, complex):
-                        cagr = float("nan")
-                    else:
-                        cagr = float(cagr_val)
-                        if cagr > 1e10:
-                            cagr = float("inf")
-            except (OverflowError, ValueError):
-                cagr = float("inf")
-
-    _, max_dd_pct = max_drawdown(equity_curve)
-    if max_dd_pct == 0 or np.isnan(cagr) or np.isinf(cagr):
-        return float("nan")
-    result = cagr / (max_dd_pct / 100.0)
-    if isinstance(result, complex) or np.isinf(result):
-        return float("nan")
-    return float(result)
 
 
 # =============================================================================
@@ -1185,36 +827,33 @@ def resumen_metricas(
 def _empty_metrics_dict(saldo_inicial: float) -> Dict[str, Any]:
     """DICCIONARIO DE MÉTRICAS VACÍO (VERSIÓN COMPLETA PARA RUTA PYTHON)."""
     return {
+        # ── 6 métricas canónicas ──────────────────────────────────────────
         "roi": 0.0,
         "winrate": 0.0,
         "drawdown": 0.0,
         "expectativa": 0.0,
-        "retorno_promedio": 0.0,
-        "sqn": 0.0,
-        "estabilidad": 0.0,
-        "racha_ganadora": 0,
-        "racha_perdedora": 0,
-        "porc_ganadoras": 0.0,
-        "porc_perdedoras": 0.0,
+        "profit_factor": float("nan"),
+        "sharpe": 0.0,
+        # ── operacional ──────────────────────────────────────────────────
         "trades_por_dia": 0.0,
         "n_trades": 0,
+        "total_trades": 0,
+        "num_trades": 0,
         "n_trades_long": 0,
+        "count_longs": 0,
+        "num_longs": 0,
         "n_trades_short": 0,
-        "riesgo_beneficio": float("nan"),
-        "sharpe": 0.0,
-        "sortino": 0.0,
-        "profit_factor": float("nan"),
-        "payoff_ratio": float("nan"),
-        "calmar": 0.0,
+        "count_shorts": 0,
+        "num_shorts": 0,
         "saldo_actual": float(saldo_inicial),
         "saldo_min": float(saldo_inicial),
         "saldo_max": float(saldo_inicial),
         "saldo_mean": float(saldo_inicial),
-        "max_ganancia": 0.0,
-        "max_perdida": 0.0,
         "duration_mean_min": 0.0,
         "comisiones_total": 0.0,
         "saldo_sin_comisiones": 0.0,
+        "pnl_neto": 0.0,
+        "net_pnl": 0.0,
     }
 
 
@@ -1268,10 +907,6 @@ def _resumen_metricas_numba_wrapper(
     metrics["trades_por_dia"] = trades_por_dia(
         trades, period_start=period_start, period_end=period_end
     )
-    metrics["pnl_neto_por_dia_operado"] = pnl_neto_por_dia_operado(
-        trades, period_start=period_start, period_end=period_end
-    )
-    metrics["calmar"] = calmar(trades, list(eq_arr))
 
     # Duración y comisiones (compatible Polars/Pandas)
     metrics["duration_mean_min"] = _estimate_duration_mean_min(trades)
@@ -1281,22 +916,12 @@ def _resumen_metricas_numba_wrapper(
     else:
         metrics["comisiones_total"] = 0.0
 
-    # Estabilidad (simple, no crítica)
-    if len(eq_arr) >= 2:
-        cambios = np.diff(eq_arr)
-        mean_eq = float(np.mean(eq_arr))
-        metrics["estabilidad"] = float(1.0 - (np.std(cambios) / mean_eq)) if mean_eq != 0 else 0.0
-
-    # Recalcular Sharpe y Sortino - PER-TRADE (calidad por disparo)
-    metrics["sharpe"] = sharpe(trades, annualize=False)
-    metrics["sortino"] = sortino(trades, annualize=False)
+    # Sharpe per-trade recalculado en Python (más preciso que el kernel Numba)
+    metrics["sharpe"] = sharpe(trades)
 
     # Beneficio bruto (sin comisiones) = PNL neto + comisiones pagadas
-    # Esto da el beneficio BRUTO (profit), NO el saldo/balance bruto
     pnl_neto_total = metrics.get("pnl_neto", 0.0) or metrics.get("net_pnl", 0.0)
     metrics["saldo_sin_comisiones"] = pnl_neto_total + metrics["comisiones_total"]
-
-    # Si existe columna pnl (bruto), usar cálculo exacto del beneficio bruto
     if "pnl" in cols:
         pnl_bruto = _to_numpy(trades, "pnl")
         metrics["saldo_sin_comisiones"] = float(pnl_bruto.sum())
@@ -1329,11 +954,8 @@ def _resumen_metricas_python(
 
     equity_curve = list(saldo_despues) if equity_curve is None else equity_curve
     _, max_dd_pct = max_drawdown(equity_curve)
-    racha_g, racha_p = racha_maxima(trades)
-    porc_gan, porc_perd = porcentaje_ganadoras_perdedoras(trades)
 
-    # Beneficio bruto (sin comisiones) = sum(pnl_bruto)
-    # Esto es el beneficio BRUTO (profit), NO el saldo bruto
+    # Beneficio bruto (sin comisiones)
     pnl_bruto = _to_numpy(trades, "pnl") if "pnl" in cols else pnl_neto
     beneficio_bruto = float(pnl_bruto.sum())
 
@@ -1364,22 +986,15 @@ def _resumen_metricas_python(
     comision = _to_numpy(trades, "comision") if "comision" in cols else np.array([0.0])
 
     return {
+        # ── 6 métricas canónicas ─────────────────────────────────────────
         "roi": roi_pct(trades, saldo_inicial),
         "winrate": winrate_pct(trades),
         "drawdown": max_dd_pct,
         "expectativa": expectativa(trades),
-        "retorno_promedio": retorno_promedio(trades),
-        "sqn": sqn(trades),
-        "estabilidad": estabilidad_equity(equity_curve),
-        "racha_ganadora": racha_g,
-        "racha_perdedora": racha_p,
-        "porc_ganadoras": porc_gan,
-        "porc_perdedoras": porc_perd,
+        "profit_factor": profit_factor(trades),
+        "sharpe": sharpe(trades),
+        # ── operacional ──────────────────────────────────────────────────
         "trades_por_dia": trades_por_dia(trades, period_start=period_start, period_end=period_end),
-        "pnl_neto_por_dia_operado": pnl_neto_por_dia_operado(
-            trades, period_start=period_start, period_end=period_end
-        ),
-        # Trade counts
         "n_trades": int(len(trades)),
         "total_trades": int(len(trades)),
         "num_trades": int(len(trades)),
@@ -1389,22 +1004,13 @@ def _resumen_metricas_python(
         "n_trades_short": n_trades_short,
         "count_shorts": n_trades_short,
         "num_shorts": n_trades_short,
-        "riesgo_beneficio": riesgo_beneficio(trades),
-        "sharpe": sharpe(trades, annualize=False),
-        "sortino": sortino(trades, annualize=False),
-        "profit_factor": profit_factor(trades),
-        "payoff_ratio": payoff_ratio(trades),
-        "calmar": calmar(trades, equity_curve),
         "saldo_actual": saldo_actual,
         "saldo_min": saldo_min,
         "saldo_max": saldo_max,
         "saldo_mean": saldo_mean,
-        "max_ganancia": float(np.max(pnl_neto)),
-        "max_perdida": float(np.min(pnl_neto)),
         "duration_mean_min": duration_mean_min,
         "comisiones_total": float(np.sum(comision)),
         "saldo_sin_comisiones": beneficio_bruto,
-        # PnL aliases
         "pnl_neto": float(np.sum(pnl_neto)),
         "net_pnl": float(np.sum(pnl_neto)),
     }
