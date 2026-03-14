@@ -128,6 +128,7 @@ class BacktestParams:
     regime_buy_hold_mode: bool = False
     regime_buy_hold_saldo_all: bool = True
     regime_buy_hold_saldo: float = 0.0
+    regime_signal_only_mode: bool = False
 
     @classmethod
     def from_config_and_params(cls, config: BacktestConfig, params: Dict[str, Any]) -> "BacktestParams":
@@ -152,6 +153,7 @@ class BacktestParams:
             regime_buy_hold_mode=bool(params.get("__regime_buy_hold_mode", False)),
             regime_buy_hold_saldo_all=bool(params.get("__regime_buy_hold_saldo_all", True)),
             regime_buy_hold_saldo=float(params.get("__regime_buy_hold_saldo", 0.0) or 0.0),
+            regime_signal_only_mode=bool(params.get("__regime_signal_only_mode", False)),
         )
 
 
@@ -979,6 +981,18 @@ def calculate_performance_vectorized_numba(
     time_stop = int(params.time_stop_bars)
     time_bars_cfg = int(params.exit_time_bars)
 
+    # Modo régimen-only (all/odd):
+    # - Ignorar SL/TP/Trailing/TimeBars
+    # - Salir únicamente por señales exit_* inyectadas por régimen
+    #   (en all: última vela, en odd: cambio de régimen)
+    if bool(getattr(params, "regime_signal_only_mode", False)):
+        is_trailing = False
+        sl_pct = 9999.0
+        tp_pct = 0.0
+        trail_act = 0.0
+        trail_dist = 0.0
+        time_stop = 0
+
     # Si es modo time_bars: desactivar SL/TP/Trailing y usar time_stop_bars = exit_time_bars
     # IMPORTANTE: sl_pct = 9999.0 (NO 0.0) porque sl_pct=0 → sl_price=entry_price → salida inmediata
     if is_time_bars:
@@ -1035,12 +1049,12 @@ def calculate_performance_vectorized_numba(
         tf_ratio = timeframe_minutes  # Ratio de velas 1m por vela TF
         
         # Señales de salida en 1m (estrategia)
-        if signals_1m is not None and "exit_long" in signals_1m.columns:
+        if (not bool(getattr(params, "regime_signal_only_mode", False))) and signals_1m is not None and "exit_long" in signals_1m.columns:
             exit_long_1m = signals_1m["exit_long"].fill_null(False).to_numpy()
         else:
             exit_long_1m = np.zeros(len(df_1m), dtype=np.bool_)
 
-        if signals_1m is not None and "exit_short" in signals_1m.columns:
+        if (not bool(getattr(params, "regime_signal_only_mode", False))) and signals_1m is not None and "exit_short" in signals_1m.columns:
             exit_short_1m = signals_1m["exit_short"].fill_null(False).to_numpy()
         else:
             exit_short_1m = np.zeros(len(df_1m), dtype=np.bool_)

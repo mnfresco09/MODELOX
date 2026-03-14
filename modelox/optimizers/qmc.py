@@ -151,7 +151,8 @@ class QMCScoringConfig:
     # =========================================================================
     MIN_TRADES_FOR_VALID: int = 5        # Muy permisivo — queremos registrar todo
     MAX_DRAWDOWN_LIMIT: float = 100.0    # Sin límite real — registrar todo
-    MIN_TRADES_PER_DAY: float = 0.20     # Mínimo trades/día → debajo = score 0
+    MIN_TRADES_PER_DAY: float = 0.15     # Mínimo trades/día → debajo aplica penalización
+    LOW_TRADES_PENALTY_DIVISOR: float = 5.0  # Penalización: score_final / 5
 
 
 # =============================================================================
@@ -256,102 +257,35 @@ class QMCScorer:
         equity_curve: Optional[np.ndarray] = None,
         trades_pnl: Optional[np.ndarray] = None,
         total_days: Optional[float] = None,
+        saldo_inicial: Optional[float] = None,
     ) -> float:
         """
-        SCORING QMC — Fórmula única (misma que Hybrid).
-        INFORMATIVO — no guía la búsqueda QMC.
-        
+        SCORING QMC (INFORMATIVO):
+            - Penalización de frecuencia: si trades/día < 0.15 => score / 5
+            - Componentes principales:
+                * Profit Factor (más alto = mejor)
+                * Win Rate (más alto = mejor)
+                * Drawdown (más bajo = mejor)
+
         Fórmula:
-            Score = (Esperanza / (Max_Racha_Perdedora + 1)) × R² × P_lineal(x)
-        
-        Donde:
-            Esperanza = Beneficio Neto Total / N trades
-                        (amortiguado si n_trades < 10)
-            R²        = Coef. determinación de capital acumulado vs nº trade
-            P_lineal  = min(1, trades_per_day / 0.5)
+            pf_norm = PF / (PF + 1)
+            wr_norm = WR / 100
+            dd_norm = 1 - DD/100
+            score   = 1000 * pf_norm * wr_norm * dd_norm
+
+        Notas:
+            - dd_norm invierte la lógica del DD para que menor DD puntúe más.
+            - El score es pasivo (QMC no lo usa para muestrear).
         """
-        # ── 1. Extracción y validación de datos ────────────────────────
-        if trades_pnl is None:
-            raw = metrics.get("_trades_pnl_array", None)
-            if raw is not None:
-                trades_pnl = np.asarray(raw, dtype=np.float64)
+        # SCORE = ROI de la estrategia (sin B&H)
+        final_score = self._safe_get(metrics, "roi", 0.0)
 
-        if trades_pnl is None or trades_pnl.size == 0:
-            return 0.0
-
-        if total_days is None or total_days <= 0.0:
-            td = self._safe_get(metrics, "_total_days", 0.0)
-            if td <= 0.0:
-                tpd = self._safe_get(metrics, "trades_por_dia", 0.0)
-                n_t = int(self._safe_get(metrics, "n_trades", 0))
-                if n_t == 0:
-                    n_t = int(self._safe_get(metrics, "total_trades", 0))
-                td = float(n_t) / tpd if tpd > 0 else 1.0
-            total_days = td
-
-        n_trades = len(trades_pnl)
-        if n_trades == 0 or total_days <= 0.0:
-            return 0.0
-
-        # ── 2. Cálculos Matemáticos Core ───────────────────────────────
-
-        # A. Esperanza = Beneficio Neto Total / N trades
-        #    Con amortiguación para pocos trades (< 10)
-        MIN_TRADES_FOR_RELIABLE = 10
-        esperanza_raw = float(np.sum(trades_pnl)) / n_trades
-        if n_trades < MIN_TRADES_FOR_RELIABLE:
-            trade_factor = n_trades / MIN_TRADES_FOR_RELIABLE
-            esperanza = esperanza_raw * trade_factor
-        else:
-            esperanza = esperanza_raw
-
-        # B. Racha Perdedora máxima (Vectorizada)
-        es_negativo = (trades_pnl < 0).astype(int)
-        padded = np.pad(es_negativo, (1, 1), 'constant', constant_values=0)
-        diffs = np.diff(padded)
-        starts = np.where(diffs == 1)[0]
-        ends = np.where(diffs == -1)[0]
-        max_racha = float(np.max(ends - starts)) if len(starts) > 0 else 0.0
-
-        # C. R² (Estabilidad de la curva de capital)
-        #    Eje X = Número de trade (1, 2, 3, ...)
-        #    Eje Y = Capital acumulado (cumsum de PnL por trade)
-        if n_trades > 1:
-            x = np.arange(1, n_trades + 1)
-            y = np.cumsum(trades_pnl)
-            if np.std(y) == 0:
-                r_squared = 0.0
-            else:
-                correlacion = np.corrcoef(x, y)[0, 1]
-                r_squared = float(correlacion**2) if not np.isnan(correlacion) else 0.0
-        else:
-            r_squared = 0.0
-
-        # D. Penalización Lineal — P_lineal(x)
-        #    Si x >= 0.5 → 1.0; Si x < 0.5 → x / 0.5
-        trades_per_day = n_trades / total_days
-        target_tpd = 0.5
-        p_lineal = min(1.0, trades_per_day / target_tpd) if target_tpd > 0 else 1.0
-
-        # ── 3. Fórmula Final ───────────────────────────────────────────
-        #    Score = (Esperanza / (Max_Racha_Perdedora + 1)) × R² × P_lineal × 100
-        final_score = (esperanza / (max_racha + 1.0)) * r_squared * p_lineal * 100.0
-
-        # ── SEGURO: proteger contra NaN / Inf por edge cases numéricos ──
         if not math.isfinite(final_score):
             final_score = 0.0
 
-        # ── 4. Auditoría en Optuna ─────────────────────────────────────
         if trial is not None:
             try:
-                trial.set_user_attr('qmc_mode', 'coverage')
                 trial.set_user_attr('final_score', float(final_score))
-                trial.set_user_attr('esperanza', float(esperanza))
-                trial.set_user_attr('esperanza_raw', float(esperanza_raw))
-                trial.set_user_attr('max_racha', float(max_racha))
-                trial.set_user_attr('r_squared', float(r_squared))
-                trial.set_user_attr('p_lineal', float(p_lineal))
-                trial.set_user_attr('n_trades', int(n_trades))
             except Exception:
                 pass
 
@@ -624,35 +558,23 @@ class QMCOptimizer:
             
             if trades_df.is_empty():
                 return 0.0
-            
+
             trial.set_user_attr("metricas", metrics)
-            
-            # Extraer pnl_neto array y total_days para score_universal
-            if isinstance(trades_df, pl.DataFrame):
-                _pnl_arr = trades_df["pnl_neto"].to_numpy().astype(np.float64)
-            else:
-                _pnl_arr = trades_df["pnl_neto"].to_numpy(dtype=np.float64)
-            
-            _total_days = 0.0
-            if "timestamp" in df_entry.columns and len(df_entry) > 0:
-                try:
-                    _ts0 = df_entry["timestamp"][0]
-                    _ts1 = df_entry["timestamp"][-1]
-                    _delta = pl.DataFrame({"s": [_ts0], "e": [_ts1]}).select(
-                        ((pl.col("e") - pl.col("s")).dt.total_seconds() / 86400.0).alias("d")
+
+            # ── SCORE = ROI de la estrategia (sin contar B&H) ───────────────
+            if isinstance(trades_df, pl.DataFrame) and "is_buy_hold" in trades_df.columns:
+                _strat_only = trades_df.filter(~pl.col("is_buy_hold"))
+                if not _strat_only.is_empty():
+                    _metrics_strat = resumen_metricas(
+                        _strat_only,
+                        saldo_inicial=float(self.config.saldo_inicial),
                     )
-                    _total_days = max(1.0, float(_delta["d"][0]))
-                except Exception:
-                    _total_days = 1.0
-            
-            # CALCULAR SCORE (INFORMATIVO — NO GUÍA LA BÚSQUEDA)
-            score = self._scorer.compute_score(
-                trial=trial,
-                metrics=metrics,
-                equity_curve=np.array(equity_curve) if equity_curve else None,
-                trades_pnl=_pnl_arr,
-                total_days=_total_days,
-            )
+                    score = float(_metrics_strat.get("roi", 0.0))
+                else:
+                    score = 0.0
+            else:
+                # Sin B&H: ROI total = ROI de estrategia
+                score = float(metrics.get("roi", 0.0))
             
             # CREAR ARTIFACTS
             artifacts = TrialArtifacts(
@@ -826,24 +748,49 @@ def score_qmc(
     equity_curve: Optional[List[float]] = None,
     trades_pnl: Optional[np.ndarray] = None,
     total_days: Optional[float] = None,
+    saldo_inicial: Optional[float] = None,
+    trades_df: Optional[Any] = None,
 ) -> float:
     """
-    FUNCIÓN DE SCORING QMC STANDALONE (INFORMATIVO).
-    
-    ⚠ Este score NO influye en el muestreo QMC.
-    Solo sirve para identificar las mejores combinaciones post-hoc.
-    
-    USO:
-        score = score_qmc(metrics)
+    SCORING QMC — Score = ROI de estrategia (sin B&H).
+
+    Reglas:
+      · Score = sum(pnl_neto trades estrategia) / saldo_inicial * 100
+      · Si trades/día < 0.15: score / 5 (positivo) o score * 5 (negativo)
+      · Límite inferior: 0 (nunca negativo)
     """
-    scorer = QMCScorer()
-    return scorer.compute_score(
-        trial=trial,
-        metrics=metrics,
-        equity_curve=np.array(equity_curve) if equity_curve else None,
-        trades_pnl=trades_pnl,
-        total_days=total_days,
-    )
+    import polars as _pl
+
+    _saldo_ini = float(saldo_inicial) if saldo_inicial and saldo_inicial > 0 else 10_000.0
+    _total_days = float(total_days) if total_days and total_days > 0 else 1.0
+
+    # ── Filtrar trades de estrategia (excluir B&H) ───────────────────────
+    if trades_df is not None and isinstance(trades_df, _pl.DataFrame) and "is_buy_hold" in trades_df.columns:
+        _strat = trades_df.filter(~_pl.col("is_buy_hold"))
+        _pnl_strat = float(_strat["pnl_neto"].sum()) if not _strat.is_empty() else 0.0
+        _n_strat   = len(_strat)
+    else:
+        # Sin columna B&H: todos los trades son de estrategia
+        _pnl_strat = float(np.sum(trades_pnl)) if trades_pnl is not None and len(trades_pnl) > 0 else 0.0
+        _n_strat   = len(trades_pnl) if trades_pnl is not None else 0
+
+    # ── Score base = ROI estrategia ──────────────────────────────────────
+    score = (_pnl_strat / _saldo_ini * 100.0)
+
+    # ── Límite inferior: nunca negativo ──────────────────────────────────
+    score = max(0.0, score)
+
+    if not math.isfinite(score):
+        score = 0.0
+
+    if trial is not None:
+        try:
+            trial.set_user_attr("score_qmc_roi",   round(_pnl_strat / _saldo_ini * 100.0, 4))
+            trial.set_user_attr("score_qmc_final",  round(score, 4))
+        except Exception:
+            pass
+
+    return float(score)
 
 
 # =============================================================================

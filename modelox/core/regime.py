@@ -333,6 +333,7 @@ def apply_regime_filter(
     df_1m_raw: pl.DataFrame,
     *,
     regimen_tipo: str = "ALCISTA",
+    regimen_modo: str = "true",
     regimen_buy_hold_activo: bool = False,
     regimen_buy_hold_saldo: object = "ALL",
     indicador: str = "EMA",
@@ -350,6 +351,7 @@ def apply_regime_filter(
         df_data,
         df_regime,
         regimen_tipo=regimen_tipo,
+        regimen_modo=regimen_modo,
         regimen_buy_hold_activo=regimen_buy_hold_activo,
         regimen_buy_hold_saldo=regimen_buy_hold_saldo,
     )
@@ -361,6 +363,7 @@ def apply_precomputed_regime_filter(
     df_regime: pl.DataFrame,
     *,
     regimen_tipo: str = "ALCISTA",
+    regimen_modo: str = "true",
     regimen_buy_hold_activo: bool = False,
     regimen_buy_hold_saldo: object = "ALL",
 ) -> Tuple[pl.DataFrame, int]:
@@ -387,6 +390,7 @@ def apply_precomputed_regime_filter(
         return df_signals, 0
     
     regimen_upper = regimen_tipo.upper().strip()
+    mode = str(regimen_modo).strip().lower()
     
     # 1. Preparar tabla de régimen con fecha como clave (solo columnas necesarias)
     _regime_cols = [
@@ -407,6 +411,57 @@ def apply_precomputed_regime_filter(
     
     # 4. Máscara: permitir si régimen coincide o es NEUTRAL/null
     regime_col = joined["regime"].fill_null("NEUTRAL")
+
+    # ==================================================================
+    # MODOS ESPECIALES SIN TRADES DE ESTRATEGIA
+    # - ALL: compra 1ª vela y vende última vela
+    # - ODD: compra al entrar en ALCISTA y vende al salir de ALCISTA
+    # ==================================================================
+    n = len(df_signals)
+    if mode == "all":
+        idx = np.arange(n, dtype=np.int64)
+        if n > 0:
+            signal_long = (idx == 0)
+            exit_long = (idx == (n - 1))
+        else:
+            signal_long = np.zeros(0, dtype=np.bool_)
+            exit_long = np.zeros(0, dtype=np.bool_)
+
+        df_signals = df_signals.with_columns([
+            pl.Series("signal_long", signal_long),
+            pl.Series("signal_short", np.zeros(n, dtype=np.bool_)),
+            pl.Series("exit_long", exit_long),
+            pl.Series("exit_short", np.zeros(n, dtype=np.bool_)),
+        ])
+        return df_signals, regime_lookup.height
+
+    if mode == "odd":
+        bullish = (regime_col == "ALCISTA")
+        bullish_prev = bullish.shift(1).fill_null(False)
+        bearish_or_neutral = ~bullish
+
+        # Entrada al comenzar fase ALCISTA (incluye primer bar si ya arranca alcista)
+        signal_long = bullish & (~bullish_prev)
+        # Salida al dejar de estar en ALCISTA
+        exit_long = bearish_or_neutral & bullish_prev
+
+        # Cierre defensivo en última vela si termina en ALCISTA
+        if n > 0:
+            last_close = np.zeros(n, dtype=np.bool_)
+            try:
+                last_close[-1] = bool(bullish[-1])
+            except Exception:
+                pass
+            exit_long = exit_long | pl.Series(last_close)
+
+        df_signals = df_signals.with_columns([
+            signal_long.alias("signal_long"),
+            pl.Series("signal_short", np.zeros(n, dtype=np.bool_)),
+            exit_long.alias("exit_long"),
+            pl.Series("exit_short", np.zeros(n, dtype=np.bool_)),
+        ])
+        return df_signals, regime_lookup.filter(pl.col("regime") == "ALCISTA").height
+
     allowed = (regime_col == regimen_upper) | (regime_col == "NEUTRAL")
     not_allowed = ~allowed  # Máscara invertida para exits forzados
 

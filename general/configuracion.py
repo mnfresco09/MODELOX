@@ -8,11 +8,17 @@ from modelox.core.exits import (
 )
 from modelox.core.types import normalize_timeframe_to_suffix
 
+# Atajos para permitir valores sin comillas en configuración (ej: REGIMEN_ACTIVO = odd)
+true = True
+false = False
+all = "all"
+odd = "odd"
+
 # =============================================================================
 # CAPITAL (colateral & apalancamiento)
 # =============================================================================
-SALDO_USADO        = 75    # Colateral por operación ($)
-APALANCAMIENTO_MAX = 15    # Apalancamiento máximo
+SALDO_USADO        = 1000    # Colateral por operación ($)
+APALANCAMIENTO_MAX = 10    # Apalancamiento máximo
 
 # =============================================================================
 # COMBINACIÓN & ESTRATEGIA
@@ -22,19 +28,19 @@ COMBINACION_A_EJECUTAR = [1,2,3]   # IDs de estrategias en modelox/strategies/
 # =============================================================================
 # OPTIMIZACIÓN (OPTUNA)
 # =============================================================================
-N_TRIALS                 = 10    # Trials (potencias de 2 para QMC: 32,64,128,256,512,1024,2048…)
-OPTUNA_SAMPLER           = "HYBRID" # HYBRID | QMC | TPE | CMA | GT | ML
+N_TRIALS                 = 1   # Trials (potencias de 2 para QMC: 32,64,128,256,512,1024,2048…)
+OPTUNA_SAMPLER           = "QMC" # HYBRID | QMC | TPE | CMA | GT | ML
 
 # =============================================================================
 # ACTIVO
 # =============================================================================
-ACTIVO = "BTC"  # BTC | ETH | GOLD | SILVER | SP500 | NASDAQ | BIST100
+ACTIVO = "GOLD, SP500, SILVER, BTC, NASDAQ"  # BTC | GOLD | SILVER | SP500 | NASDAQ | ETH | BIST100
 
 # =============================================================================
 # RANGO DE FECHAS
 # =============================================================================
-FECHA_INICIO = "2022-01-01"
-FECHA_FIN    = "2024-12-01"
+FECHA_INICIO = "2021-01-01"
+FECHA_FIN    = "2025-12-31"
 
 USAR_RANGOS_POR_TRIAL = False  # False = rango fijo | True = sub-ventana aleatoria por trial
 MESES_POR_TRIAL       = 12     # Duración de la ventana (solo si USAR_RANGOS_POR_TRIAL=True)
@@ -48,12 +54,12 @@ TIMEFRAMES     = [TIMEFRAME_BASE]
 # =============================================================================
 # RÉGIMEN DE MERCADO (EMA 21/200  |  MACD 12/26/9  |  ADX 14 — en 1D)
 # =============================================================================
-REGIMEN_ACTIVO     = True          # True = filtrar por régimen | False = operar siempre
+REGIMEN_ACTIVO     = True          # false|true|all|odd  → false: sin filtro | true: filtra por REGIMEN_TIPO | all: compra 1ª vela y vende última | odd: compra al entrar en ALCISTA y vende al pasar a BAJISTA/NEUTRAL
 REGIMEN_INDICADOR  = "MACD"        # EMA  → EMA(21) vs EMA(200) en 1D  # ADX  → ADX(14): ALCISTA si ADX>25 y +DI>-DI
 
 REGIMEN_TIPO       = "BAJISTA"     # ALCISTA | BAJISTA
 REGIMEN_BUY_HOLD_ACTIVO = True
-REGIMEN_BUY_HOLD_SALDO  = "2000"  # Buy&Hold sale cuando el régimen cambia de dirección
+REGIMEN_BUY_HOLD_SALDO  = "10000"  # Buy&Hold sale cuando el régimen cambia de dirección
 
 # =============================================================================
 # PERTURBACIONES (anti-overfitting — Leashed Brownian Motion)
@@ -94,8 +100,8 @@ FORMATO_DATOS         = "feather" # feather | parquet
 # =============================================================================
 # CAPITAL (resto)
 # =============================================================================
-SALDO_INICIAL          = 1000.0  # Saldo de inicio ($)
-SALDO_OPERATIVO_MAX    = 100.0  # Tope máximo (sin reinversión)
+SALDO_INICIAL          = 10000.0  # Saldo de inicio ($)
+SALDO_OPERATIVO_MAX    = 1000.0  # Tope máximo (sin reinversión)
 SALDO_MINIMO_OPERATIVO = 300.0   # Parar si cae por debajo
 COMISION_PCT           = 0.0005  # Comisión por operación (0.03%)
 COMISION_SIDES         = 2       # 1=solo apertura | 2=apertura+cierre
@@ -109,6 +115,8 @@ OPTUNA_SEED              = None     # None = aleatorio | int = reproducible
 OPTUNA_CREATE_DATABASE   = True     # Crear IDx.db por estrategia
 OPTUNA_RESET_DB_ON_START = True     # Borrar DB al arrancar
 GUARDAR_EQUITY_EN_DB     = True     # Guardar curva de equity por trial
+CREAR_ESTUDIO_GLOBAL     = True     # Crear estudio global con todos los activos por estrategia
+GENERAR_GRAFICAS_OPTUNA  = True     # Guardar gráficas en DB → visibles en optuna-dashboard
 
 # =============================================================================
 # INTERNOS — NO MODIFICAR
@@ -179,6 +187,8 @@ CONFIG = {
     "OPTUNA_CREATE_DATABASE": OPTUNA_CREATE_DATABASE,
     "OPTUNA_RESET_DB_ON_START": OPTUNA_RESET_DB_ON_START,
     "GUARDAR_EQUITY_EN_DB": GUARDAR_EQUITY_EN_DB, "OPTUNA_SAMPLER": OPTUNA_SAMPLER,
+    "CREAR_ESTUDIO_GLOBAL": CREAR_ESTUDIO_GLOBAL,
+    "GENERAR_GRAFICAS_OPTUNA": GENERAR_GRAFICAS_OPTUNA,
     "COMBINACION_A_EJECUTAR": COMBINACION_A_EJECUTAR,
     "EXIT_TYPE": DEFAULT_EXIT_TYPE, "EXIT_SL_PCT": DEFAULT_EXIT_SL_PCT,
     "EXIT_TP_PCT": DEFAULT_EXIT_TP_PCT, "EXIT_TRAIL_ACT_PCT": DEFAULT_EXIT_TRAIL_ACT_PCT,

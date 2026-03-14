@@ -15,17 +15,17 @@ from typing import Any, Dict
 # =============================================================================
 
 # ─── TIPO DE SALIDA ──────────────────────────────────────────────────────────
-DEFAULT_EXIT_TYPE = "ATR"  # FIXED | TRAILING | BARS | ATR
+DEFAULT_EXIT_TYPE = "TRAILING"  # FIXED | TRAILING | BARS | ATR
 
 # ─── PARÁMETROS DE SL/TP (% SOBRE STAKE) ────────────────────────────────────
-DEFAULT_EXIT_SL_PCT = 25.0                    # Stop Loss
-DEFAULT_EXIT_TP_PCT = 25.0                   # Take Profit
+DEFAULT_EXIT_SL_PCT = 30.0                    # Stop Loss
+DEFAULT_EXIT_TP_PCT = 30.0                   # Take Profit
 
 # ─── PARÁMETROS DE TRAILING (% SOBRE STAKE) ─────────────────────────────────
-DEFAULT_EXIT_TRAIL_ACT_PCT = 25.0            # Activación del trailing
-DEFAULT_EXIT_TRAIL_DIST_PCT = 5.0    
+DEFAULT_EXIT_TRAIL_ACT_PCT = 30.0            # Activación del trailing
+DEFAULT_EXIT_TRAIL_DIST_PCT = 6.0    
 
-DEFAULT_EXIT_TIME_BARS = 8                   # 0 = desactivado
+DEFAULT_EXIT_TIME_BARS = 20                   # 0 = desactivado
 
 # ─── PARÁMETROS ATR ADAPTATIVO ───────────────────────────────────────────────
 DEFAULT_EXIT_ATR_PERIOD   = 14    # Periodo Wilder ATR
@@ -40,10 +40,10 @@ DEFAULT_EXIT_ATR_LOOKBACK = 100   # Ventana (barras) para normalizar volatilidad
 
 DEFAULT_OPTIMIZE_EXITS = False
 
-DEFAULT_EXIT_SL_PCT_RANGE = (30.0, 30.0, 1.0)
-DEFAULT_EXIT_TP_PCT_RANGE = (55.0, 55.0, 1.0)
-DEFAULT_EXIT_TRAIL_ACT_PCT_RANGE = (35.0, 60.0, 5.0)
-DEFAULT_EXIT_TRAIL_DIST_PCT_RANGE = (8.0, 16.0, 2.0)
+DEFAULT_EXIT_SL_PCT_RANGE = (10.0, 36.0, 2.0)
+DEFAULT_EXIT_TP_PCT_RANGE = (10.0, 36.0, 2.0)
+DEFAULT_EXIT_TRAIL_ACT_PCT_RANGE = (10.0, 36.0, 2.0)
+DEFAULT_EXIT_TRAIL_DIST_PCT_RANGE = (2.0, 10.0, 1.0)
 
 DEFAULT_EXIT_TIME_BARS_RANGE = (8, 8, 6)
 

@@ -90,7 +90,7 @@ logger = logging.getLogger(__name__)
 
 from general.configuracion import (
     # Activos y datos
-    ACTIVOS, ACTIVO_PRIMARIO, 
+    ACTIVOS, ACTIVO_PRIMARIO,
     resolve_archivo_data, resolve_archivo_data_tf,
     # Configuración general
     CONFIG, COMBINACION_A_EJECUTAR,
@@ -108,6 +108,9 @@ from general.configuracion import (
     GENERAR_PLOTS, MAX_ARCHIVOS_GUARDAR, USAR_EXCEL,
     # Limpieza
     CLEANUP_INTERVAL,
+    # Estudio global y gráficas
+    CREAR_ESTUDIO_GLOBAL,
+    GENERAR_GRAFICAS_OPTUNA,
 )
 
 from modelox.core.data import load_data, resample_to_base_timeframe, candles_per_month_for_tf
@@ -115,7 +118,7 @@ from modelox.core.runner import (
     OptimizationRunner, OptunaConfig,
     run_single_exit_type,
 )
-from modelox.optimizers.storage import organize_root_database_files
+from modelox.optimizers.storage import organize_root_database_files, build_global_studies
 from modelox.core.types import (
     BacktestConfig,
     filter_by_date,
@@ -469,6 +472,44 @@ def main() -> None:
                 # Limpieza al cambiar de activo/timeframe
                 del df, df_filtrado
                 nuclear_cleanup()
+
+        # -----------------------------------------------------------------
+        # 5.4b POST-PROCESO: ESTUDIOS GLOBALES + GRÁFICAS OPTUNA-DASHBOARD
+        # -----------------------------------------------------------------
+        if OPTUNA_CREATE_DATABASE and (CREAR_ESTUDIO_GLOBAL or GENERAR_GRAFICAS_OPTUNA):
+            # Recopilar IDs de estrategias procesadas
+            _processed_ids: set = set()
+            if strategy_ids:
+                for sid in strategy_ids:
+                    for s in (instantiate_strategies(only_id=sid) or []):
+                        sid_val = getattr(s, 'combinacion_id', None)
+                        if sid_val is not None:
+                            _processed_ids.add(int(sid_val))
+            else:
+                for s in (instantiate_strategies(only_id=None) or []):
+                    sid_val = getattr(s, 'combinacion_id', None)
+                    if sid_val is not None:
+                        _processed_ids.add(int(sid_val))
+
+            for sid_val in sorted(_processed_ids):
+                # Estudio global (agrupa todos los activos)
+                if CREAR_ESTUDIO_GLOBAL and len(activos) > 1:
+                    try:
+                        copied = build_global_studies(strategy_id=sid_val)
+                        if copied > 0:
+                            print(f"🌐 Estudio global ID{sid_val}: {copied} trials consolidados ({len(activos)} activos)")
+                    except Exception as _e:
+                        print(f"⚠️  No se pudo crear estudio global ID{sid_val}: {_e}")
+
+                # Gráficas en la DB → visibles en optuna-dashboard
+                if GENERAR_GRAFICAS_OPTUNA:
+                    try:
+                        from visual.optuna_charts import generate_all_charts_for_strategy
+                        n_charts = generate_all_charts_for_strategy(strategy_id=sid_val)
+                        if n_charts > 0:
+                            print(f"📊 Gráficas Optuna ID{sid_val}: {n_charts} guardadas en DB")
+                    except Exception as _e:
+                        print(f"⚠️  No se pudieron generar gráficas Optuna ID{sid_val}: {_e}")
 
     except KeyboardInterrupt:
         print("\n⚠️ Ejecución interrumpida por el usuario.")

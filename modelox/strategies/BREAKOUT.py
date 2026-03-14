@@ -94,8 +94,8 @@ class EstrategiaID12BREAKVOL(EstrategiaBase):
         Total combinaciones: 9 x 9 = 81 — espacio muy controlado.
         """
         return {
-            "base_window":       trial.suggest_int("base_window",       15,  70, step=1),
-            "sigma_mean_window": trial.suggest_int("sigma_mean_window", 20, 500, step=5),
+            "base_window":       trial.suggest_int("base_window",       40, 40, step=2),
+            "sigma_mean_window": trial.suggest_int("sigma_mean_window", 500, 500, step=5),
         }
 
     # ==========================================================================

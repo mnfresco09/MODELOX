@@ -349,6 +349,7 @@ class OptimizationRunner:
     
     # Régimen de mercado (filtro EMA 21/200 en 1D)
     regimen_activo: bool = False
+    regimen_modo: str = "true"  # false|true|all|odd
     regimen_tipo: str = "ALCISTA"
     regimen_buy_hold_activo: bool = False
     regimen_buy_hold_saldo: Any = "ALL"
@@ -760,13 +761,27 @@ class OptimizationRunner:
                     try:
                         from modelox.core.regime import compute_regime_mask_1d, apply_precomputed_regime_filter
                         _reg_ind = getattr(self, "regimen_indicador", "EMA")
+                        _reg_mode = str(getattr(self, "regimen_modo", "true")).lower().strip()
                         regime_df_trial = compute_regime_mask_1d(df_trial, indicador=_reg_ind)
                         signals_df, _dias_op = apply_precomputed_regime_filter(
                             signals_df, df_trial, regime_df_trial,
                             regimen_tipo=self.regimen_tipo,
+                            regimen_modo=_reg_mode,
                             regimen_buy_hold_activo=self.regimen_buy_hold_activo,
                             regimen_buy_hold_saldo=self.regimen_buy_hold_saldo,
                         )
+
+                        # Modos de régimen sin señales de estrategia:
+                        # all/odd → entradas/salidas exclusivamente por régimen.
+                        if _reg_mode in {"all", "odd"}:
+                            params_rt["__regime_signal_only_mode"] = True
+                            # Blindaje extra: desactivar cualquier salida por BARS/TIME STOP
+                            # o por configuración previa del trial.
+                            params_rt["__exit_type"] = "FIXED"
+                            params_rt["exit_type"] = "FIXED"
+                            params_rt["__exit_time_bars"] = 0
+                            params_rt["exit_time_bars"] = 0
+                            params_rt["time_stop_bars"] = 0
 
                         # Inyectar flags runtime para que el engine ajuste el tamaño
                         # de posición en modo Buy&Hold por régimen.
@@ -823,7 +838,13 @@ class OptimizationRunner:
                     metrics = {"roi": 0.0, "sharpe": -1.0, "sqn": -1.0, "profit_factor": 0.0}
                     score = 0.0
                 else:
-                    trial.set_user_attr("metricas", metrics)
+                    # Persistencia defensiva de attrs Optuna:
+                    # si hay errores de SQLite (disk I/O, lock, etc.)
+                    # no abortar el trial por metadatos auxiliares.
+                    try:
+                        trial.set_user_attr("metricas", metrics)
+                    except Exception:
+                        pass
 
                     # Guardar equity curve para análisis Monte Carlo
                     if self.optuna.guardar_equity_en_db and equity_curve:
@@ -857,12 +878,13 @@ class OptimizationRunner:
                     if self.regimen_activo and self.regimen_dias_operables > 0:
                         _total_days = max(1.0, float(self.regimen_dias_operables))
 
-                    # Usar scoring correspondiente al sampler elegido
-                    score_func = self._get_score_func()
-                    score = float(score_func(
-                        metrics, trial=trial,
-                        trades_pnl=_pnl_arr, total_days=_total_days,
+                    score = float(score_qmc(
+                        metrics,
+                        trial=trial,
+                        trades_pnl=_pnl_arr,
+                        total_days=_total_days,
                         saldo_inicial=float(self.config.saldo_inicial),
+                        trades_df=trades_df,
                     ))
                 
                 t_total = time.perf_counter() - t0_total
@@ -1058,6 +1080,21 @@ def run_single_exit_type(
         logger: Logger para mensajes
     """
     from modelox.core.types import nuclear_cleanup
+
+    def _normalize_regimen_mode(v) -> str:
+        """Normaliza REGIMEN_ACTIVO a: false | true | all | odd."""
+        if isinstance(v, bool):
+            return "true" if v else "false"
+        s = str(v).strip().lower()
+        if s in {"1", "on", "yes", "si", "sí", "true", "t", "activar", "activo"}:
+            return "true"
+        if s in {"0", "off", "no", "false", "f", "desactivar", "inactivo"}:
+            return "false"
+        if s in {"all", "todo", "todos", "buyhold", "buy_hold"}:
+            return "all"
+        if s in {"odd", "regime", "regimen", "régimen"}:
+            return "odd"
+        return "true"
     
     if logger is None:
         import logging
@@ -1101,11 +1138,14 @@ def run_single_exit_type(
         REGIMEN_BUY_HOLD_SALDO = "ALL"
         REGIMEN_INDICADOR = "EMA"
 
+    _regimen_mode = _normalize_regimen_mode(REGIMEN_ACTIVO)
+    _regimen_enabled = _regimen_mode != "false"
+
     # Pre-computar estadísticas del régimen (días operables / total)
     _regimen_dias_operables = 0
     _regimen_dias_totales = 0
     _regimen_df = None  # DataFrame del régimen pre-computado (para reutilizar en objective)
-    if REGIMEN_ACTIVO:
+    if _regimen_enabled:
         try:
             from modelox.core.regime import compute_regime_mask_1d
             # Cargar datos 1m COMPLETOS (sin filtro de fecha) para warmup de EMA200
@@ -1128,9 +1168,17 @@ def run_single_exit_type(
                     _regimen_period = _regimen_df
                 
                 _regimen_dias_totales = len(_regimen_period)
-                _regimen_dias_operables = _regimen_period.filter(
-                    pl.col("regime") == REGIMEN_TIPO.upper()
-                ).height
+
+                if _regimen_mode == "all":
+                    _regimen_dias_operables = _regimen_dias_totales
+                elif _regimen_mode == "odd":
+                    _regimen_dias_operables = _regimen_period.filter(
+                        pl.col("regime") == "ALCISTA"
+                    ).height
+                else:
+                    _regimen_dias_operables = _regimen_period.filter(
+                        pl.col("regime") == REGIMEN_TIPO.upper()
+                    ).height
                 
                 # Asegurar 1m en cache para el backtest
                 if "1m" not in tf_cache:
@@ -1163,7 +1211,7 @@ def run_single_exit_type(
             synthetic_mode=synthetic_mode,
             synthetic_years=synthetic_years,
             perturbacion=ENTRENAMIENTO_ROBUSTO_ACTIVAR,
-            regimen_activo=REGIMEN_ACTIVO,
+            regimen_activo=_regimen_enabled,
             regimen_tipo=REGIMEN_TIPO,
             regimen_dias_operables=_regimen_dias_operables,
             regimen_dias_totales=_regimen_dias_totales,
@@ -1202,7 +1250,7 @@ def run_single_exit_type(
                 formato_datos=_FMT,
                 comparativa_periodos_activar=_CPA,
                 comparativa_periodo=_CP,
-                regimen_activo=REGIMEN_ACTIVO,
+                regimen_activo=_regimen_enabled,
                 regimen_tipo=REGIMEN_TIPO,
                 regimen_buy_hold_activo=bool(REGIMEN_BUY_HOLD_ACTIVO),
                 regimen_buy_hold_saldo=str(REGIMEN_BUY_HOLD_SALDO),
@@ -1272,7 +1320,8 @@ def run_single_exit_type(
     runner.activo = activo
 
     # 5c. CONFIGURAR RÉGIMEN DE MERCADO
-    runner.regimen_activo = REGIMEN_ACTIVO
+    runner.regimen_activo = _regimen_enabled
+    runner.regimen_modo = _regimen_mode
     runner.regimen_tipo = REGIMEN_TIPO
     runner.regimen_indicador = REGIMEN_INDICADOR
     runner.regimen_buy_hold_activo = bool(REGIMEN_BUY_HOLD_ACTIVO)

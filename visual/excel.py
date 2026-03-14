@@ -1395,6 +1395,27 @@ def _escribir_trades_xlsxwriter(
 
     CHARTS_HEIGHT_ROWS = 0  # filas que ocupan los gráficos (para calcular TABLE_ROW)
 
+    # ── Tema visual unificado (look más profesional) ────────────────────────
+    _CHART_TITLE_FONT = {'size': 12, 'bold': True, 'color': '#1F2937', 'name': 'Calibri'}
+    _CHART_AXIS_Y = {
+        'num_font':        {'size': 9, 'color': '#6B7280', 'name': 'Calibri'},
+        'major_gridlines': {'visible': True, 'line': {'color': '#E5E7EB', 'width': 0.8}},
+        'minor_gridlines': {'visible': False},
+        'line':            {'none': True},
+    }
+    _CHART_AXIS_X = {
+        'num_font':        {'size': 8, 'color': '#9CA3AF', 'name': 'Calibri'},
+        'major_gridlines': {'visible': False},
+        'major_tick_mark': 'none',
+        'minor_tick_mark': 'none',
+        'line':            {'color': '#E5E7EB', 'width': 0.75},
+        'label_position':  'low',
+    }
+    _CHART_LEGEND = {'position': 'bottom', 'font': {'size': 9, 'color': '#6B7280', 'name': 'Calibri'}}
+    _CHART_PLOTAREA = {'border': {'none': True}, 'fill': {'color': '#FFFFFF'}}
+    _CHART_CHARTAREA = {'border': {'none': True}, 'fill': {'color': '#FCFCFD'}}
+    _CHART_SIZE = {'width': 1040, 'height': 420}
+
     # ── GRÁFICO 1: EVOLUCIÓN DEL BALANCE (solo Balance Neto) ────────────────
     if balance_idx is not None and n_rows > 0:
         bal_series = df.iloc[:, balance_idx].dropna()
@@ -1438,29 +1459,22 @@ def _escribir_trades_xlsxwriter(
                 'marker':     {'type': 'none'},
             })
 
-        chart1.set_title({'name': 'Balance', 'name_font': {'size': 11, 'bold': True, 'color': '#2D3436', 'name': 'Calibri'}})
+        chart1.set_title({'name': 'Balance', 'name_font': _CHART_TITLE_FONT})
         chart1.set_y_axis({
             'num_format':      '#,##0',
-            'num_font':        {'size': 8, 'color': '#718096', 'name': 'Calibri'},
             'min':             y_min_axis,
             'max':             y_max_axis,
             'major_unit':      major_unit,
-            'major_gridlines': {'visible': True, 'line': {'color': '#EDF2F7', 'width': 0.5}},
-            'minor_gridlines': {'visible': False},
-            'line':            {'none': True},
+            **_CHART_AXIS_Y,
         })
         chart1.set_x_axis({
             'num_format':      'MMM yy',
-            'num_font':        {'size': 7, 'color': '#A0AEC0', 'name': 'Calibri'},
-            'major_gridlines': {'visible': False},
-            'major_tick_mark': 'none',
-            'minor_tick_mark': 'none',
-            'line':            {'color': '#E2E8F0', 'width': 0.5},
+            **_CHART_AXIS_X,
         })
-        chart1.set_legend({'none': True})
-        chart1.set_plotarea({'border': {'none': True}, 'fill': {'color': '#FFFFFF'}})
-        chart1.set_chartarea({'border': {'none': True}, 'fill': {'color': '#FFFFFF'}})
-        chart1.set_size({'width': 1000, 'height': 400})
+        chart1.set_legend(_CHART_LEGEND)
+        chart1.set_plotarea(_CHART_PLOTAREA)
+        chart1.set_chartarea(_CHART_CHARTAREA)
+        chart1.set_size(_CHART_SIZE)
 
         ws.insert_chart(BLOCK_ROW, 1, chart1, {'x_offset': 2, 'y_offset': 5})
         CHARTS_HEIGHT_ROWS += 24  # ~430px ≈ 24 filas
@@ -1498,29 +1512,22 @@ def _escribir_trades_xlsxwriter(
             'marker':     {'type': 'none'},
         })
 
-        chart2.set_title({'name': 'Neto vs Bruto', 'name_font': {'size': 11, 'bold': True, 'color': '#2D3436', 'name': 'Calibri'}})
+        chart2.set_title({'name': 'Neto vs Bruto', 'name_font': _CHART_TITLE_FONT})
         chart2.set_y_axis({
             'num_format':      '#,##0',
-            'num_font':        {'size': 8, 'color': '#718096', 'name': 'Calibri'},
             'min':             y_min_axis2,
             'max':             y_max_axis2,
             'major_unit':      major_unit2,
-            'major_gridlines': {'visible': True, 'line': {'color': '#EDF2F7', 'width': 0.5}},
-            'minor_gridlines': {'visible': False},
-            'line':            {'none': True},
+            **_CHART_AXIS_Y,
         })
         chart2.set_x_axis({
             'num_format':      'MMM yy',
-            'num_font':        {'size': 7, 'color': '#A0AEC0', 'name': 'Calibri'},
-            'major_gridlines': {'visible': False},
-            'major_tick_mark': 'none',
-            'minor_tick_mark': 'none',
-            'line':            {'color': '#E2E8F0', 'width': 0.5},
+            **_CHART_AXIS_X,
         })
-        chart2.set_legend({'position': 'bottom', 'font': {'size': 9, 'color': '#718096', 'name': 'Calibri'}})
-        chart2.set_plotarea({'border': {'none': True}, 'fill': {'color': '#FFFFFF'}})
-        chart2.set_chartarea({'border': {'none': True}, 'fill': {'color': '#FFFFFF'}})
-        chart2.set_size({'width': 1000, 'height': 400})
+        chart2.set_legend(_CHART_LEGEND)
+        chart2.set_plotarea(_CHART_PLOTAREA)
+        chart2.set_chartarea(_CHART_CHARTAREA)
+        chart2.set_size(_CHART_SIZE)
 
         ws.insert_chart(BLOCK_ROW + CHARTS_HEIGHT_ROWS, 1, chart2, {'x_offset': 2, 'y_offset': 5})
         CHARTS_HEIGHT_ROWS += 24
@@ -1566,28 +1573,20 @@ def _escribir_trades_xlsxwriter(
             }
         chart3.add_series(series_bh)
 
-        chart3.set_title({'name': 'Estrategia vs Rendimiento Activo', 'name_font': {'size': 11, 'bold': True, 'color': '#2D3436', 'name': 'Calibri'}})
+        chart3.set_title({'name': 'Estrategia vs Rendimiento Activo', 'name_font': _CHART_TITLE_FONT})
         chart3.set_y_axis({
             'num_format':      '#,##0"%"',
-            'num_font':        {'size': 8, 'color': '#718096', 'name': 'Calibri'},
-            'major_gridlines': {'visible': True, 'line': {'color': '#EDF2F7', 'width': 0.5}},
-            'minor_gridlines': {'visible': False},
-            'line':            {'none': True},
             'crossing':        0,
+            **_CHART_AXIS_Y,
         })
         chart3.set_x_axis({
             'num_format':      'MMM yy',
-            'num_font':        {'size': 7, 'color': '#A0AEC0', 'name': 'Calibri'},
-            'major_gridlines': {'visible': False},
-            'major_tick_mark': 'none',
-            'minor_tick_mark': 'none',
-            'line':            {'color': '#E2E8F0', 'width': 0.5},
-            'label_position':  'low',
+            **_CHART_AXIS_X,
         })
-        chart3.set_legend({'position': 'bottom', 'font': {'size': 9, 'color': '#718096', 'name': 'Calibri'}})
-        chart3.set_plotarea({'border': {'none': True}, 'fill': {'color': '#FFFFFF'}})
-        chart3.set_chartarea({'border': {'none': True}, 'fill': {'color': '#FFFFFF'}})
-        chart3.set_size({'width': 1000, 'height': 400})
+        chart3.set_legend(_CHART_LEGEND)
+        chart3.set_plotarea(_CHART_PLOTAREA)
+        chart3.set_chartarea(_CHART_CHARTAREA)
+        chart3.set_size(_CHART_SIZE)
 
         ws.insert_chart(BLOCK_ROW + CHARTS_HEIGHT_ROWS, 1, chart3, {'x_offset': 2, 'y_offset': 5})
         CHARTS_HEIGHT_ROWS += 24
@@ -1614,27 +1613,19 @@ def _escribir_trades_xlsxwriter(
             'marker':     {'type': 'none'},
         })
 
-        chart4.set_title({'name': 'Comisiones vs Beneficio', 'name_font': {'size': 11, 'bold': True, 'color': '#2D3436', 'name': 'Calibri'}})
+        chart4.set_title({'name': 'Comisiones vs Beneficio', 'name_font': _CHART_TITLE_FONT})
         chart4.set_y_axis({
             'num_format':      '#,##0',
-            'num_font':        {'size': 8, 'color': '#718096', 'name': 'Calibri'},
-            'major_gridlines': {'visible': True, 'line': {'color': '#EDF2F7', 'width': 0.5}},
-            'minor_gridlines': {'visible': False},
-            'line':            {'none': True},
+            **_CHART_AXIS_Y,
         })
         chart4.set_x_axis({
             'num_format':      'MMM yy',
-            'num_font':        {'size': 7, 'color': '#A0AEC0', 'name': 'Calibri'},
-            'major_gridlines': {'visible': False},
-            'major_tick_mark': 'none',
-            'minor_tick_mark': 'none',
-            'line':            {'color': '#E2E8F0', 'width': 0.5},
-            'label_position':  'low',
+            **_CHART_AXIS_X,
         })
-        chart4.set_legend({'position': 'bottom', 'font': {'size': 9, 'color': '#718096', 'name': 'Calibri'}})
-        chart4.set_plotarea({'border': {'none': True}, 'fill': {'color': '#FFFFFF'}})
-        chart4.set_chartarea({'border': {'none': True}, 'fill': {'color': '#FFFFFF'}})
-        chart4.set_size({'width': 1000, 'height': 400})
+        chart4.set_legend(_CHART_LEGEND)
+        chart4.set_plotarea(_CHART_PLOTAREA)
+        chart4.set_chartarea(_CHART_CHARTAREA)
+        chart4.set_size(_CHART_SIZE)
 
         ws.insert_chart(BLOCK_ROW + CHARTS_HEIGHT_ROWS, 1, chart4, {'x_offset': 2, 'y_offset': 5})
         CHARTS_HEIGHT_ROWS += 24
@@ -1681,30 +1672,19 @@ def _escribir_trades_xlsxwriter(
 
             chart5.set_title({
                 'name': f'Estrategia vs {activo_name} — variación % por período',
-                'name_font': {'size': 11, 'bold': True, 'color': '#2D3436', 'name': 'Calibri'},
+                'name_font': _CHART_TITLE_FONT,
             })
             chart5.set_y_axis({
                 'num_format':      '0.00"%"',
-                'num_font':        {'size': 8, 'color': '#718096', 'name': 'Calibri'},
-                'major_gridlines': {'visible': True, 'line': {'color': '#EDF2F7', 'width': 0.5}},
-                'minor_gridlines': {'visible': False},
-                'line':            {'none': True},
+                **_CHART_AXIS_Y,
             })
             chart5.set_x_axis({
-                'num_font':        {'size': 7, 'color': '#A0AEC0', 'name': 'Calibri'},
-                'major_gridlines': {'visible': False},
-                'major_tick_mark': 'none',
-                'minor_tick_mark': 'none',
-                'line':            {'color': '#E2E8F0', 'width': 0.5},
-                'label_position':  'low',
+                **_CHART_AXIS_X,
             })
-            chart5.set_legend({
-                'position': 'bottom',
-                'font': {'size': 9, 'color': '#718096', 'name': 'Calibri'},
-            })
-            chart5.set_plotarea({'border': {'none': True}, 'fill': {'color': '#FFFFFF'}})
-            chart5.set_chartarea({'border': {'none': True}, 'fill': {'color': '#FFFFFF'}})
-            chart5.set_size({'width': 1000, 'height': 400})
+            chart5.set_legend(_CHART_LEGEND)
+            chart5.set_plotarea(_CHART_PLOTAREA)
+            chart5.set_chartarea(_CHART_CHARTAREA)
+            chart5.set_size(_CHART_SIZE)
 
             ws.insert_chart(BLOCK_ROW + CHARTS_HEIGHT_ROWS, 1, chart5, {'x_offset': 2, 'y_offset': 5})
 
@@ -1992,6 +1972,252 @@ def _escribir_trades_xlsxwriter(
         ws.set_column(RC,     RC,     22)
         ws.set_column(RC + 1, RC + 1, 14)
         ws.set_column(RC + 2, RC + 2, 14)
+
+    # ── Duración media por tipo (estrategia vs B&H) ──────────────────────────
+    _dur_strat_min: Optional[float] = None
+    _dur_bh_min:    Optional[float] = None
+    if entry_time_idx is not None and exit_time_idx is not None:
+        try:
+            _et_col = cols[entry_time_idx]
+            _xt_col = cols[exit_time_idx]
+            _df_dur = df[[_et_col, _xt_col]].copy()
+            _df_dur['_et'] = pd.to_datetime(_df_dur[_et_col], errors='coerce')
+            _df_dur['_xt'] = pd.to_datetime(_df_dur[_xt_col], errors='coerce')
+            _df_dur['_dur_min'] = (_df_dur['_xt'] - _df_dur['_et']).dt.total_seconds() / 60.0
+            if tipo_idx is not None:
+                _tipo_col = cols[tipo_idx]
+                _df_dur['_tipo'] = df[_tipo_col].values
+                _s_dur = _df_dur[_df_dur['_tipo'] == 'S']['_dur_min'].dropna()
+                _b_dur = _df_dur[_df_dur['_tipo'] == 'B&H']['_dur_min'].dropna()
+                if len(_s_dur) > 0:
+                    _dur_strat_min = float(_s_dur.mean())
+                if len(_b_dur) > 0:
+                    _dur_bh_min = float(_b_dur.mean())
+            else:
+                _all_dur = _df_dur['_dur_min'].dropna()
+                if len(_all_dur) > 0:
+                    _dur_strat_min = float(_all_dur.mean())
+        except Exception:
+            pass
+
+    def _fmt_dur(minutes: Optional[float]) -> str:
+        if minutes is None or minutes < 0:
+            return '—'
+        if minutes < 120:
+            return f'{minutes:.0f} min'
+        elif minutes < 1440:
+            return f'{minutes / 60:.1f} h'
+        else:
+            return f'{minutes / 1440:.1f} días'
+
+    # ── TABLA: RESUMEN EJECUTIVO ─────────────────────────────────────────────
+    _SUM_COL = TABLE_COL + 7   # cols 8-9 (derecha de la tabla B&H + gap)
+    _SUM_ROW = TABLE_ROW
+
+    # ── Recoger valores ──────────────────────────────────────────────────────
+    _sum_asset_growth: Optional[float] = None
+    _sum_roi_strat:    Optional[float] = None
+    _sum_roi_bh:       Optional[float] = None
+    _sum_roi_total:    Optional[float] = None
+    _sum_n_strat:      Optional[int]   = None
+    _sum_n_bh:         Optional[int]   = None
+
+    if regime_mode_breakdown:
+        _sum_asset_growth = regime_mode_breakdown.get("asset_ret_total")
+        _sum_roi_strat    = regime_mode_breakdown.get("roi_strat")
+        _sum_roi_bh       = regime_mode_breakdown.get("roi_bh")
+        _sum_roi_total    = regime_mode_breakdown.get("roi_total")
+        _sum_n_strat      = regime_mode_breakdown.get("n_strat")
+        _sum_n_bh         = regime_mode_breakdown.get("n_bh")
+
+    # Fallback asset_growth desde precio cacheado
+    if _sum_asset_growth is None and price_series and len(price_series) >= 2:
+        _p0, _p1 = price_series[0], price_series[-1]
+        if _p0 > 0:
+            _sum_asset_growth = (_p1 / _p0 - 1.0) * 100.0
+
+    # Fallback ROI estrategia desde df
+    if _sum_roi_strat is None and n_rows > 0 and balance_idx is not None and pnl_neto_idx is not None:
+        try:
+            _f_pnl = float(df.iloc[0, pnl_neto_idx])
+            _f_bal = float(df.iloc[0, balance_idx])
+            _l_bal = float(df.iloc[-1, balance_idx])
+            _s0    = _f_bal - _f_pnl
+            if _s0 > 0:
+                _sum_roi_strat = (_l_bal / _s0 - 1.0) * 100.0
+                _sum_roi_total = _sum_roi_strat
+        except Exception:
+            pass
+
+    # ROI total fallback: si no vino de breakdown, suma parciales
+    if _sum_roi_total is None:
+        _a = _sum_roi_strat or 0.0
+        _b = _sum_roi_bh    or 0.0
+        _sum_roi_total = _a + _b if (_a != 0.0 or _b != 0.0) else None
+
+    # Fallback conteo trades
+    if _sum_n_strat is None:
+        _sum_n_strat = n_rows
+    if _sum_n_bh is None:
+        _sum_n_bh = 0
+
+    # ── Paleta de colores de la tabla ────────────────────────────────────────
+    _C_HDR_BG   = '#1A202C'   # cabecera oscura
+    _C_HDR_TXT  = '#FFFFFF'
+    _C_SUB_BG   = '#2D3748'   # sub-cabecera (ROI / Trades)
+    _C_SUB_TXT  = '#E2E8F0'
+    _C_LBL_BG   = '#F7FAFC'
+    _C_LBL_TXT  = '#4A5568'
+    _C_TOT_BG   = '#EBF8FF'   # fila total, fondo azul muy suave
+    _C_TOT_TXT  = '#2B6CB0'
+    _C_VAL_BG   = '#FFFFFF'
+    _C_GREEN    = '#276749'
+    _C_RED      = '#C53030'
+    _C_BORDER   = '#CBD5E0'
+
+    def _sf(bg=_C_VAL_BG, fc='#2D3436', bold=False, sz=10,
+            num_fmt=None, align='right', bottom=1, italic=False, indent=0):
+        p = {
+            'font_name': 'Calibri', 'font_size': sz, 'bold': bold, 'italic': italic,
+            'font_color': fc, 'bg_color': bg,
+            'align': align, 'valign': 'vcenter', 'indent': indent,
+            'border': 0,
+            'bottom': bottom, 'bottom_color': _C_BORDER,
+            'left': 1, 'left_color': _C_BORDER,
+            'right': 1, 'right_color': _C_BORDER,
+        }
+        if num_fmt:
+            p['num_format'] = num_fmt
+        return wb.add_format(p)
+
+    # Formatos reutilizables
+    _sf_hdr      = _sf(bg=_C_HDR_BG,  fc=_C_HDR_TXT,  bold=True, sz=11,
+                       align='center', bottom=2, indent=1)
+    _sf_sub      = _sf(bg=_C_SUB_BG,  fc=_C_SUB_TXT,  bold=True, sz=9,
+                       align='left',  bottom=1, indent=1)
+    _sf_sub_val  = _sf(bg=_C_SUB_BG,  fc=_C_SUB_TXT,  bold=True, sz=9,
+                       align='center', bottom=1)
+    _sf_lbl      = _sf(bg=_C_LBL_BG,  fc=_C_LBL_TXT,  bold=False, sz=9,
+                       align='left',  bottom=1, indent=2)
+    _sf_lbl_last = _sf(bg=_C_LBL_BG,  fc=_C_LBL_TXT,  bold=False, sz=9,
+                       align='left',  bottom=2, indent=2)
+    _sf_tot_lbl  = _sf(bg=_C_TOT_BG,  fc=_C_TOT_TXT,  bold=True, sz=10,
+                       align='left',  bottom=2, indent=2)
+    _sf_na       = _sf(bg=_C_VAL_BG,  fc='#A0AEC0',   bold=False, sz=9,
+                       align='center', bottom=1, italic=True)
+    _sf_na_last  = _sf(bg=_C_VAL_BG,  fc='#A0AEC0',   bold=False, sz=9,
+                       align='center', bottom=2, italic=True)
+    _sf_na_tot   = _sf(bg=_C_TOT_BG,  fc='#A0AEC0',   bold=False, sz=9,
+                       align='center', bottom=2, italic=True)
+
+    def _sf_pct(positive=True, is_last=False, is_total=False, is_neutral=False):
+        if is_neutral:
+            fc, bg = '#2D3748', _C_LBL_BG
+        elif is_total:
+            fc, bg = _C_TOT_TXT, _C_TOT_BG
+        else:
+            fc  = _C_GREEN if positive else _C_RED
+            bg  = _C_VAL_BG
+        return _sf(bg=bg, fc=fc, bold=True, sz=10,
+                   num_fmt='0.00"%"', align='center',
+                   bottom=2 if is_last else 1)
+
+    def _sf_int(is_last=False, is_total=False):
+        fc = _C_TOT_TXT if is_total else '#2D3748'
+        bg = _C_TOT_BG  if is_total else _C_VAL_BG
+        return _sf(bg=bg, fc=fc, bold=True, sz=10,
+                   num_fmt='0', align='center',
+                   bottom=2 if is_last else 1)
+
+    # ── Construcción de la tabla ─────────────────────────────────────────────
+    _r = _SUM_ROW
+
+    # Encabezado principal (merge 2 cols)
+    ws.set_row(_r, 30)
+    ws.merge_range(_r, _SUM_COL, _r, _SUM_COL + 1, 'RESUMEN EJECUTIVO', _sf_hdr)
+
+    # Sub-sección: RENDIMIENTO
+    _r += 1
+    ws.set_row(_r, 20)
+    ws.write(_r, _SUM_COL,     'RENDIMIENTO',  _sf_sub)
+    ws.write_blank(_r, _SUM_COL + 1, None,     _sf_sub_val)
+
+    # Fila: Crecimiento del activo (benchmark neutro)
+    _r += 1
+    ws.set_row(_r, 22)
+    ws.write(_r, _SUM_COL, 'Crecim. activo', _sf_lbl)
+    if _sum_asset_growth is not None:
+        ws.write_number(_r, _SUM_COL + 1, _sum_asset_growth,
+                        _sf_pct(positive=(_sum_asset_growth >= 0), is_neutral=True))
+    else:
+        ws.write_string(_r, _SUM_COL + 1, '—', _sf_na)
+
+    # Fila: ROI estrategia
+    _r += 1
+    ws.set_row(_r, 22)
+    ws.write(_r, _SUM_COL, 'ROI estrategia', _sf_lbl)
+    if _sum_roi_strat is not None:
+        ws.write_number(_r, _SUM_COL + 1, _sum_roi_strat,
+                        _sf_pct(positive=(_sum_roi_strat >= 0)))
+    else:
+        ws.write_string(_r, _SUM_COL + 1, '—', _sf_na)
+
+    # Fila: ROI B&H
+    _r += 1
+    ws.set_row(_r, 22)
+    ws.write(_r, _SUM_COL, 'ROI B&H', _sf_lbl)
+    if _sum_roi_bh is not None:
+        ws.write_number(_r, _SUM_COL + 1, _sum_roi_bh,
+                        _sf_pct(positive=(_sum_roi_bh >= 0)))
+    else:
+        ws.write_string(_r, _SUM_COL + 1, '—', _sf_na)
+
+    # Fila: ROI TOTAL (destacada)
+    _r += 1
+    ws.set_row(_r, 24)
+    ws.write(_r, _SUM_COL, 'ROI TOTAL', _sf_tot_lbl)
+    if _sum_roi_total is not None:
+        ws.write_number(_r, _SUM_COL + 1, _sum_roi_total,
+                        _sf_pct(positive=(_sum_roi_total >= 0), is_total=True, is_last=True))
+    else:
+        ws.write_string(_r, _SUM_COL + 1, '—', _sf_na_tot)
+
+    # Sub-sección: OPERACIONES
+    _r += 1
+    ws.set_row(_r, 20)
+    ws.write(_r, _SUM_COL,     'OPERACIONES',  _sf_sub)
+    ws.write_blank(_r, _SUM_COL + 1, None,     _sf_sub_val)
+
+    # Fila: Trades estrategia
+    _r += 1
+    ws.set_row(_r, 22)
+    ws.write(_r, _SUM_COL, 'Trades estrategia', _sf_lbl)
+    ws.write_number(_r, _SUM_COL + 1, _sum_n_strat, _sf_int())
+
+    # Fila: Trades B&H
+    _r += 1
+    ws.set_row(_r, 22)
+    ws.write(_r, _SUM_COL, 'Trades B&H', _sf_lbl)
+    ws.write_number(_r, _SUM_COL + 1, _sum_n_bh, _sf_int())
+
+    # Fila: Duración media estrategia
+    _sf_dur_val = _sf(bg=_C_VAL_BG, fc='#2D3748', bold=True, sz=10,
+                      align='center', bottom=1)
+    _sf_dur_val_last = _sf(bg=_C_VAL_BG, fc='#2D3748', bold=True, sz=10,
+                           align='center', bottom=2)
+    _r += 1
+    ws.set_row(_r, 22)
+    ws.write(_r, _SUM_COL, 'Dur. media estrat.', _sf_lbl)
+    ws.write_string(_r, _SUM_COL + 1, _fmt_dur(_dur_strat_min), _sf_dur_val)
+
+    # Fila: Duración media B&H
+    _r += 1
+    ws.set_row(_r, 22)
+    ws.write(_r, _SUM_COL, 'Dur. media B&H', _sf_lbl_last)
+    ws.write_string(_r, _SUM_COL + 1, _fmt_dur(_dur_bh_min), _sf_dur_val_last)
+
+    ws.set_column(_SUM_COL,     _SUM_COL,     20)
+    ws.set_column(_SUM_COL + 1, _SUM_COL + 1, 13)
 
     wb.close()
 
