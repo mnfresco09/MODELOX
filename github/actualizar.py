@@ -1,346 +1,391 @@
 #!/usr/bin/env python3
 """
-================================================================================
-🔄 MODELOX Git Pull - Actualizar sistema local con cambios de GitHub
-================================================================================
+MODELOX - restaurar el sistema local a una version remota elegida.
 
-Script para sincronizar tu sistema local con los últimos cambios del repositorio
-remoto en GitHub. Útil cuando has hecho cambios desde otro dispositivo o cuando
-otro colaborador ha subido código.
+Comportamiento por defecto:
+1. Hace fetch del remoto.
+2. Lista las 10 ultimas subidas del remoto con fecha y hora.
+3. Pide elegir una version por numero.
+4. Deja la rama local exactamente igual que ese commit remoto.
+5. Elimina archivos no versionados no ignorados.
+6. No toca lo ignorado por .gitignore.
 
-USO:
-    python github/actualizar.py           # Pull normal
-    python github/actualizar.py --force   # Descartar cambios no commiteados y actualizar
-    python github/actualizar.py --hard    # REEMPLAZAR TODO con lo de GitHub (reset --hard)
-    python github/actualizar.py --stash   # Guardar cambios locales, actualizar, restaurar
-    python github/actualizar.py --check   # Solo verificar si hay actualizaciones
-
-================================================================================
+Uso:
+    python github/actualizar.py
+    python github/actualizar.py --check
+    python github/actualizar.py --select 3
 """
 
-import subprocess
-import os
-from datetime import datetime
-from pathlib import Path
-import sys
+from __future__ import annotations
+
 import argparse
-from typing import Optional, List, Tuple
+import os
+import subprocess
+import sys
+from dataclasses import dataclass
+from pathlib import Path
+from typing import List, Optional, Tuple
 
-# Colores ANSI
-class Colors:
-    RED = '\033[91m'
-    GREEN = '\033[92m'
-    YELLOW = '\033[93m'
-    BLUE = '\033[94m'
-    CYAN = '\033[96m'
-    BOLD = '\033[1m'
-    DIM = '\033[2m'
-    RESET = '\033[0m'
 
-# Timeout en segundos para comandos git
-GIT_TIMEOUT = 60
-
-# Obtener la raíz del repo (un nivel arriba de github/)
+GIT_TIMEOUT = 90
 REPO_ROOT = Path(__file__).resolve().parent.parent
 
 
-def run_command(cmd: List[str], check: bool = True, timeout: int = GIT_TIMEOUT, silent: bool = False) -> Tuple[bool, str]:
-    """Ejecuta un comando y retorna (éxito, output)."""
-    cmd_str = ' '.join(cmd)
-    if not silent:
-        print(f"   {Colors.DIM}→ {cmd_str}{Colors.RESET}")
+class Colors:
+    RED = "\033[91m"
+    GREEN = "\033[92m"
+    YELLOW = "\033[93m"
+    BLUE = "\033[94m"
+    CYAN = "\033[96m"
+    BOLD = "\033[1m"
+    DIM = "\033[2m"
+    RESET = "\033[0m"
 
-    # Crear entorno limpio para git
+
+@dataclass(frozen=True)
+class RemoteCommit:
+    sha: str
+    short_sha: str
+    date_str: str
+    subject: str
+
+
+def run_command(
+    cmd: List[str],
+    *,
+    timeout: int = GIT_TIMEOUT,
+    silent: bool = False,
+) -> Tuple[bool, str]:
+    """Ejecuta un comando y devuelve (success, output)."""
+    if not silent:
+        print(f"   {Colors.DIM}-> {' '.join(cmd)}{Colors.RESET}")
+
     clean_env = os.environ.copy()
-    if "LD_LIBRARY_PATH" in clean_env:
-        del clean_env["LD_LIBRARY_PATH"]
+    clean_env.pop("LD_LIBRARY_PATH", None)
 
     try:
         result = subprocess.run(
             cmd,
             capture_output=True,
             text=True,
-            check=check,
+            check=False,
             cwd=str(REPO_ROOT),
             timeout=timeout,
-            env=clean_env
+            env=clean_env,
         )
-        output = result.stdout + result.stderr
-        if output.strip() and not silent:
-            lines = output.strip().split('\n')
-            for line in lines[:10]:
-                print(f"     {Colors.DIM}{line}{Colors.RESET}")
-            if len(lines) > 10:
-                print(f"     {Colors.DIM}... ({len(lines) - 10} líneas más){Colors.RESET}")
-        return True, output
-
     except subprocess.TimeoutExpired:
-        print(f"   {Colors.YELLOW}⏱️  TIMEOUT después de {timeout}s{Colors.RESET}")
-        return False, f"Timeout después de {timeout} segundos"
+        return False, f"Timeout despues de {timeout} segundos"
 
-    except subprocess.CalledProcessError as e:
-        output = (e.stdout or '') + (e.stderr or '')
-        if not silent:
-            print(f"   {Colors.RED}✗ Error: {output[:200]}{Colors.RESET}")
-        return False, output
+    output = ((result.stdout or "") + (result.stderr or "")).strip()
+    success = result.returncode == 0
+
+    if output and not silent:
+        lines = output.splitlines()
+        for line in lines[:10]:
+            print(f"     {Colors.DIM}{line}{Colors.RESET}")
+        if len(lines) > 10:
+            print(f"     {Colors.DIM}... ({len(lines) - 10} lineas mas){Colors.RESET}")
+
+    return success, output
 
 
-def get_current_branch() -> str:
-    """Obtiene el nombre de la rama actual."""
+def show_banner() -> None:
+    print(
+        f"\n{Colors.CYAN}{Colors.BOLD}"
+        "==============================================================\n"
+        "MODELOX - ACTUALIZAR DESDE GITHUB\n"
+        "=============================================================="
+        f"{Colors.RESET}\n"
+    )
+
+
+def ensure_git_repo() -> bool:
+    success, _ = run_command(["git", "rev-parse", "--show-toplevel"], silent=True)
+    return success
+
+
+def get_current_branch() -> Optional[str]:
     success, output = run_command(["git", "branch", "--show-current"], silent=True)
-    return output.strip() if success else "main"
+    branch = output.strip() if success else ""
+    return branch or None
+
+
+def get_upstream_ref(branch: str, remote: str) -> str:
+    success, output = run_command(
+        ["git", "rev-parse", "--abbrev-ref", "--symbolic-full-name", "@{u}"],
+        silent=True,
+    )
+    upstream = output.strip() if success else ""
+    if upstream:
+        return upstream
+    return f"{remote}/{branch}"
+
+
+def ref_exists(ref: str) -> bool:
+    success, _ = run_command(["git", "rev-parse", "--verify", ref], silent=True)
+    return success
+
+
+def count_commits(rev_range: str) -> int:
+    success, output = run_command(["git", "rev-list", "--count", rev_range], silent=True)
+    if not success:
+        return 0
+    try:
+        return int(output.strip())
+    except ValueError:
+        return 0
 
 
 def has_local_changes() -> bool:
-    """Verifica si hay cambios locales sin commitear."""
     success, output = run_command(["git", "status", "--porcelain"], silent=True)
-    return bool(output.strip())
+    return success and bool(output.strip())
 
 
-def get_commits_behind() -> Tuple[int, bool]:
-    """Retorna (cuántos commits está detrás del remoto, si pudo verificar)."""
-    branch = get_current_branch()
-    success, output = run_command(
-        ["git", "rev-list", "--count", f"HEAD..origin/{branch}"],
-        check=False,
-        silent=True
-    )
-    try:
-        return (int(output.strip()), True) if success else (0, False)
-    except ValueError:
-        return (0, False)
-
-
-def get_commits_ahead() -> int:
-    """Retorna cuántos commits está adelante del remoto."""
-    branch = get_current_branch()
-    success, output = run_command(
-        ["git", "rev-list", "--count", f"origin/{branch}..HEAD"],
-        check=False,
-        silent=True
-    )
-    try:
-        return int(output.strip()) if success else 0
-    except ValueError:
+def ignored_items_count() -> int:
+    success, output = run_command(["git", "status", "--ignored", "--short"], silent=True)
+    if not success or not output:
         return 0
+    return sum(1 for line in output.splitlines() if line.startswith("!! "))
 
 
-def show_banner():
-    """Muestra el banner inicial."""
-    print(f"""
-{Colors.CYAN}{Colors.BOLD}╔══════════════════════════════════════════════════════════════════╗
-║            🔄 MODELOX - ACTUALIZAR DESDE GITHUB                  ║
-╚══════════════════════════════════════════════════════════════════╝{Colors.RESET}
-""")
+def short_commit(ref: str) -> str:
+    success, output = run_command(["git", "rev-parse", "--short", ref], silent=True)
+    return output.strip() if success else "desconocido"
+
+
+def get_recent_remote_commits(upstream: str, limit: int = 10) -> List[RemoteCommit]:
+    success, output = run_command(
+        [
+            "git",
+            "log",
+            upstream,
+            f"-{limit}",
+            "--date=format:%Y-%m-%d %H:%M:%S",
+            "--pretty=format:%H%x1f%h%x1f%cd%x1f%s",
+        ],
+        silent=True,
+    )
+    if not success or not output:
+        return []
+
+    commits: List[RemoteCommit] = []
+    for line in output.splitlines():
+        parts = line.split("\x1f", 3)
+        if len(parts) != 4:
+            continue
+        commits.append(
+            RemoteCommit(
+                sha=parts[0].strip(),
+                short_sha=parts[1].strip(),
+                date_str=parts[2].strip(),
+                subject=parts[3].strip(),
+            )
+        )
+    return commits
+
+
+def print_recent_remote_commits(commits: List[RemoteCommit]) -> None:
+    print(f"\n{Colors.CYAN}Ultimas versiones disponibles:{Colors.RESET}")
+    for idx, commit in enumerate(commits, start=1):
+        print(
+            f"   {Colors.BOLD}{idx:2d}{Colors.RESET}. "
+            f"{commit.date_str}  "
+            f"{Colors.YELLOW}{commit.short_sha}{Colors.RESET}  "
+            f"{commit.subject}"
+        )
+
+
+def choose_commit_index(commits: List[RemoteCommit], preset: Optional[int] = None) -> Optional[int]:
+    if not commits:
+        return None
+
+    if preset is not None:
+        if 1 <= preset <= len(commits):
+            return preset - 1
+        print(
+            f"{Colors.RED}ERROR: --select debe estar entre 1 y {len(commits)}.{Colors.RESET}"
+        )
+        return None
+
+    while True:
+        try:
+            raw = input(f"\nSelecciona la version a restaurar (1-{len(commits)}): ").strip()
+        except (EOFError, KeyboardInterrupt):
+            print(f"\n{Colors.YELLOW}Operacion cancelada por el usuario.{Colors.RESET}")
+            return None
+
+        if not raw:
+            print(f"{Colors.YELLOW}Debes introducir un numero.{Colors.RESET}")
+            continue
+
+        try:
+            value = int(raw)
+        except ValueError:
+            print(f"{Colors.YELLOW}Entrada no valida. Usa un numero entero.{Colors.RESET}")
+            continue
+
+        if 1 <= value <= len(commits):
+            return value - 1
+
+        print(f"{Colors.YELLOW}El numero debe estar entre 1 y {len(commits)}.{Colors.RESET}")
+
+
+def parse_args(argv: List[str]) -> argparse.Namespace:
+    parser = argparse.ArgumentParser(
+        description="Restaurar el sistema local a una de las ultimas versiones del remoto."
+    )
+    parser.add_argument(
+        "--check",
+        "-c",
+        action="store_true",
+        help="Solo mostrar estado y listado de versiones; no aplicar cambios.",
+    )
+    parser.add_argument(
+        "--remote",
+        default="origin",
+        help="Remoto a usar (default: origin).",
+    )
+    parser.add_argument(
+        "--branch",
+        default=None,
+        help="Rama a sincronizar. Por defecto usa la rama actual.",
+    )
+    parser.add_argument(
+        "--select",
+        type=int,
+        default=None,
+        help="Selecciona directamente una version del listado (1 = la mas reciente).",
+    )
+
+    # Compatibilidad con el script anterior.
+    parser.add_argument("--hard", action="store_true", help=argparse.SUPPRESS)
+    parser.add_argument("--force", action="store_true", help=argparse.SUPPRESS)
+    parser.add_argument("--stash", action="store_true", help=argparse.SUPPRESS)
+    parser.add_argument("--rebase", action="store_true", help=argparse.SUPPRESS)
+
+    return parser.parse_args(argv)
 
 
 def main(argv: Optional[List[str]] = None) -> int:
-    parser = argparse.ArgumentParser(
-        description="Actualizar sistema local con cambios de GitHub",
-        formatter_class=argparse.RawDescriptionHelpFormatter,
-        epilog="""
-Ejemplos:
-  python github/actualizar.py           # Pull normal
-  python github/actualizar.py --hard    # Reemplazar TODO con GitHub (recomendado para VMs)
-  python github/actualizar.py --force   # Descartar cambios no commiteados y actualizar
-  python github/actualizar.py --stash   # Guardar cambios, actualizar, restaurar
-  python github/actualizar.py --check   # Solo verificar actualizaciones
-        """
-    )
-    parser.add_argument("--hard", "-H", action="store_true",
-                        help="REEMPLAZAR TODO el sistema local con lo de GitHub (git reset --hard)")
-    parser.add_argument("--force", "-f", action="store_true",
-                        help="Descartar cambios no commiteados y forzar actualización")
-    parser.add_argument("--stash", "-s", action="store_true",
-                        help="Guardar cambios locales (stash), actualizar, y restaurarlos")
-    parser.add_argument("--check", "-c", action="store_true",
-                        help="Solo verificar si hay actualizaciones disponibles")
-    parser.add_argument("--rebase", "-r", action="store_true",
-                        help="Usar rebase en lugar de merge")
-    
-    args = parser.parse_args(sys.argv[1:] if argv is None else argv)
-    
+    args = parse_args(sys.argv[1:] if argv is None else argv)
+
     show_banner()
-    
-    branch = get_current_branch()
-    print(f"{Colors.BLUE}📍 Rama actual: {Colors.BOLD}{branch}{Colors.RESET}\n")
-    
-    # =========================================================================
-    # PASO 1: Fetch para obtener info del remoto
-    # =========================================================================
-    print(f"{Colors.YELLOW}📡 Paso 1: Conectando con GitHub...{Colors.RESET}")
-    success, _ = run_command(["git", "fetch", "origin"], check=False)
-    if not success:
-        print(f"\n{Colors.RED}❌ No se pudo conectar con GitHub{Colors.RESET}")
-        print(f"{Colors.DIM}   Verifica tu conexión a internet y credenciales{Colors.RESET}")
-        return 1
-    
-    # =========================================================================
-    # MODO HARD: Reemplazar TODO con lo de GitHub (git reset --hard)
-    # =========================================================================
-    if args.hard:
-        print(f"\n{Colors.RED}{Colors.BOLD}⚠️  MODO HARD: Reemplazando TODO el sistema local con GitHub{Colors.RESET}")
-        print(f"{Colors.DIM}   Esto descartará TODOS los cambios locales (commiteados y no commiteados){Colors.RESET}")
-        
-        # Reset hard al estado del remoto
-        print(f"\n{Colors.YELLOW}🔄 Ejecutando reset --hard...{Colors.RESET}")
-        success, output = run_command(["git", "reset", "--hard", f"origin/{branch}"])
-        
-        if not success:
-            print(f"\n{Colors.RED}❌ Error durante el reset{Colors.RESET}")
-            return 1
-        
-        # Limpiar archivos no trackeados que puedan quedar
-        print(f"\n{Colors.YELLOW}🧹 Limpiando archivos residuales...{Colors.RESET}")
-        run_command(["git", "clean", "-fd"], check=False)
-        
-        # Mostrar resultado
-        print(f"""
-{Colors.GREEN}{Colors.BOLD}╔══════════════════════════════════════════════════════════════════╗
-║              ✅ SISTEMA REEMPLAZADO CON GITHUB                   ║
-╚══════════════════════════════════════════════════════════════════╝{Colors.RESET}
 
-   • Rama:    {Colors.CYAN}{branch}{Colors.RESET}
-   • Estado:  {Colors.GREEN}Idéntico a GitHub (origin/{branch}){Colors.RESET}
-""")
-        
-        # Mostrar últimos commits
-        print(f"{Colors.DIM}   Últimos commits en el sistema:{Colors.RESET}")
-        run_command(["git", "log", "--oneline", "-5"], check=False)
-        
-        return 0
-    
-    # =========================================================================
-    # PASO 2: Verificar estado
-    # =========================================================================
-    # =========================================================================
-    print(f"\n{Colors.YELLOW}📊 Paso 2: Analizando estado...{Colors.RESET}")
-    
-    behind, could_check = get_commits_behind()
-    ahead = get_commits_ahead()
-    has_changes = has_local_changes()
-    
-    print(f"\n   {Colors.CYAN}Estado:{Colors.RESET}")
-    if could_check:
-        print(f"   • Commits detrás de GitHub: {Colors.GREEN if behind == 0 else Colors.YELLOW}{behind}{Colors.RESET}")
-    else:
-        print(f"   • Commits detrás de GitHub: {Colors.YELLOW}(no se pudo verificar){Colors.RESET}")
-    print(f"   • Commits adelante de GitHub: {Colors.GREEN if ahead == 0 else Colors.YELLOW}{ahead}{Colors.RESET}")
-    print(f"   • Cambios locales sin commit: {Colors.RED if has_changes else Colors.GREEN}{'Sí' if has_changes else 'No'}{Colors.RESET}")
-    
-    # =========================================================================
-    # MODO CHECK: Solo mostrar información
-    # =========================================================================
+    if not ensure_git_repo():
+        print(f"{Colors.RED}ERROR: {REPO_ROOT} no es un repositorio Git valido.{Colors.RESET}")
+        return 1
+
+    current_branch = get_current_branch()
+    branch = args.branch or current_branch
+    if not branch:
+        print(
+            f"{Colors.RED}ERROR: no se pudo detectar la rama actual. "
+            f"Haz checkout a una rama y vuelve a ejecutar.{Colors.RESET}"
+        )
+        return 1
+
+    if args.branch and current_branch and args.branch != current_branch:
+        print(
+            f"{Colors.RED}ERROR: --branch solo puede usarse sobre la rama actualmente "
+            f"checkout. Cambia primero a {args.branch} y vuelve a ejecutar.{Colors.RESET}"
+        )
+        return 1
+
+    remote = args.remote
+
+    print(f"{Colors.BLUE}Repositorio: {Colors.BOLD}{REPO_ROOT}{Colors.RESET}")
+    print(f"{Colors.BLUE}Rama local:  {Colors.BOLD}{branch}{Colors.RESET}")
+    print(f"{Colors.BLUE}Remoto:      {Colors.BOLD}{remote}{Colors.RESET}\n")
+
+    print(f"{Colors.YELLOW}Paso 1: actualizando referencias remotas...{Colors.RESET}")
+    success, output = run_command(["git", "fetch", remote, "--prune"])
+    if not success:
+        print(f"\n{Colors.RED}ERROR: no se pudo hacer fetch del remoto.{Colors.RESET}")
+        if output:
+            print(f"{Colors.DIM}{output}{Colors.RESET}")
+        return 1
+
+    upstream = get_upstream_ref(branch, remote)
+    if not ref_exists(upstream):
+        print(f"\n{Colors.RED}ERROR: no existe la referencia remota {upstream}.{Colors.RESET}")
+        return 1
+
+    behind = count_commits(f"HEAD..{upstream}")
+    ahead = count_commits(f"{upstream}..HEAD")
+    dirty = has_local_changes()
+    ignored_count = ignored_items_count()
+    commits = get_recent_remote_commits(upstream, limit=10)
+
+    print(f"\n{Colors.CYAN}Estado detectado:{Colors.RESET}")
+    print(f"   • Upstream remoto:            {Colors.BOLD}{upstream}{Colors.RESET}")
+    print(f"   • Commits por detras:         {behind}")
+    print(f"   • Commits por delante:        {ahead}")
+    print(f"   • Cambios locales detectados: {'si' if dirty else 'no'}")
+    print(f"   • Ignorados por .gitignore:   {ignored_count}")
+
+    if not commits:
+        print(f"\n{Colors.RED}ERROR: no se pudieron obtener commits recientes de {upstream}.{Colors.RESET}")
+        return 1
+
+    print_recent_remote_commits(commits)
+
     if args.check:
-        print(f"\n{Colors.CYAN}{'─' * 50}{Colors.RESET}")
-        if not could_check:
-            print(f"{Colors.YELLOW}⚠️  No se pudo verificar el estado. Ejecuta sin --check para intentar actualizar.{Colors.RESET}")
-        elif behind == 0:
-            print(f"{Colors.GREEN}✅ Tu sistema está actualizado{Colors.RESET}")
-        else:
-            print(f"{Colors.YELLOW}📥 Hay {behind} commit(s) nuevos disponibles{Colors.RESET}")
-            print(f"{Colors.DIM}   Ejecuta: python github/actualizar.py{Colors.RESET}")
+        print(f"\n{Colors.GREEN}Comprobacion terminada. No se aplicaron cambios.{Colors.RESET}")
         return 0
-    
-    # =========================================================================
-    # Verificar si hay algo que actualizar (pero si no pudimos verificar, intentar igual)
-    # =========================================================================
-    if behind == 0 and could_check:
-        print(f"\n{Colors.GREEN}✅ Tu sistema ya está actualizado con GitHub{Colors.RESET}")
-        return 0
-    
-    if not could_check:
-        print(f"\n{Colors.YELLOW}⚠️  No se pudo verificar commits. Intentando pull de todas formas...{Colors.RESET}")
-    
-    # =========================================================================
-    # PASO 3: Manejar cambios locales
-    # =========================================================================
-    stashed = False
-    
-    if has_changes:
-        print(f"\n{Colors.YELLOW}⚠️  Tienes cambios locales sin commitear{Colors.RESET}")
-        
-        if args.force:
-            print(f"\n{Colors.RED}🗑️  Descartando cambios locales (--force)...{Colors.RESET}")
-            run_command(["git", "checkout", "--", "."], check=False)
-            run_command(["git", "clean", "-fd"], check=False)
-            
-        elif args.stash:
-            print(f"\n{Colors.BLUE}📦 Guardando cambios locales (stash)...{Colors.RESET}")
-            timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-            success, _ = run_command(["git", "stash", "push", "-m", f"auto_stash_{timestamp}"])
-            if success:
-                stashed = True
-                print(f"   {Colors.GREEN}✓ Cambios guardados temporalmente{Colors.RESET}")
-            else:
-                print(f"   {Colors.RED}✗ No se pudieron guardar los cambios{Colors.RESET}")
-                return 1
-        else:
-            print(f"\n{Colors.RED}❌ No se puede actualizar con cambios locales pendientes{Colors.RESET}")
-            print(f"\n{Colors.DIM}Opciones:{Colors.RESET}")
-            print(f"   {Colors.DIM}1. Commitea tus cambios: python github/git_push.py \"mensaje\"{Colors.RESET}")
-            print(f"   {Colors.DIM}2. Guarda temporalmente: python github/actualizar.py --stash{Colors.RESET}")
-            print(f"   {Colors.DIM}3. Descarta cambios:     python github/actualizar.py --force{Colors.RESET}")
-            return 1
-    
-    # =========================================================================
-    # PASO 4: Actualizar (Pull)
-    # =========================================================================
-    if behind > 0:
-        print(f"\n{Colors.YELLOW}📥 Paso 3: Descargando {behind} commit(s) de GitHub...{Colors.RESET}")
-    else:
-        print(f"\n{Colors.YELLOW}📥 Paso 3: Sincronizando con GitHub...{Colors.RESET}")
-    
-    if args.rebase:
-        success, output = run_command(["git", "pull", "--rebase", "origin", branch])
-    else:
-        success, output = run_command(["git", "pull", "origin", branch])
-    
-    if not success:
-        print(f"\n{Colors.RED}❌ Error durante la actualización{Colors.RESET}")
-        
-        # Verificar si hay conflictos
-        if "CONFLICT" in output or "conflict" in output:
-            print(f"\n{Colors.YELLOW}⚠️  Hay conflictos que resolver manualmente:{Colors.RESET}")
-            run_command(["git", "status"], check=False)
-            print(f"\n{Colors.DIM}Después de resolver conflictos, ejecuta:{Colors.RESET}")
-            print(f"   {Colors.DIM}git add . && git commit{Colors.RESET}")
-        
-        # Restaurar stash si lo hicimos
-        if stashed:
-            print(f"\n{Colors.BLUE}📦 Restaurando cambios guardados...{Colors.RESET}")
-            run_command(["git", "stash", "pop"], check=False)
-        
-        return 1
-    
-    # =========================================================================
-    # PASO 5: Restaurar stash si aplica
-    # =========================================================================
-    if stashed:
-        print(f"\n{Colors.BLUE}📦 Restaurando tus cambios locales...{Colors.RESET}")
-        success, output = run_command(["git", "stash", "pop"], check=False)
-        if not success and "CONFLICT" in output:
-            print(f"\n{Colors.YELLOW}⚠️  Conflictos al restaurar tus cambios{Colors.RESET}")
-            print(f"{Colors.DIM}   Resuelve los conflictos manualmente{Colors.RESET}")
-    
-    # =========================================================================
-    # RESUMEN FINAL
-    # =========================================================================
-    print(f"""
-{Colors.GREEN}{Colors.BOLD}╔══════════════════════════════════════════════════════════════════╗
-║                    ✅ ACTUALIZACIÓN COMPLETADA                   ║
-╚══════════════════════════════════════════════════════════════════╝{Colors.RESET}
 
-   • Rama:                 {Colors.CYAN}{branch}{Colors.RESET}
-   • Estado:               {Colors.GREEN}Sincronizado con GitHub{Colors.RESET}
-""")
-    
-    # Mostrar últimos commits descargados
-    print(f"{Colors.DIM}   Últimos cambios:{Colors.RESET}")
-    run_command(["git", "log", "--oneline", f"-{min(behind, 5)}"], check=False)
-    
+    selected_index = choose_commit_index(commits, preset=args.select)
+    if selected_index is None:
+        return 1
+
+    selected_commit = commits[selected_index]
+
+    print(
+        f"\n{Colors.YELLOW}Paso 2: restaurando rama al commit elegido "
+        f"({selected_commit.short_sha})...{Colors.RESET}"
+    )
+    success, output = run_command(["git", "reset", "--hard", selected_commit.sha])
+    if not success:
+        print(
+            f"\n{Colors.RED}ERROR: fallo el reset contra "
+            f"{selected_commit.short_sha}.{Colors.RESET}"
+        )
+        if output:
+            print(f"{Colors.DIM}{output}{Colors.RESET}")
+        return 1
+
+    print(
+        f"\n{Colors.YELLOW}Paso 3: eliminando archivos no versionados "
+        f"(sin tocar lo ignorado)...{Colors.RESET}"
+    )
+    success, output = run_command(["git", "clean", "-fd"])
+    if not success:
+        print(f"\n{Colors.RED}ERROR: fallo la limpieza de archivos no versionados.{Colors.RESET}")
+        if output:
+            print(f"{Colors.DIM}{output}{Colors.RESET}")
+        return 1
+
+    final_head = short_commit("HEAD")
+    final_clean = not has_local_changes()
+
+    print(
+        f"\n{Colors.GREEN}{Colors.BOLD}"
+        "==============================================================\n"
+        "SINCRONIZACION COMPLETADA\n"
+        "=============================================================="
+        f"{Colors.RESET}"
+    )
+    print(f"   • Rama:              {branch}")
+    print(f"   • Upstream:          {upstream}")
+    print(f"   • Version elegida:   {selected_index + 1}")
+    print(f"   • Commit restaurado: {selected_commit.short_sha}")
+    print(f"   • Fecha/Hora:        {selected_commit.date_str}")
+    print(f"   • Descripcion:       {selected_commit.subject}")
+    print(f"   • HEAD local:        {final_head}")
+    print(f"   • Estado de trabajo: {'limpio' if final_clean else 'revisar'}")
+    print("   • Ignorados:         preservados (.gitignore no se toca)")
+
     return 0
 
 
 if __name__ == "__main__":
-    sys.exit(main())
+    raise SystemExit(main())
