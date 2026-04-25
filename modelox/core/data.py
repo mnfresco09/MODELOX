@@ -1,7 +1,10 @@
-"""modelox.core.data — Carga y transformación de datos OHLCV.
+"""modelox.core.data — Carga y transformación de datos OHLCV + columnas enriquecidas.
 
 Flujo: load_data() → resample_to_base_timeframe() → prepare_multitimeframe_data().
 MTF auxiliares usan shift(1) anti-lookahead. Resampleo base sin shift.
+
+Columnas extra (Vision): se preservan en resampleo con la agregación correcta.
+Fallback: si un archivo no existe en 'datos/', se busca en 'datos_viejos/'.
 """
 
 from __future__ import annotations
@@ -102,7 +105,17 @@ def load_data(path: str) -> pl.DataFrame:
             p.with_suffix(".parquet"),
             p.with_suffix(".pq"),
         ]
+        # Fallback: buscar en datos_viejos/ si la ruta pasa por datos/
+        fallback_candidates: List[Path] = []
         for c in candidates:
+            parts = c.parts
+            for i, part in enumerate(parts):
+                if part == "datos":
+                    fb = Path(*parts[:i]) / "datos_viejos" / Path(*parts[i + 1:])
+                    fallback_candidates.append(fb)
+                    break
+
+        for c in candidates + fallback_candidates:
             if c.exists():
                 p = c
                 ext = p.suffix.lower()
@@ -202,6 +215,25 @@ _OHLCV_RESAMPLE_EXPRS = {
     "low": pl.col("low").min(),
     "close": pl.col("close").last(),
     "volume": pl.col("volume").sum(),
+}
+
+# ─── EXPRESIONES DE RESAMPLEO COLUMNAS EXTRA (Vision / enriquecidas) ─────────
+# sum → columnas de flujo acumulable en la vela
+# last → columnas de nivel (snapshot al cierre de la vela)
+_EXTRA_COLS_RESAMPLE: Dict[str, pl.Expr] = {
+    "num_trades":                           pl.col("num_trades").sum(),
+    "taker_buy_volume":                     pl.col("taker_buy_volume").sum(),
+    "taker_sell_volume":                    pl.col("taker_sell_volume").sum(),
+    "taker_buy_quote_volume":               pl.col("taker_buy_quote_volume").sum(),
+    "taker_sell_quote_volume":              pl.col("taker_sell_quote_volume").sum(),
+    "premium_index_close":                  pl.col("premium_index_close").last(),
+    "open_interest_5m":                     pl.col("open_interest_5m").last(),
+    "open_interest_value_5m":               pl.col("open_interest_value_5m").last(),
+    "toptrader_count_long_short_ratio_5m":  pl.col("toptrader_count_long_short_ratio_5m").last(),
+    "toptrader_sum_long_short_ratio_5m":    pl.col("toptrader_sum_long_short_ratio_5m").last(),
+    "global_long_short_ratio_5m":           pl.col("global_long_short_ratio_5m").last(),
+    "taker_long_short_ratio_5m":            pl.col("taker_long_short_ratio_5m").last(),
+    "predicted_funding_rate_1m":            pl.col("predicted_funding_rate_1m").last(),
 }
 
 
@@ -327,18 +359,24 @@ def resample_to_base_timeframe(
     if df_1m.schema.get(ts_col) != pl.Datetime:
         df_work = df_work.with_columns(pl.col(ts_col).cast(pl.Datetime("us")))
 
-    # RESAMPLEAR OHLCV CON NOMBRES SIN SUFIJO (ES EL BASE)
+    # RESAMPLEAR OHLCV + COLUMNAS EXTRA PRESENTES EN EL DATAFRAME
+    agg_exprs = [
+        _OHLCV_RESAMPLE_EXPRS["open"],
+        _OHLCV_RESAMPLE_EXPRS["high"],
+        _OHLCV_RESAMPLE_EXPRS["low"],
+        _OHLCV_RESAMPLE_EXPRS["close"],
+        _OHLCV_RESAMPLE_EXPRS["volume"],
+    ]
+    present_cols = set(df_1m.columns)
+    for col_name, expr in _EXTRA_COLS_RESAMPLE.items():
+        if col_name in present_cols:
+            agg_exprs.append(expr)
+
     resampled = (
         df_work
         .sort(ts_col)
         .group_by_dynamic(ts_col, every=duration)
-        .agg([
-            _OHLCV_RESAMPLE_EXPRS["open"],
-            _OHLCV_RESAMPLE_EXPRS["high"],
-            _OHLCV_RESAMPLE_EXPRS["low"],
-            _OHLCV_RESAMPLE_EXPRS["close"],
-            _OHLCV_RESAMPLE_EXPRS["volume"],
-        ])
+        .agg(agg_exprs)
         .collect()
     )
 

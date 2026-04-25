@@ -17,6 +17,10 @@ __pycache__/
 # --- Datos (demasiado grandes para GitHub) ---
 datos/
 data/
+vision/raw/
+vision/binance/
+vision/metatrader/
+vision/manifests/
 *.feather
 *.parquet
 

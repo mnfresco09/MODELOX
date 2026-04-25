@@ -34,7 +34,7 @@ OPTUNA_SAMPLER           = "QMC" # HYBRID | QMC | TPE | CMA | GT | ML
 # =============================================================================
 # ACTIVO
 # =============================================================================
-ACTIVO = "GOLD, SP500, SILVER, BTC, NASDAQ"  # BTC | GOLD | SILVER | SP500 | NASDAQ | ETH | BIST100
+ACTIVO = "BTC"  # BTC | GOLD | SILVER | SP500 | NASDAQ | ETH | BIST100
 
 # =============================================================================
 # RANGO DE FECHAS

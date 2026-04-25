@@ -151,6 +151,22 @@ class EstrategiaBase:
     SALIDAS_PERSONALIZADAS: bool = False
 
     # =============================================================================
+    # COLUMNAS DE DATOS REQUERIDAS (OPCIONAL)
+    # =============================================================================
+    # Declara aquí las columnas extra (más allá de OHLCV) que la estrategia usa.
+    # El runner validará que existen en el dataset cargado y mostrará un error claro
+    # si el activo no tiene esos datos disponibles (ej: open_interest_5m solo en BTC Vision).
+    #
+    # Columnas Vision disponibles:
+    #   "num_trades", "taker_buy_volume", "taker_sell_volume",
+    #   "taker_buy_quote_volume", "taker_sell_quote_volume",
+    #   "premium_index_close", "open_interest_5m", "open_interest_value_5m",
+    #   "toptrader_count_long_short_ratio_5m", "toptrader_sum_long_short_ratio_5m",
+    #   "global_long_short_ratio_5m", "taker_long_short_ratio_5m",
+    #   "predicted_funding_rate_1m"
+    COLUMNAS_REQUERIDAS: List[str] = []
+
+    # =============================================================================
     # TIMEFRAMES (OPCIONAL)
     # =============================================================================
     # SI UNA ESTRATEGIA DEFINE timeframe_entry / timeframe_exit, EL RUNNER LOS USA

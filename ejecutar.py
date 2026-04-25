@@ -371,6 +371,18 @@ def main() -> None:
                         s_name = getattr(strat, 'name', "STRAT")
                         s_safe = re.sub(r"[^A-Z0-9_]+", "_", s_name.upper())
 
+                        # Validar columnas requeridas por la estrategia
+                        _cols_req = getattr(strat, 'COLUMNAS_REQUERIDAS', [])
+                        if _cols_req:
+                            _cols_faltantes = [c for c in _cols_req if c not in df.columns]
+                            if _cols_faltantes:
+                                print(f"❌ {s_name} [{activo}]: columnas requeridas no disponibles en los datos: {_cols_faltantes}")
+                                print(f"   Columnas del archivo: {df.columns}")
+                                print(f"   Esta estrategia necesita datos Vision enriquecidos para este activo.")
+                                continue
+                            else:
+                                print(f"   ✓ Columnas Vision disponibles para {s_name}: {_cols_req}")
+
                         # Limpiar base de datos Optuna de esta estrategia una sola vez por ejecución
                         try:
                             from general.configuracion import OPTUNA_RESET_DB_ON_START, OPTUNA_CREATE_DATABASE
