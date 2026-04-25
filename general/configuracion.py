@@ -23,12 +23,12 @@ APALANCAMIENTO_MAX = 10    # Apalancamiento máximo
 # =============================================================================
 # COMBINACIÓN & ESTRATEGIA
 # =============================================================================
-COMBINACION_A_EJECUTAR = [1,2,3]   # IDs de estrategias en modelox/strategies/
+COMBINACION_A_EJECUTAR = [4]   # IDs de estrategias en modelox/strategies/
 
 # =============================================================================
 # OPTIMIZACIÓN (OPTUNA)
 # =============================================================================
-N_TRIALS                 = 1   # Trials (potencias de 2 para QMC: 32,64,128,256,512,1024,2048…)
+N_TRIALS                 = 100   # Trials (potencias de 2 para QMC: 32,64,128,256,512,1024,2048…)
 OPTUNA_SAMPLER           = "QMC" # HYBRID | QMC | TPE | CMA | GT | ML
 
 # =============================================================================
@@ -54,7 +54,7 @@ TIMEFRAMES     = [TIMEFRAME_BASE]
 # =============================================================================
 # RÉGIMEN DE MERCADO (EMA 21/200  |  MACD 12/26/9  |  ADX 14 — en 1D)
 # =============================================================================
-REGIMEN_ACTIVO     = True          # false|true|all|odd  → false: sin filtro | true: filtra por REGIMEN_TIPO | all: compra 1ª vela y vende última | odd: compra al entrar en ALCISTA y vende al pasar a BAJISTA/NEUTRAL
+REGIMEN_ACTIVO     = False          # false|true|all|odd  → false: sin filtro | true: filtra por REGIMEN_TIPO | all: compra 1ª vela y vende última | odd: compra al entrar en ALCISTA y vende al pasar a BAJISTA/NEUTRAL
 REGIMEN_INDICADOR  = "MACD"        # EMA  → EMA(21) vs EMA(200) en 1D  # ADX  → ADX(14): ALCISTA si ADX>25 y +DI>-DI
 
 REGIMEN_TIPO       = "BAJISTA"     # ALCISTA | BAJISTA

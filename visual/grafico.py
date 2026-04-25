@@ -107,27 +107,27 @@ if TYPE_CHECKING:
 #
 
 _COLOR_PALETTE = [
-  # Paleta institucional formal — inspirada en terminales Bloomberg/Refinitiv
-  "#6B9BD2",  # Institutional Blue
-  "#7CB4B8",  # Teal Mist
-  "#B8A9C9",  # Soft Lavender
-  "#D4A574",  # Warm Caramel
-  "#8FB8A0",  # Sage Green
-  "#C49B9B",  # Dusty Rose
-  "#A0B4CC",  # Steel Blue
-  "#C4B07B",  # Antique Gold
-  "#9BAEB7",  # Mineral Gray
-  "#B09FC4",  # Wisteria
-  "#7CAFC2",  # Ocean Teal
-  "#C9A87C",  # Sand
-  "#8DA7BE",  # Glacier Blue
-  "#B5C48B",  # Willow Green
-  "#C4948E",  # Terra Cotta
-  "#A3B5C8",  # Powder Blue
-  "#B8B394",  # Khaki Stone
-  "#9EADBA",  # Cloud Gray
-  "#BAA5B0",  # Mauve Ash
-  "#88A8B8",  # Fjord Blue
+  # Paleta institucional/neutra (estilo Rich) con más variedad
+  "#4F94CD",  # Steel Blue 3
+  "#6C8EAD",  # Dusty Blue
+  "#5F9EA0",  # Cadet Blue
+  "#6B8BA4",  # Muted Blue-Gray
+  "#7B88A1",  # Slate
+  "#8A99A8",  # Cool Gray-Blue
+  "#9FB6CD",  # Light Slate
+  "#4C7A9F",  # Deep Soft Blue
+  "#6F8F7A",  # Desaturated Green
+  "#7A9B8E",  # Muted Sea Green
+  "#8E9A6B",  # Olive Gray
+  "#A3926B",  # Warm Stone
+  "#B19A6A",  # Muted Gold
+  "#C2A36B",  # Soft Ocher
+  "#7A7FA3",  # Soft Indigo
+  "#8D7AA8",  # Dusty Violet
+  "#9A86A8",  # Muted Purple
+  "#A48F9B",  # Mauve Gray
+  "#7D8C95",  # Neutral Steel
+  "#8A949B",  # Soft Neutral Gray
 ]
 
 
@@ -154,51 +154,43 @@ def _get_indicator_bounds(params: Optional[Dict[str, Any]]) -> Dict[str, Any]:
 
 
 def _is_overlay_heuristic(series: "pd.Series", price_range: tuple) -> bool:
-  """Heurística robusta: overlay solo si el indicador está claramente en escala precio.
-
-  Usa percentiles (P2/P98) para evitar que outliers den falsos positivos.
-  Un overlay real (MA, ALMA, bandas Bollinger) debe:
-    - Tener magnitud similar al precio.
-    - No ser negativo cuando el precio es positivo y alto.
-    - Tener un rango proporcional al rango de precio.
+  """Heurística mejorada: overlay sólo si el indicador claramente está en escala precio.
+  
+  Indicadores normalizados, z-scores, osciladores, etc. NO son overlay.
+  Un overlay real (MA, ALMA, bandas) debe:
+    - Tener valores en el mismo orden de magnitud que el precio.
+    - Tener un mínimo > 0 para activos como BTC/GOLD (precio siempre positivo).
   """
   try:
     s = series.dropna()
-    if len(s) < 5:
+    if s.empty:
       return False
     min_p, max_p = float(price_range[0]), float(price_range[1])
     if not (np.isfinite(min_p) and np.isfinite(max_p) and max_p > min_p):
       return False
-
-    # Usar percentiles para robustez ante outliers
-    ind_p2  = float(np.percentile(s, 2))
-    ind_p98 = float(np.percentile(s, 98))
-    if not (np.isfinite(ind_p2) and np.isfinite(ind_p98)):
+    ind_min = float(s.min())
+    ind_max = float(s.max())
+    if not (np.isfinite(ind_min) and np.isfinite(ind_max)):
       return False
 
-    # REGLA 1: Negativo con precio alto → oscilador, no overlay
-    if ind_p2 < 0 and min_p > 50:
+    # REGLA 1: Si el indicador puede ser negativo y el precio mínimo es > 100,
+    # es muy probable que sea un oscilador/z-score, NO overlay.
+    if ind_min < 0 and min_p > 100:
       return False
 
-    ind_span   = ind_p98 - ind_p2
+    # REGLA 2: Si el rango del indicador es pequeño (ej: -3 a +3 para z-score),
+    # y el precio está en miles/cientos, no es overlay.
+    ind_span = ind_max - ind_min
+    if ind_span < 20 and min_p > 50:
+      return False
+
+    # REGLA 3: Overlay real debe estar dentro del rango de precio.
     price_span = max_p - min_p
+    within_min = (ind_min >= (min_p - 0.15 * price_span))
+    within_max = (ind_max <= (max_p + 0.15 * price_span))
+    span_ok = ind_span >= 0.1 * price_span and ind_span <= 1.5 * price_span
 
-    # REGLA 2: Rango demasiado pequeño relativo al precio → no overlay
-    # (z-score -3..+3 con BTC en 30k sería ind_span=6, price_span=5000 → ratio 0.001)
-    span_ratio = ind_span / price_span if price_span > 0 else 0
-    if span_ratio < 0.03:
-      return False
-
-    # REGLA 3: Overlay real no debe exceder mucho el rango de precio
-    if span_ratio > 3.0:
-      return False
-
-    # REGLA 4: Los valores deben estar sustancialmente dentro del rango de precio
-    margin = 0.25 * price_span
-    within_min = ind_p2  >= min_p - margin
-    within_max = ind_p98 <= max_p + margin
-
-    return within_min and within_max
+    return within_min and within_max and span_ok
   except Exception:
     return False
 
@@ -240,24 +232,20 @@ def _detect_indicators(
     "ma", "ema", "sma", "zlema", "alma", "wma", "hma", "kama", "dema", "tema",
     "vwma", "vwap", "pivot", "support", "resistance", "band", "upper", "lower",
     "bb_", "boll", "keltner", "donchian", "atr_band", "supertrend",
-    "ichimoku", "tenkan", "kijun", "chikou", "span", "cloud",
-    "hull", "lsma", "linreg", "lwma", "smma", "tma", "zlsma",
   )
 
   # Sufijos/patrones que indican indicadores derivados → NUNCA son overlay
+  # (aceleración, velocidad, diferencia, señal, histograma, z-score, ratio, etc.)
   NON_OVERLAY_SUFFIXES = (
     "_acc", "_vel", "_diff", "_roc", "_signal", "_sig", "_hist",
     "_zscore", "_z", "_norm", "_pct", "_ratio", "_slope", "_delta",
-    "_momentum", "_mom", "_osc", "_divergence", "_div", "_pct_rank",
-    "_percentile", "_rank", "_score", "_raw",
+    "_momentum", "_mom", "_osc", "_divergence", "_div",
   )
   # Nombres que NUNCA son overlay (osciladores conocidos)
   NON_OVERLAY_NAMES = (
     "fisher", "rsi", "mfi", "cci", "stoch", "macd", "adx", "atr",
     "obv", "cmf", "willr", "dpo", "trix", "roc", "momentum",
-    "zscore", "z_score", "psar", "ppo", "kst", "aroon", "chop",
-    "bbw", "bbp", "squeeze", "regime", "trend_strength",
-    "hist", "oscillator", "divergence",
+    "zscore", "z_score",
   )
 
   def _normalize_panel(panel_value: Any) -> Any:
@@ -911,66 +899,921 @@ def _generate_dynamic_combo(params: Optional[Dict[str, Any]], strategy_name: str
 
 
 # =============================================================================
-# DYNAMIC HTML GENERATOR (v8.0 - TEMPLATE-BASED)
+# DYNAMIC HTML GENERATOR (v7.0 - STREAMING)
 # =============================================================================
-
-_CHART_TEMPLATE: Optional[str] = None
-
-
-def _load_chart_template() -> str:
-    """Load chart_template.html from the same directory as this module (cached)."""
-    global _CHART_TEMPLATE
-    if _CHART_TEMPLATE is None:
-        tpl_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "chart_template.html")
-        with open(tpl_path, "r", encoding="utf-8") as f:
-            _CHART_TEMPLATE = f.read()
-    return _CHART_TEMPLATE
-
 
 def _write_html_streaming(
     filepath: str,
     candle_data: dict,
     indicators: dict,
     trades: dict,
-    config: dict,
-    equity_data: Optional[dict] = None,
+    config: dict
 ) -> None:
     """
-    Template-based HTML generator (v8.0).
-    Reads chart_template.html and injects JSON data via %%INJECT_X%% markers.
+    STREAMING HTML GENERATOR (v9.0 - MINIMALIST NEUTRAL)
+    
+    Writes HTML directly to disk in chunks.
+    Style: Minimalist, Neutral, "Nord/Notion" aesthetic.
     """
 
-    cfg = {
-        "activo":        str(config.get("activo", "")),
-        "combo":         str(config.get("combo", "")),
-        "trial":         str(config.get("trial", "")),
-        "total_trades":  int(config.get("total_trades", 0)),
-        "winrate":       float(config.get("winrate", 0)),
-        "pnl_neto":      float(config.get("pnl_neto", 0)),
-        "roi":           float(config.get("roi", 0)),
-        "max_dd":        float(config.get("max_dd", 0)),
-        "pf":            float(config.get("profit_factor", 0)),
-        "expectancy":    float(config.get("expectancy", 0)),
-        "score":         float(config.get("score", 0)),
-        "avg_win":       float(config.get("avg_win", 0)),
-        "avg_loss":      float(config.get("avg_loss", 0)),
-    }
-    eq = equity_data if equity_data else {"v": [], "t": [], "si": 0}
+    activo = str(config.get("activo", ""))
+    combo = str(config.get("combo", ""))
+    total_trades = int(config.get("total_trades", 0))
+    winrate = float(config.get("winrate", 0))
+    pnl_neto = float(config.get("pnl_neto", 0))
+    pnl_class = "pos" if pnl_neto >= 0 else "neg"
+    trial = str(config.get("trial", ""))
+    score = float(config.get("score", 0))
 
-    MARKERS = [
-        "%%INJECT_D%%", "%%INJECT_I%%", "%%INJECT_T%%",
-        "%%INJECT_E%%", "%%INJECT_CFG%%",
-    ]
-    payloads = [candle_data, indicators, trades, eq, cfg]
-
-    template = _load_chart_template()
     with open(filepath, "wb") as f:
-        for marker, payload in zip(MARKERS, payloads):
-            idx = template.index(marker)
-            f.write(template[:idx].encode("utf-8"))
-            f.write(_dumps_bytes(payload))
-            template = template[idx + len(marker):]
-        f.write(template.encode("utf-8"))
+        # ============ CHUNK 1: HTML Header + CSS (Minimalist Style) ============
+        header = f'''<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width,initial-scale=1,maximum-scale=1,user-scalable=no">
+<title>MODELOX | {activo}</title>
+<script src="https://unpkg.com/lightweight-charts@4.1.0/dist/lightweight-charts.standalone.production.js"></script>
+<link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500;600&family=Inter:wght@400;500;600&display=swap" rel="stylesheet">
+<script>
+window.addEventListener('DOMContentLoaded', function() {{
+  if (typeof LightweightCharts === 'undefined') {{
+    document.body.innerHTML = '<div style="color:#666;padding:40px;font-family:sans-serif;text-align:center;">Could not load chart library (lightweight-charts)</div>';
+  }}
+}});
+</script>
+<style>
+/* MINIMALIST NEUTRAL THEME */
+:root {{
+  --bg-app: #121212;
+  --bg-panel: #181818;
+  --bg-header: #181818;
+  --border-subtle: #2A2A2A;
+  --text-main: #C9D1D9;
+  --text-muted: #6E7681;
+  --accent-blue: #79C0FF;
+  --accent-green: #7EE787;
+  --accent-red: #FF7B72;
+  --accent-gold: #D29922;
+}}
+
+*{{margin:0;padding:0;box-sizing:border-box}}
+html,body{{width:100%;height:100%;background:var(--bg-app);font-family:'Inter',sans-serif;overflow:hidden;touch-action:none;color:var(--text-main)}}
+
+/* LAYOUT */
+.c{{display:flex;flex-direction:column;height:100vh;padding:0}}
+
+/* HEADER - CLEAN & FLAT */
+.h{{
+    display:flex;
+    justify-content:space-between;
+    align-items:center;
+    padding:0 24px;
+    height: 54px;
+    background:var(--bg-header);
+    border-bottom:1px solid var(--border-subtle);
+}}
+
+.h .left{{display:flex;align-items:center;gap:16px}}
+.h .a{{font-family:'IBM Plex Mono',monospace;font-size:16px;font-weight:600;color:var(--text-main);letter-spacing:-0.5px}}
+.h .t{{font-size:12px;font-weight:400;color:var(--text-muted);background:rgba(255,255,255,0.05);padding:4px 8px;border-radius:4px}}
+
+.h .info{{display:flex;gap:24px;align-items:center}}
+.h .stat{{display:flex;align-items:baseline;gap:8px}}
+.h .stat-label{{color:var(--text-muted);font-size:11px;font-weight:500;text-transform:uppercase;letter-spacing:0.5px}}
+.h .stat-val{{color:var(--text-main);font-size:14px;font-weight:600;font-family:'IBM Plex Mono',monospace}}
+.h .stat-val.pos{{color:var(--accent-green)}}
+.h .stat-val.neg{{color:var(--accent-red)}}
+
+/* CHARTS AREA */
+.p{{flex:1;display:flex;flex-direction:column;min-height:0;position:relative}}
+.m{{position:relative;margin-bottom:0;border-bottom:1px solid var(--border-subtle)}}
+.sub{{position:relative;margin-bottom:0;border-bottom:1px solid var(--border-subtle);flex:1 1 0;min-height:60px;overflow:hidden}}
+
+/* PANEL LABELS - SUBTLE */
+.l{{
+    position:absolute;
+    top:12px;
+    left:16px;
+    z-index:20;
+    font-size:10px;
+    font-weight:600;
+    color:var(--text-muted);
+    pointer-events:none;
+    text-transform:uppercase;
+    letter-spacing:1px;
+    opacity:0.7;
+}}
+
+/* TOOLTIP - FLOATING & MINIMAL */
+#tt{{
+    position:fixed;
+    display:none;
+    background:rgba(24,24,24,0.95);
+    border:1px solid var(--border-subtle);
+    border-radius:6px;
+    padding:12px;
+    color:var(--text-main);
+    font-size:12px;
+    z-index:100;
+    pointer-events:none;
+    box-shadow:0 8px 24px rgba(0,0,0,0.5);
+    backdrop-filter:blur(4px);
+    width: 200px;
+}}
+.tt-row{{display:flex;justify-content:space-between;margin-bottom:4px}}
+.tt-label{{color:var(--text-muted)}}
+.tt-val{{font-family:'IBM Plex Mono',monospace;font-weight:500}}
+.tt-val.pos{{color:var(--accent-green)}}
+.tt-val.neg{{color:var(--accent-red)}}
+.tt-badge{{padding:2px 6px;border-radius:4px;font-size:10px;font-weight:700;text-transform:uppercase}}
+.tt-badge.win{{background:rgba(126,231,135,0.1);color:var(--accent-green);border:1px solid rgba(126,231,135,0.2)}}
+.tt-badge.loss{{background:rgba(255,123,114,0.1);color:var(--accent-red);border:1px solid rgba(255,123,114,0.2)}}
+
+
+/* OHLC FLOATING LEGEND */
+#ohlc{{
+    position:absolute;
+    top:12px;
+    right:100px;
+    z-index:20;
+    display:flex;
+    gap:16px;
+    font-family:'IBM Plex Mono',monospace;
+    font-size:11px;
+    color:var(--text-muted);
+    pointer-events:none;
+}}
+.ohlc-val{{color:var(--text-main)}}
+.ohlc-val.up{{color:var(--accent-green)}}
+.ohlc-val.down{{color:var(--accent-red)}}
+
+/* ZOOM CONTROLS */
+.tv-zoom-container{{position:absolute;bottom:20px;left:50%;transform:translateX(-50%);z-index:30;display:flex;gap:8px;opacity:0;transition:opacity 0.2s}}
+.p:hover .tv-zoom-container{{opacity:1}}
+.tv-zoom-btn{{
+    width:32px;height:32px;
+    background:#2A2A2A;
+    color:#fff;
+    border:none;
+    border-radius:4px;
+    cursor:pointer;
+    font-size:16px;
+    display:flex;align-items:center;justify-content:center;
+}}
+.tv-zoom-btn:hover{{background:#3A3A3A}}
+
+/* CROSSHAIR */
+#globalCrosshair{{position:absolute;top:0;bottom:0;width:1px;background:rgba(255,255,255,0.1);pointer-events:none;z-index:10;display:none}}
+#globalCrosshairLabel{{
+    position:absolute;
+    bottom:0;
+    transform:translateX(-50%);
+    background:#2A2A2A;
+    color:#fff;
+    font-size:10px;
+    padding:2px 6px;
+    border-radius:4px;
+    pointer-events:none;
+    z-index:30;
+    display:none;
+    font-family:'IBM Plex Mono',monospace;
+}}
+
+.smh{{position:absolute;left:0;right:0;height:10px;z-index:40;cursor:ns-resize}}
+.smh.top{{top:0}}
+.smh.bottom{{bottom:0}}
+
+</style>
+</head>
+<body>
+<div class="c">
+<div class="h">
+    <div class="left">
+        <span class="a">{activo}</span>
+        <span class="t">{combo}</span>
+        <span class="t">TRIAL: {trial}</span>
+    </div>
+    <div class="info">
+        <div class="stat"><span class="stat-label">Trades</span><span class="stat-val">{total_trades}</span></div>
+        <div class="stat"><span class="stat-label">WinRate</span><span class="stat-val">{round(winrate, 1)}%</span></div>
+        <div class="stat"><span class="stat-label">PnL</span><span class="stat-val {pnl_class}">${round(pnl_neto, 2)}</span></div>
+        <div class="stat"><span class="stat-label">Score</span><span class="stat-val">{round(score, 2)}</span></div>
+    </div>
+</div>
+<div class="p" id="ct"><div id="globalCrosshair"></div><div id="globalCrosshairLabel"></div></div>
+</div>
+<div id="tt"></div>
+
+<script>
+(function(){{
+'use strict';
+try {{
+const D='''.encode('utf-8')
+        f.write(header)
+
+        # ============ CHUNK 2: Candle Data JSON (streaming) ============
+        f.write(_dumps_bytes(candle_data))
+
+        # ============ CHUNK 3: Indicators JSON ============
+        f.write(b';\nconst I=')
+        f.write(_dumps_bytes(indicators))
+
+        # ============ CHUNK 4: Trades JSON ============
+        f.write(b';\nconst T=')
+        f.write(_dumps_bytes(trades))
+
+        # ============ CHUNK 5: JavaScript Logic ============
+        js_logic = _get_chart_js_logic()
+        f.write(js_logic.encode('utf-8'))
+
+        # ============ CHUNK 6: Footer (Close Tags) ============
+        footer = b"""
+} catch(e) {
+    console.error(e);
+    document.body.innerHTML += '<div style="color:red;margin:20px;background:#333;padding:10px;border-radius:4px;font-family:monospace">JS Error: ' + e.message + '</div>';
+}
+})();
+</script>
+</body>
+</html>
+"""
+        f.write(footer)
+
+
+def _get_chart_js_logic() -> str:
+    """Return the JavaScript chart logic as a string (static, cacheable)."""
+
+    return '''
+
+// ============================================================================
+// MODELOX CHART v9.0 - NEUTRAL MINIMALIST
+// ============================================================================
+
+if (!D || !D.t || D.t.length === 0) {
+  document.body.innerHTML = '<div style="display:flex;height:100vh;justify-content:center;align-items:center;color:#666">No data available</div>';
+  return;
+}
+
+const dq=(v,f)=>v/f;
+const ct=document.getElementById('ct');
+const charts=[];
+let syncingCharts=false;
+const _scaleMarginsByChart = new WeakMap();
+
+// HELPERS
+function _clamp(v, lo, hi){ return Math.max(lo, Math.min(hi, v)); }
+function _findDataAt(s, t) {
+    if (!s) return null;
+    const d = s.data();
+    let l = 0, r = d.length - 1;
+    while (l <= r) {
+        const m = (l + r) >>> 1;
+        const v = d[m];
+        if (v.time === t) return v;
+        if (v.time < t) l = m + 1;
+        else r = m - 1;
+    }
+    return null;
+}
+function _getOrInitMargins(ch){
+  if(_scaleMarginsByChart.has(ch)) return _scaleMarginsByChart.get(ch);
+  const m = { top: 0.1, bottom: 0.1 };
+  _scaleMarginsByChart.set(ch, m);
+  return m;
+}
+function _applyMargins(ch, top, bottom){
+  top = _clamp(top, 0.05, 0.45);
+  bottom = _clamp(bottom, 0.05, 0.45);
+  _scaleMarginsByChart.set(ch, { top, bottom });
+  try{ ch.applyOptions({ rightPriceScale: { scaleMargins: { top, bottom } } }); }catch(e){}
+}
+function _attachScaleMarginHandles(panelEl, ch){
+  if(!panelEl || !ch) return;
+  const hTop = document.createElement('div'); hTop.className = 'smh top';
+  const hBot = document.createElement('div'); hBot.className = 'smh bottom';
+  panelEl.appendChild(hTop); panelEl.appendChild(hBot);
+  
+  const startDrag = (which, ev) => {
+    ev.preventDefault(); ev.stopPropagation();
+    const rect = panelEl.getBoundingClientRect();
+    const startY = ev.clientY;
+    const startMargins = _getOrInitMargins(ch);
+    const onMove = (e) => {
+      const dy = e.clientY - startY;
+      const df = dy / rect.height;
+      if(which === 'top') _applyMargins(ch, startMargins.top + df, startMargins.bottom);
+      else _applyMargins(ch, startMargins.top, startMargins.bottom - df);
+    };
+    const onUp = () => {
+      window.removeEventListener('pointermove', onMove);
+      window.removeEventListener('pointerup', onUp);
+    };
+    window.addEventListener('pointermove', onMove);
+    window.addEventListener('pointerup', onUp);
+  };
+  hTop.addEventListener('pointerdown', (ev)=>startDrag('top', ev));
+  hBot.addEventListener('pointerdown', (ev)=>startDrag('bottom', ev));
+}
+
+// CHART OPTIONS - NEUTRAL
+const baseOpts={
+layout:{background:{type:'solid',color:'#121212'},textColor:'#6E7681',fontSize:11,fontFamily:"'Inter',sans-serif"},
+grid:{vertLines:{visible:false},horzLines:{color:'#1e1e1e',style:0}},
+crosshair:{mode:0,vertLine:{visible:false,labelVisible:false},horzLine:{visible:true,color:'#333',labelBackgroundColor:'#333'}},
+timeScale:{
+    borderColor:'#2A2A2A',
+    rightOffset:5,
+    barSpacing:6,
+    minBarSpacing:1,
+    fixLeftEdge:false,
+    fixRightEdge:false,
+    lockVisibleTimeRangeOnResize:true,
+    visible:false,
+    tickMarkFormatter: (time, tickMarkType, locale) => {
+        const d = new Date(time * 1000);
+        if (d.getUTCMinutes() !== 0) return '';
+        const h = d.getUTCHours();
+        return h === 0 ? '00' : h.toString();
+    }
+},
+rightPriceScale:{borderColor:'#2A2A2A',scaleMargins:{top:.15,bottom:.15},autoScale:true,alignLabels:true,borderVisible:false},
+handleScale:{axisPressedMouseMove:false,mouseWheel:false,pinch:false},
+handleScroll:{mouseWheel:true,pressedMouseMove:true,horzTouchDrag:true,vertTouchDrag:false},
+kineticScroll:{touch:true,mouse:true},
+localization:{
+  timeFormatter:(ts)=>{
+    const d=new Date(ts*1000);
+    return d.toISOString().slice(5,16).replace('T',' ');
+  },
+}
+};
+
+function mkPanel(id,lbl,isMain){
+  const p=document.createElement('div');
+  p.className=isMain?'m':'sub';
+  p.id=id;
+  p.style.flex=isMain?'3':'1';
+  
+  const l=document.createElement('div');
+  l.className='l';
+  l.textContent=lbl;
+  p.appendChild(l);
+
+  if(isMain){
+    const ohlc=document.createElement('div');
+    ohlc.id='ohlc';
+    ohlc.innerHTML='<span id="tv" style="margin-right:8px"></span>O <span id="ov" class="ohlc-val">-</span> H <span id="hv" class="ohlc-val">-</span> L <span id="lv" class="ohlc-val">-</span> C <span id="cv" class="ohlc-val">-</span>';
+    p.appendChild(ohlc);
+    
+    // Zoom buttons
+    const z=document.createElement('div');
+    z.className='tv-zoom-container';
+    z.innerHTML='<button class="tv-zoom-btn" id="zoomIn">+</button><button class="tv-zoom-btn" id="zoomOut">-</button>';
+    p.appendChild(z);
+  }
+  
+  ct.appendChild(p);
+
+  // === RESIZER LOGIC ===
+  if(isMain){
+      // Ensure CSS exists
+      if(!document.getElementById('resizer-style')){
+          const s = document.createElement('style');
+          s.id = 'resizer-style';
+          s.innerHTML = `.resizer { height: 6px; flex: 0 0 6px; background: #333; cursor: row-resize; width: 100%; transition: background 0.2s; z-index: 10; } .resizer:hover, .resizer.active { background: #2962FF; }`;
+          document.head.appendChild(s);
+      }
+
+      const resizer = document.createElement('div');
+      resizer.className = 'resizer';
+      ct.appendChild(resizer);
+
+      let isResizing = false;
+      let startY, startHeight;
+
+      resizer.addEventListener('mousedown', (e) => {
+          isResizing = true;
+          startY = e.clientY;
+          startHeight = p.getBoundingClientRect().height;
+          resizer.classList.add('active');
+          document.body.style.cursor = 'row-resize';
+          p.style.flex = 'none'; // Disable flex grow to allow manual sizing
+          p.style.height = startHeight + 'px';
+      });
+
+      document.addEventListener('mousemove', (e) => {
+          if (!isResizing) return;
+          const dy = e.clientY - startY;
+          let newH = startHeight + dy;
+          if(newH < 100) newH = 100; // Min height for Main
+          
+          // Max height constraint (leave room for sub panels)
+          const totalH = ct.clientHeight;
+          const subPanelsCount = charts.length - 1; // logical count since 'mc' is main
+          const minSubH = 60 * subPanelsCount;
+          const maxH = totalH - minSubH - 20; // -20 buffer
+          
+          if(newH > maxH) newH = maxH;
+          
+          p.style.height = newH + 'px';
+          
+          // Force resize main chart immediately
+          charts.find(c=>c.id===id).ch.resize(p.clientWidth, newH);
+          
+          // Force resize others (flex will adjust them, but canvas needs update)
+          // We can just rely on the ResizeObserver if we added it, but let's be explicit for smoothness
+          requestAnimationFrame(() => {
+             charts.forEach(c => {
+                 if(c.id !== id) c.ch.resize(c.p.clientWidth, c.p.clientHeight);
+             });
+          });
+      });
+
+      document.addEventListener('mouseup', () => {
+          if(isResizing){
+            isResizing = false;
+            resizer.classList.remove('active');
+            document.body.style.cursor = '';
+            // Trigger resize for all to be safe
+            charts.forEach(c => c.ch.resize(c.p.clientWidth, c.p.clientHeight));
+          }
+      });
+  }
+
+  const opts={...baseOpts,width:p.clientWidth,height:p.clientHeight};
+  const ch=LightweightCharts.createChart(p,opts);
+  _getOrInitMargins(ch);
+  if(!isMain) _attachScaleMarginHandles(p, ch);
+  
+  charts.push({ch,p,id,label:lbl});
+  return ch;
+}
+
+// === MAIN CHART ===
+const mc=mkPanel('mc','PRICE',true);
+// Neutral Candle Colors
+const cs=mc.addCandlestickSeries({
+    upColor:'#2E8B57', // SeaGreen (Muted)
+    downColor:'#CD5C5C', // IndianRed (Muted)
+    borderUpColor:'#2E8B57',
+    borderDownColor:'#CD5C5C',
+    wickUpColor:'#2E8B57',
+    wickDownColor:'#CD5C5C',
+    priceFormat:{type:'price',precision:2},
+});
+
+// VISIBILITY & RESIZE FIX (Tab Open/Restore)
+document.addEventListener('visibilitychange', () => {
+    if(!document.hidden){
+        setTimeout(() => {
+            charts.forEach(c => {
+                if(c.ch && c.p) c.ch.resize(c.p.clientWidth, c.p.clientHeight);
+            });
+        }, 100);
+    }
+});
+// Force initial resize check
+setTimeout(() => {
+    charts.forEach(c => {
+        if(c.ch && c.p && c.p.clientHeight < 50) {
+             c.p.style.flex = '1 1 0'; // Reset flex if squashed
+             c.ch.resize(c.p.clientWidth, c.p.clientHeight);
+        }
+    });
+}, 500);
+
+// RESIZE OBSERVER (Safari/Window Fix)
+const ro = new ResizeObserver(entries => {
+    window.requestAnimationFrame(() => {
+        if(!charts || charts.length===0) return;
+        charts.forEach(c => {
+            if(c.p && c.ch){
+                c.ch.resize(c.p.clientWidth, c.p.clientHeight);
+            }
+        });
+    });
+});
+if(ct) ro.observe(ct);
+
+const f=D.f;
+const cData=D.t.map((t,i)=>({time:t,open:dq(D.o[i],f),high:dq(D.h[i],f),low:dq(D.l[i],f),close:dq(D.c[i],f)}));
+cs.setData(cData);
+if(charts.length>0) charts[0].series = cs;
+
+// MARKERS & TOOLTIPS (Client-Side Generation)
+// Using Scatter LineSeries to place markers at exact prices
+const longEntrySeries = mc.addLineSeries({
+    color: '#2962FF', 
+    lineWidth: 0, 
+    pointMarkersVisible: true,
+    pointMarkersRadius: 6, 
+    crosshairMarkerVisible: false,
+    lineVisible: false,
+    lastValueVisible: false,
+    priceLineVisible: false
+});
+
+const shortEntrySeries = mc.addLineSeries({
+    color: '#FF6D00',
+    lineWidth: 0,
+    pointMarkersVisible: true,
+    pointMarkersRadius: 6, 
+    crosshairMarkerVisible: false,
+    lineVisible: false,
+    lastValueVisible: false,
+    priceLineVisible: false
+});
+
+const exitSeries = mc.addLineSeries({
+    color: '#FFFFFF',
+    lineWidth: 0,
+    pointMarkersVisible: true,
+    pointMarkersRadius: 5, 
+    crosshairMarkerVisible: false,
+    lineVisible: false,
+    lastValueVisible: false,
+    priceLineVisible: false
+});
+
+const trailingSeries = mc.addLineSeries({
+    color: '#FFFF00', // Yellow
+    lineWidth: 0,
+    pointMarkersVisible: true,
+    pointMarkersRadius: 4, 
+    crosshairMarkerVisible: false,
+    lineVisible: false,
+    lastValueVisible: false,
+    priceLineVisible: false
+});
+
+const leData = [];
+const seData = [];
+const exData = [];
+const taData = [];
+const tooltipMap = new Map();
+
+if(T.list && Array.isArray(T.list)){
+    T.list.forEach(tr => {
+        // ENTRY
+        if(tr.entry_ts !== null) {
+            if(tr.type === 'LONG') {
+                leData.push({time: tr.entry_ts, value: tr.ep});
+            } else {
+                seData.push({time: tr.entry_ts, value: tr.ep});
+            }
+            // Add to tooltip map
+            tooltipMap.set(tr.entry_ts, tr);
+        }
+        
+        // EXIT
+        if(tr.exit_ts !== null) {
+            exData.push({time: tr.exit_ts, value: tr.xp});
+            
+            // Map exit time too (if different from entry). 
+            // Note: If multiple trades close at same candle, last one wins.
+            if(!tooltipMap.has(tr.exit_ts)) {
+                tooltipMap.set(tr.exit_ts, tr);
+            }
+        }
+
+        // TRAILING ACTIVATION
+        if(tr.ta_ts !== null && tr.ta_p !== null) {
+            taData.push({time: tr.ta_ts, value: tr.ta_p});
+        }
+    });
+    
+    // Sort required by Lightweight Charts
+    leData.sort((a,b) => a.time - b.time);
+    seData.sort((a,b) => a.time - b.time);
+    exData.sort((a,b) => a.time - b.time);
+    taData.sort((a,b) => a.time - b.time);
+
+    longEntrySeries.setData(leData);
+    shortEntrySeries.setData(seData);
+    exitSeries.setData(exData);
+    trailingSeries.setData(taData);
+}
+
+// OVERLAYS (MA, Bands)
+if(I.overlays && Array.isArray(I.overlays)){
+    I.overlays.forEach(ov=>{
+        try{
+            if(ov.v && ov.v.length>0){
+                const ls=mc.addLineSeries({
+                    color:ov.color||'#1C86EE', // Rich Dodger Blue
+                    lineWidth:1,
+                    crosshairMarkerVisible:false,
+                    priceLineVisible:false,
+                    lastValueVisible:false
+                });
+                ls.setData(ov.v.map((v,i)=>({time:ov.t[i],value:v!==null?dq(v,ov.f):null})).filter(x=>x.value!==null));
+            }
+        }catch(e){}
+    });
+}
+
+// === VOLUME (Separate Panel) ===
+if(D.vol && D.vol.length>0){
+    const vc = mkPanel('vc', 'VOL', false);
+    
+    // Configurar márgenes para que ocupe bien su panel
+    vc.priceScale('right').applyOptions({
+        scaleMargins: { top: 0.1, bottom: 0 },
+        borderVisible: false,
+        autoScale: true,
+    });
+    
+    const vs = vc.addHistogramSeries({
+        color: '#4F94CD', // Rich Steel Blue
+        priceFormat: { type: 'volume' },
+        priceLineVisible: false,
+        lastValueVisible: true, // Mostrar valor actual en eje Y
+    });
+
+    vs.setData(D.t.map((t,i)=>({
+        time:t, 
+        value:D.vol[i], 
+        color: D.c[i] >= D.o[i] ? 'rgba(38, 166, 154, 0.5)' : 'rgba(239, 83, 80, 0.5)' // Green/Red muted
+    })));
+    
+    // Registrar para updates
+    const vi = charts.findIndex(x=>x.id==='vc');
+    if(vi>=0) charts[vi].series = vs;
+}
+
+// === INDICATOR PANELS ===
+if(I.sub_panels){
+    I.sub_panels.forEach((grp,i)=>{
+        const pc=mkPanel('sp'+i, grp.title, false);
+        grp.series.forEach(ser => {
+            let s;
+            const data = ser.data.v.map((v,idx)=>({time:ser.data.t[idx],value:v!==null?dq(v,ser.data.f):null})).filter(x=>x.value!==null);
+            
+            if(ser.type==='histogram'){
+                s=pc.addHistogramSeries({color:ser.color,priceLineVisible:false,base:0});
+            }else{
+                s=pc.addLineSeries({color:ser.color,lineWidth:1,priceLineVisible:false,crosshairMarkerVisible:false});
+                
+                if(ser.bounds){
+                    const b=ser.bounds;
+                    
+                    // Helper to get color and style for bound
+                    const getBoundStyle = (key) => {
+                        const k = key.toLowerCase();
+                        if(k.includes('upper') || k.includes('hi')) return { c: 'rgba(255, 82, 82, 0.6)', s: 2 }; // Red for Short Entry Zone
+                        if(k.includes('lower') || k.includes('lo')) return { c: 'rgba(76, 175, 80, 0.6)', s: 2 }; // Green for Long Entry Zone
+                        return { c: 'rgba(255, 255, 255, 0.3)', s: 2 }; // Neutral/Mid
+                    };
+
+                    // Iterate explicitly to assign correct colors
+                    [
+                        {k:'upper', v:b.upper}, 
+                        {k:'lower', v:b.lower}, 
+                        {k:'mid', v:b.mid}, 
+                        {k:'hi', v:b.hi}, 
+                        {k:'lo', v:b.lo}
+                    ].forEach(item => {
+                        if(item.v !== undefined && item.v !== null){
+                             const style = getBoundStyle(item.k);
+                             const bl=pc.addLineSeries({
+                                 color: style.c,
+                                 lineWidth: 1,
+                                 lineStyle: style.s,
+                                 priceLineVisible:false,
+                                 lastValueVisible:false,
+                                 crosshairMarkerVisible:false
+                             });
+                             bl.setData(ser.data.t.map(t=>({time:t, value:item.v})));
+                        }
+                    });
+                }
+                if(ser.zero_line){
+                     const zl=pc.addLineSeries({color:'rgba(255, 255, 255, 0.2)',lineWidth:1,lineStyle:2});
+                     zl.setData(ser.data.t.map(t=>({time:t,value:0})));
+                }
+            }
+            s.setData(data);
+            
+            // === ADD MARKERS TO INDICATOR SERIES ===
+            // Filter trades within this series timeframe
+            // We use the raw trade list T.list
+            if(T && T.list && T.list.length > 0){
+                const indMarkers = [];
+                const firstTs = ser.data.t[0];
+                const lastTs = ser.data.t[ser.data.t.length-1];
+                
+                // Map timestamps to values for precise placement if needed, 
+                // but setMarkers works relative to the checking visible range? 
+                // No, setMarkers is for the entire series.
+                
+                T.list.forEach(tr => {
+                    // Entry Marker - Blue (Long) / Orange (Short) Circles
+                    if(tr.entry_ts && tr.entry_ts >= firstTs && tr.entry_ts <= lastTs){
+                        indMarkers.push({
+                            time: tr.entry_ts,
+                            position: 'inBar', // Places it on the data point value
+                            color: tr.type === 'LONG' ? '#2962FF' : '#FF6D00',
+                            shape: 'circle',
+                            size: 1
+                        });
+                    }
+                    // Exit Marker - White Circle
+                    if(tr.exit_ts && tr.exit_ts >= firstTs && tr.exit_ts <= lastTs){
+                        indMarkers.push({
+                            time: tr.exit_ts,
+                            position: 'inBar',
+                            color: '#FFFFFF', 
+                            shape: 'circle',
+                            size: 1
+                        });
+                    }
+                });
+                s.setMarkers(indMarkers);
+            }
+
+            const pi = charts.findIndex(x=>x.id==='sp'+i);
+            if(pi>=0) charts[pi].series = s;
+        });
+    });
+}
+
+// === SYNC & RESIZE ===
+// TimeScale visible only on last chart
+if(charts.length>0) charts[charts.length-1].ch.timeScale().applyOptions({visible:true});
+
+// Chart Sync
+charts.forEach(c1=>{
+    if(!c1.ch)return;
+    c1.ch.timeScale().subscribeVisibleTimeRangeChange(r=>{
+        if(syncingCharts || !r) return;
+        syncingCharts=true;
+        charts.forEach(c2=>{
+            if(c2!==c1 && c2.ch) c2.ch.timeScale().setVisibleRange(r);
+        });
+        syncingCharts=false;
+    });
+});
+
+// Resize
+// Resize observer handled earlier (lines ~1400)
+// Removed duplicate to prevent conflicts
+
+// Initial Fit - START AT BEGINNING
+setTimeout(()=>{
+    charts.forEach(c=>{
+        if(c.ch) {
+            // Scroll to the start (left)
+            // Using logical range to show first ~100 bars
+            c.ch.timeScale().setVisibleLogicalRange({ from: 0, to: 150 });
+        }
+    });
+}, 100);
+
+// Global Crosshair & Keyboard Nav
+const gl=document.getElementById('globalCrosshair');
+const gll=document.getElementById('globalCrosshairLabel');
+let lastFocusedTime = null;
+
+function updateCrosshair(param, sourceCh){
+   if(!param.time || !param.point){
+       gl.style.display='none'; gll.style.display='none';
+       return;
+   }
+   
+   // TRACK FOCUS
+   lastFocusedTime = param.time;
+
+   gl.style.display='block';
+   gl.style.left=param.point.x+'px';
+   
+   // Label
+   gll.style.display='block';
+   gll.style.left=param.point.x+'px';
+   const date = new Date(param.time*1000);
+   gll.textContent = date.toISOString().slice(0,16).replace('T',' ');
+   
+   // Sync others (Time only - vertical line)
+   // Sync others (Time only - vertical line + Horizontal Magnet)
+   charts.forEach(c=>{
+       if(c.ch!==sourceCh && c.ch && c.series){
+           const data = _findDataAt(c.series, param.time);
+           if(data){
+               const val = data.value !== undefined ? data.value : data.close;
+               c.ch.setCrosshairPosition(val, param.time, c.series);
+           } else {
+               c.ch.clearCrosshairPosition();
+           }
+       }
+   });
+   
+   // Tooltip Update via Map Lookup (Exact Match)
+   const trade = tooltipMap.get(param.time);
+   const tt=document.getElementById('tt');
+   
+   if(trade){
+       tt.style.display='block';
+       tt.style.left=(param.point.x+20)+'px';
+       tt.style.top=(param.point.y+20)+'px';
+       
+       // Keep tooltip inside window
+       const rect = tt.getBoundingClientRect();
+       if(rect.right > window.innerWidth) tt.style.left = (param.point.x - rect.width - 20) + 'px';
+       
+       const cls = trade.pnl>=0?'win':'loss';
+       const pnlSign = trade.pnl>=0?'+':'';
+       
+       tt.innerHTML=`
+         <div style="font-weight:bold;margin-bottom:8px;display:flex;justify-content:space-between;align-items:center">
+            <span style="color:${trade.type==='LONG'?'#2962FF':'#FF6D00'}">${trade.type}</span>
+            <span class="tt-badge ${cls}">${trade.pnl>=0?'WIN':'LOSS'}</span>
+         </div>
+         <div class="tt-row"><span class="tt-label">Entry</span><span class="tt-val">$${trade.ep.toFixed(2)}</span></div>
+         <div class="tt-row"><span class="tt-label">Exit</span><span class="tt-val">$${trade.xp.toFixed(2)}</span></div>
+         <div class="tt-row"><span class="tt-label">Qty</span><span class="tt-val">${trade.qty}</span></div>
+         <div class="tt-row"><span class="tt-label">Dur</span><span class="tt-val">${trade.dur}</span></div>
+         <div class="tt-row"><span class="tt-label">Fees</span><span class="tt-val" style="color:#D29922">$${trade.fees.toFixed(2)}</span></div>
+         <div class="tt-row" style="margin-top:8px;border-top:1px solid #333;padding-top:8px">
+            <span class="tt-label">Net PnL</span>
+            <span class="tt-val ${trade.pnl>=0?'pos':'neg'}">${pnlSign}$${trade.pnl.toFixed(2)}</span>
+         </div>
+       `;
+   }else{
+       tt.style.display='none';
+       // Update OHLC header
+       const candle = cData.find(c=>c.time===param.time);
+       if(candle){
+           document.getElementById('tv').textContent=gll.textContent;
+           document.getElementById('ov').textContent=candle.open.toFixed(2);
+           document.getElementById('hv').textContent=candle.high.toFixed(2);
+           document.getElementById('lv').textContent=candle.low.toFixed(2);
+           const cEl = document.getElementById('cv');
+           cEl.textContent=candle.close.toFixed(2);
+           cEl.className = candle.close >= candle.open ? 'ohlc-val up' : 'ohlc-val down';
+       }
+   }
+}
+
+charts.forEach(c=>{
+    if(c.ch) c.ch.subscribeCrosshairMove(p=>updateCrosshair(p, c.ch));
+});
+
+ct.addEventListener('mouseleave', ()=>{
+    gl.style.display='none';
+    gll.style.display='none';
+    charts.forEach(c=>{if(c.ch)c.ch.clearCrosshairPosition();});
+});
+
+// Zoom Controls
+document.getElementById('zoomIn').onclick = () => {
+    charts.forEach(c=>c.ch.timeScale().applyOptions({barSpacing: c.ch.timeScale().options().barSpacing * 1.2}));
+};
+document.getElementById('zoomOut').onclick = () => {
+    charts.forEach(c=>c.ch.timeScale().applyOptions({barSpacing: c.ch.timeScale().options().barSpacing * 0.8}));
+};
+
+// KEYBOARD NAVIGATION
+document.addEventListener('keydown', e => {
+    if(e.key === 'ArrowLeft' || e.key === 'ArrowRight'){
+        e.preventDefault();
+        
+        let idx = -1;
+        if(lastFocusedTime !== null) idx = D.t.indexOf(lastFocusedTime);
+        if(idx === -1) idx = D.t.length - 1; // Default to end if no focus
+        
+        if(e.key === 'ArrowLeft') idx = Math.max(0, idx - 1);
+        else idx = Math.min(D.t.length - 1, idx + 1);
+        
+        const t = D.t[idx];
+        const candle = cData[idx];
+        if(!candle) return;
+        
+        // Use Main Chart for coords
+        const mainCh = charts[0].ch;
+        const mainSer = charts[0].series;
+        
+        const x = mainCh.timeScale().timeToCoordinate(t);
+        const y = mainSer.priceToCoordinate(candle.close);
+        
+        if(x !== null && y !== null){
+            updateCrosshair({time: t, point: {x: x, y: y}}, null);
+            mainCh.setCrosshairPosition(candle.close, t, mainSer);
+            
+            // Auto-Scroll if out of view
+            const logIdx = mainCh.timeScale().coordinateToLogical(x);
+             // Simple fallback: if coordinate is extremely left or right
+             if(x < 50 || x > mainCh.timeScale().width() - 50){
+                 mainCh.timeScale().scrollToPosition(- (D.t.length - 1 - idx), true);
+             }
+        }
+    }
+});
+
+'''
+
+
+
+
 
 # =============================================================================
 # MAIN PLOT FUNCTION
@@ -980,7 +1823,7 @@ def plot_trades(
     df: DataFrameType,
     df_trades: DataFrameType,
     plot_base: str,
-    grafica_rango_personalizado,  # True = manual | False = 2 meses | "all" = 100%
+    grafica_rango_personalizado: bool,
     grafica_fecha_inicio: str,
     grafica_fecha_fin: str,
     trial_number: int,
@@ -1027,19 +1870,13 @@ def plot_trades(
         volumes = df_pd[vol_col].values.astype(np.float64) if vol_col else None
 
     # ================== DATE FILTERING ==================
-    # Tres modos: "all" = 100% | True = fechas manuales | False = últimos 2 meses
-    _modo = str(grafica_rango_personalizado).lower()
-
-    if _modo == "all":
-        # ---- MODO ALL: mostrar 100% del rango del trial, sin recorte ----
-        pass  # timestamps/opens/etc. ya están completos
-
-    elif _modo == "true":
+    # Sistema binario: rango personalizado o últimos 2 meses automáticos.
+    if grafica_rango_personalizado:
         # ---- MODO MANUAL: usar fechas fijas del usuario ----
         start_pd = pd.to_datetime(grafica_fecha_inicio, utc=True)
         end_pd = pd.to_datetime(grafica_fecha_fin, utc=True)
-        start = np.datetime64(start_pd.tz_convert(None))
-        end = np.datetime64(end_pd.tz_convert(None))
+        start = np.datetime64(start_pd.tz_localize(None))
+        end = np.datetime64(end_pd.tz_localize(None))
 
         if np.issubdtype(timestamps.dtype, np.datetime64):
             ts_compare = timestamps
@@ -1070,7 +1907,6 @@ def plot_trades(
         lows = l_filtered
         closes = c_filtered
         volumes = v_filtered
-
     else:
         # ---- MODO AUTO: últimos 2 meses (60 días) del trial ----
         ts_unix = _normalize_timestamps_to_unix(timestamps)
@@ -1340,56 +2176,6 @@ def plot_trades(
             
     indicators_data["sub_panels"] = list(grouped_panels.values())
 
-    # ================== PREPARE EQUITY ==================
-    # Instead of blindly spreading the equity array points across the entire
-    # chart (which causes diagonal lines during no-trade periods like market regimes),
-    # we reconstruct precise equity lines using trade exit timestamps.
-    equity_out = None
-    if df_trades is not None:
-        try:
-            records = df_trades.to_dicts() if hasattr(df_trades, "to_dicts") else df_trades.to_dict(orient="records")
-            if len(records) > 0 and len(ts_q) > 0:
-                eq_ts = [int(ts_q[0])]
-                eq_vals = [float(saldo_inicial)]
-                for tr in records:
-                    t_raw = tr.get("exit_time")
-                    if t_raw is None:
-                        continue
-                    try:
-                        if pd.isnull(t_raw):
-                            continue
-                    except (TypeError, ValueError):
-                        pass
-                    try:
-                        if hasattr(t_raw, "timestamp"):
-                            ts = int(t_raw.timestamp())
-                        else:
-                            ts = int(pd.Timestamp(t_raw).timestamp())
-                        # Snap to closest chart timestamp
-                        idx = np.searchsorted(ts_q, ts)
-                        if idx >= len(ts_q): idx = len(ts_q) - 1
-                        eq_ts.append(int(ts_q[idx]))
-                        eq_vals.append(float(tr.get("saldo_despues", eq_vals[-1])))
-                    except Exception:
-                        continue
-                
-                # Make the line continue visually to the right edge of the chart
-                if eq_ts[-1] < int(ts_q[-1]):
-                    eq_ts.append(int(ts_q[-1]))
-                    eq_vals.append(eq_vals[-1])
-                    
-                equity_out = {"t": eq_ts, "v": eq_vals, "si": float(saldo_inicial)}
-            else:
-                # No trades -> Flat equity from start to end
-                if len(ts_q) > 0:
-                    equity_out = {
-                        "t": [int(ts_q[0]), int(ts_q[-1])], 
-                        "v": [float(saldo_inicial), float(saldo_inicial)], 
-                        "si": float(saldo_inicial)
-                    }
-        except Exception:
-            pass
-
     # ================== WRITE HTML ==================
     import os
     if not os.path.exists(plot_base):
@@ -1397,11 +2183,14 @@ def plot_trades(
             os.makedirs(plot_base)
         except:
             pass
-
+            
+    # Clean filename
+    clean_combo = "".join(c for c in str(combo) if c.isalnum() or c in ('_','-'))
     filename = f"TRIAL {trial_number} - {int(score)}.html"
     filepath = os.path.join(plot_base, filename)
-
-    def _g(k):
+    
+    # Try using metric get helper or safe get
+    def _g(k): 
         return metrics.get(k, 0) if metrics else 0
 
     _write_html_streaming(
@@ -1410,21 +2199,14 @@ def plot_trades(
         indicators_data,
         trades_data,
         config={
-            "activo":        str(activo or "ASSET"),
-            "combo":         str(combo),
-            "trial":         str(trial_number),
-            "total_trades":  len(df_trades) if df_trades is not None else 0,
-            "winrate":       _g("winrate") or _g("WINRATE_PCT") or _g("PORC_GANADORAS"),
-            "pnl_neto":      _g("pnl_neto") or _g("PNL_NETO"),
-            "score":         score,
-            "max_dd":        _g("max_dd") or _g("MAX_DD_PCT"),
-            "profit_factor": _g("profit_factor") or _g("PROFIT_FACTOR"),
-            "roi":           _g("roi") or _g("ROI_PCT"),
-            "expectancy":    _g("expectancy") or _g("EXPECTANCY"),
-            "avg_win":       _g("avg_win") or _g("AVG_WIN"),
-            "avg_loss":      _g("avg_loss") or _g("AVG_LOSS"),
-        },
-        equity_data=equity_out,
+            "activo": str(activo or "ASSET"),
+            "combo": str(combo),
+            "trial": str(trial_number),
+            "total_trades": len(df_trades) if df_trades is not None else 0,
+            "winrate": _g("winrate"),
+            "pnl_neto": _g("pnl_neto"),
+            "score": score
+        }
     )
     
     return filepath
@@ -1446,7 +2228,7 @@ class PlotReporter:
     def __init__(
         self,
         plot_base: str,
-        grafica_rango_personalizado,  # True = manual | False = 2 meses | "all" = 100%
+        grafica_rango_personalizado: bool,
         grafica_fecha_inicio: str,
         grafica_fecha_fin: str,
         max_archivos: int = 5,
